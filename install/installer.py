@@ -795,7 +795,7 @@ def main():
 
     print()
     print("=" * 60)
-    print("  Setup complete! See CHEAT_SHEET.md for usage instructions.")
+    print("  Setup complete! See src/README.md for usage instructions.")
     print("=" * 60)
     print()
 

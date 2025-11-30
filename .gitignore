@@ -7,3 +7,6 @@ __pycache__/
 
 # Installer logs
 install/installer.log
+
+# User configuration (contains credentials)
+src/settings.json
