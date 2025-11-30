@@ -11,17 +11,6 @@
       "PASSWORD": "innsoft247",
       "PATH_APPEND": "C:\\_innovative\\_source\\current.sql"
     },
-    "S123_SBNA": {
-      "CMPY": 123,
-      "IBSLANG": 1,
-      "BCPJ": null,
-      "PLATFORM": "SYBASE",
-      "HOST": "10.10.123.4",
-      "PORT": 5000,
-      "USERNAME": "sa",
-      "PASSWORD": "your_sa_password",
-      "PATH_APPEND": "C:\\_innovative\\_source\\92.sql"
-    },
     "GONZO": {
       "CMPY": 101,
       "IBSLANG": 1,
