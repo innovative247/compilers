@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dir:*)",
+      "Bash(pip install:*)",
+      "Bash(python3:*)",
+      "Bash(where test_options)",
+      "Bash(where:*)",
+      "Bash(pip show:*)",
+      "Bash(\"C:\\Users\\JakeWilliams\\AppData\\Roaming\\Python\\Python314\\Scripts\\test_options.exe\")",
+      "Bash(pip uninstall:*)",
+      "Bash(python:*)",
+      "Bash(pip config:*)",
+      "Bash(cmd /c dir:*)",
+      "Bash(findstr:*)",
+      "Bash(test_connection:*)",
+      "Bash(\"C:\\Users\\JakeWilliams\\AppData\\Local\\Programs\\Python\\Python311\\Scripts\\test_connection.exe\" --help)",
+      "Bash(\"C:\\Users\\JakeWilliams\\AppData\\Local\\Programs\\Python\\Python311\\Scripts\\test_options.exe\" GONZO \"&users&\")",
+      "Bash(\"C:\\Users\\JakeWilliams\\AppData\\Local\\Programs\\Python\\Python311\\Scripts\\isqlline.exe\" -e \"select top 10 s#us, userid from &users&\" sbnpro GONZO)",
+      "Bash(py -m src.commands.runsql:*)",
+      "Bash(del:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
