@@ -18,7 +18,8 @@
       "Bash(\"C:\\Users\\JakeWilliams\\AppData\\Local\\Programs\\Python\\Python311\\Scripts\\test_options.exe\" GONZO \"&users&\")",
       "Bash(\"C:\\Users\\JakeWilliams\\AppData\\Local\\Programs\\Python\\Python311\\Scripts\\isqlline.exe\" -e \"select top 10 s#us, userid from &users&\" sbnpro GONZO)",
       "Bash(py -m src.commands.runsql:*)",
-      "Bash(del:*)"
+      "Bash(del:*)",
+      "Bash(cmd /c del \"C:\\_innovative\\_source\\compilers\\src\\CHEAT_SHEET.md\")"
     ],
     "deny": [],
     "ask": []

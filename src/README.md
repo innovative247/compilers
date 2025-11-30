@@ -4,7 +4,52 @@
 
 ---
 
-## 🚀 5-Minute Quick Start
+## Table of Contents
+
+**Setup**
+- [Quick Start](#-5-minute-quick-start)
+- [Getting Started - Windows](#getting-started---windows)
+- [Getting Started - Linux/WSL](#getting-started---linuxwsl)
+- [Configuration](#configuration)
+
+**Usage**
+- [Command Reference](#command-reference)
+- [Common Workflows](#common-workflows)
+- [VS Code Integration](#vs-code-integration)
+
+**Reference**
+- [FreeTDS Reference](#freetds-reference)
+- [WSL Management](#wsl-management)
+- [Troubleshooting](#troubleshooting)
+- [Quick Reference](#quick-reference)
+- [For Developers](#for-developers)
+
+---
+
+## Overview
+
+Python scripts that replace the C# `Ibs.Compilers`. Works identically on **Windows** and **Linux/WSL**:
+- **FreeTDS** provides unified database connectivity (Sybase ASE + MSSQL)
+- **settings.json** stores all connection and compile settings
+- Same commands (`runsql`, `freebcp`, `tsql`) work on both platforms
+
+---
+
+## Disclaimer
+
+**This tool interacts directly with live databases and performs destructive operations** (truncating tables, dropping tables, bulk data insertion, running arbitrary SQL).
+
+**Before using:**
+- Always know which server and database you are targeting
+- Always double-check the profile you are using
+- Test against development/test databases before production
+- Use `--preview` mode to see what will be executed
+
+The development team is not responsible for data loss or corruption.
+
+---
+
+## 5-Minute Quick Start
 
 **For users with VS Code and `current.sql` open:**
 
@@ -19,54 +64,20 @@ python --version   # or python3 --version
 - **Windows**: [Download from python.org](https://www.python.org/downloads/) - **Check "Add Python to PATH"**
 - **Linux**: `sudo apt install python3 python3-pip`
 
-### Step 2: Install IBS Compilers
+### Step 2: Run Bootstrap Script (Windows)
 
-```bash
-# Navigate to installation directory
-cd C:\_innovative\_source\sbn-services\Ibs.Compilers\python-scripts\src  # Windows
-cd ~/innovative/sbn-services/Ibs.Compilers/python-scripts/src            # Linux
-
-# Run automated installer
-python install.py
+```powershell
+.\bootstrap.ps1
 ```
 
-The installer will:
-- ✓ Verify Python version
-- ✓ Install dependencies (pyodbc)
-- ✓ Check database drivers
-- ✓ Create command-line tools
-- ✓ Guide you through first profile setup
+The bootstrap script will walk you through installing all dependencies, and is safe to re-run if needed.
 
-### Step 3: Install Database Drivers
+**Options:**
+- `.\bootstrap.ps1 -Force` - Reinstall/reconfigure everything
+- `.\bootstrap.ps1 -SkipPython` - Skip Python if already installed
+- `.\bootstrap.ps1 -Help` - Show all options
 
-#### For Microsoft SQL Server:
-
-**Windows**: [Download ODBC Driver 17 for SQL Server](https://docs.microsoft.com/en-us/sql/connect/odbc/download-odbc-driver-for-sql-server)
-
-**Linux (Debian/Ubuntu)**:
-```bash
-curl https://packages.microsoft.com/keys/microsoft.asc | sudo apt-key add -
-curl https://packages.microsoft.com/config/ubuntu/$(lsb_release -rs)/prod.list | sudo tee /etc/apt/sources.list.d/mssql-release.list
-sudo apt-get update
-sudo ACCEPT_EULA=Y apt-get install -y msodbcsql17
-```
-
-**Linux (RedHat/CentOS)**:
-```bash
-curl https://packages.microsoft.com/config/rhel/$(rpm -E %rhel)/prod.repo | sudo tee /etc/yum.repos.d/mssql-release.repo
-sudo ACCEPT_EULA=Y yum install -y msodbcsql17
-```
-
-#### For Sybase ASE:
-
-Install the SAP ASE ODBC driver from your Sybase client installation or SAP Support Portal. Contact your DBA if needed.
-
-**Verify drivers:**
-```bash
-python test_connection.py --check-drivers
-```
-
-### Step 4: Create Your First Profile
+### Step 3: Create Your First Profile
 
 ```bash
 python setup_profile.py
@@ -74,7 +85,7 @@ python setup_profile.py
 
 Follow the prompts to create a profile for your server (e.g., GONZO).
 
-### Step 5: Compile Your First SQL File!
+### Step 4: Compile Your First SQL File
 
 ```bash
 # From VS Code terminal (Ctrl+` or Cmd+`)
@@ -84,85 +95,155 @@ runsql CSS/SQL_Sources/Basics/pro_users.sql GONZO
 runsql CSS/SQL_Sources/Basics/pro_users.sql GONZO --preview
 ```
 
-**🎉 Done! You're now ready to compile SQL files.**
+**Done! You're now ready to compile SQL files.**
 
 ---
 
-## 📖 Table of Contents
+## Getting Started - Windows
 
-- [Quick Start](#-5-minute-quick-start)
-- [Installation Details](#installation)
-- [Configuration](#configuration)
-- [Command Reference](#command-reference)
-- [Common Workflows](#common-workflows)
-- [VS Code Integration](#vs-code-integration)
-- [Troubleshooting](#troubleshooting)
-- [Cheat Sheet](#cheat-sheet)
-- [For Developers](#for-developers)
+### Automated Setup (Recommended)
+
+Run the bootstrap script in PowerShell:
+
+```powershell
+.\bootstrap.ps1
+```
+
+### Manual Setup
+
+If you prefer manual installation, follow these steps:
+
+#### Step 1: Install MSYS2 (for FreeTDS)
+
+```powershell
+# Option A: Via winget
+winget install -i MSYS2.MSYS2
+
+# Option B: Download from https://www.msys2.org/
+```
+
+#### Step 2: Install FreeTDS
+
+Open **MSYS2 UCRT64** terminal (not regular MSYS2):
+
+```bash
+pacman -S mingw-w64-ucrt-x86_64-freetds
+```
+
+#### Step 3: Add to Windows PATH
+
+Add this to your system PATH:
+```
+C:\msys64\ucrt64\bin
+```
+
+#### Step 4: Install Python Scripts
+
+```powershell
+# Requires Python 3.8+
+python3 --version
+
+cd C:\Users\JakeWilliams\Projects\compilers\src
+pip3 install -e .
+```
+
+**Scripts Location**: Commands are installed to your user scripts directory:
+```
+C:\Users\<YourName>\AppData\Roaming\Python\Python314\Scripts
+```
+
+If commands aren't found after install, add this directory to your PATH:
+```powershell
+[Environment]::SetEnvironmentVariable(
+    "PATH",
+    [Environment]::GetEnvironmentVariable("PATH", "User") + ";C:\Users\<YourName>\AppData\Roaming\Python\Python314\Scripts",
+    "User"
+)
+```
+Then restart PowerShell.
+
+**Note**: If `python3` doesn't work on Windows, use `py -3` or create an alias:
+```powershell
+# Option A: Use py launcher
+py -3 --version
+py -3 -m pip install -e .
+
+# Option B: Create alias (run once in admin PowerShell)
+Set-Alias -Name python3 -Value "${env:LocalAppData}\Programs\Python\Python311\python.exe"
+```
+
+#### Step 5: Configure FreeTDS
+
+Create/edit `C:\msys64\ucrt64\etc\freetds.conf`:
+```ini
+[sybase_dev]
+    host = 54.235.236.130
+    port = 5000
+    tds version = 5.0
+
+[mssql_dev]
+    host = 172.21.80.1
+    port = 49694
+    tds version = 7.4
+```
+
+#### Step 6: Verify Installation
+
+```powershell
+tsql -C              # FreeTDS version
+freebcp -v           # BCP utility
+runsql --help        # Python scripts
+
+# Test database connection
+tsql -S sybase_dev -U username -P password
+```
 
 ---
 
-## Disclaimer
+## Getting Started - Linux/WSL
 
-**⚠️ This tool interacts directly with live databases and performs destructive operations** (truncating tables, dropping tables, bulk data insertion, running arbitrary SQL).
-
-**Before using:**
-- ✓ Always know which server and database you are targeting
-- ✓ Always double-check the profile you are using
-- ✓ Test against development/test databases before production
-- ✓ Use `--preview` mode to see what will be executed
-
-The development team is not responsible for data loss or corruption.
-
----
-
-## Installation
-
-### Prerequisites
-
-1. **Python 3.8 or newer**
-   - Windows: [python.org](https://www.python.org/downloads/) (**Check "Add Python to PATH"**)
-   - Linux: `sudo apt install python3 python3-pip` or equivalent
-
-2. **Database ODBC Drivers** (see Quick Start above)
-   - MSSQL: Microsoft ODBC Driver 17 for SQL Server
-   - Sybase: SAP ASE ODBC driver
-
-3. **Database Command-Line Tools** (for BCP operations)
-   - MSSQL: `bcp` and `sqlcmd`
-   - Sybase: `bcp` and `isql`
-
-### Installation Steps
-
-#### Automated Installation (Recommended)
+### Step 1: Install FreeTDS and Dependencies
 
 ```bash
-# Navigate to installation directory
-cd python-scripts/src
-
-# Run installer
-python install.py
+sudo apt update
+sudo apt install -y freetds-dev freetds-bin unixodbc unixodbc-dev tdsodbc python3-pip
 ```
 
-#### Manual Installation
+### Step 2: Install Python Scripts
 
 ```bash
-# Navigate to src directory
-cd python-scripts/src
+# Requires Python 3.8+
+python3 --version
 
-# Install in editable mode
-pip install -e .
-# or on some systems:
-python3 -m pip install -e .
+cd /mnt/c/Users/JakeWilliams/Projects/compilers/src
+pip3 install -e .
 ```
 
-**Verify installation:**
+### Step 3: Configure FreeTDS
+
+Edit `/etc/freetds/freetds.conf`:
+```ini
+[sybase_dev]
+    host = 54.235.236.130
+    port = 5000
+    tds version = 5.0
+
+[mssql_dev]
+    host = 172.21.80.1
+    port = 49694
+    tds version = 7.4
+```
+
+### Step 4: Verify Installation
+
 ```bash
-runsql --help
-isqlline --help
-```
+tsql -C              # FreeTDS version
+freebcp -v           # BCP utility
+runsql --help        # Python scripts
 
-If commands not found, close and reopen your terminal.
+# Test database connection
+tsql -S sybase_dev -U username -P password
+```
 
 ---
 
@@ -170,14 +251,16 @@ If commands not found, close and reopen your terminal.
 
 ### Profile Setup
 
-Configuration is managed through `settings.json` in your project root (where you opened VS Code).
+Configuration is managed through `settings.json` in your project root.
 
-**Create your first profile:**
+**Create/edit profiles:**
 ```bash
+# Interactive wizard
 python setup_profile.py
 ```
 
-**Example `settings.json`:**
+### settings.json Structure
+
 ```json
 {
   "Profiles": {
@@ -353,9 +436,9 @@ eact GONZO              # Interactive actions compiler
 
 **bcp_data - Bulk Copy:**
 ```bash
-bcp_data out GONZO      # Export all data
-bcp_data in GONZO       # Import all data
-bcp_data in GONZO --truncate-tables  # Import with truncation
+bcp_data out GONZO                     # Export all data
+bcp_data in GONZO                      # Import all data
+bcp_data in GONZO --truncate-tables    # Import with truncation
 ```
 
 **runcreate - Run Build Scripts:**
@@ -374,7 +457,7 @@ runcreate CSS/Setup/create_pro GONZO    # Create all procedures
 - Navigate to file: `CSS/SQL_Sources/Basics/pro_users.sql`
 
 **2. Open integrated terminal**
-- Press `` Ctrl+` `` (backtick) or View → Terminal
+- Press `` Ctrl+` `` (backtick) or View -> Terminal
 
 **3. Compile the file**
 ```bash
@@ -534,119 +617,236 @@ Create `.vscode/keybindings.json`:
 1. Open any `.sql` file
 2. Press `Ctrl+Shift+C` to compile to GONZO
 3. Press `Ctrl+Shift+P` to preview
-4. Or: Press `Ctrl+Shift+P` → "Run Task" → Select task
+4. Or: Press `Ctrl+Shift+P` -> "Run Task" -> Select task
+
+---
+
+## FreeTDS Reference
+
+FreeTDS provides unified database connectivity for both Sybase ASE and MSSQL on **Windows and Linux**.
+
+### Config File Locations
+
+| Platform | Config Location |
+|----------|-----------------|
+| Windows (MSYS2) | `C:\msys64\ucrt64\etc\freetds.conf` or set `FREETDS` env var |
+| Linux/WSL | `/etc/freetds/freetds.conf` |
+
+### Test Connections with tsql
+
+```bash
+# Direct connection
+tsql -H <host> -p <port> -U <user> -P <password>
+
+# Using server name from freetds.conf
+tsql -S sybase_dev -U JAKE -P ibsibs2
+tsql -S mssql_dev -U sa -P innsoft247
+```
+
+### BCP (Bulk Copy)
+
+`freebcp` works identically on **Windows and Linux** (requires server defined in freetds.conf):
+
+```bash
+# Export data
+freebcp database..table out output.txt -S server_name -U user -P password -c
+
+# Import data
+freebcp database..table in input.txt -S server_name -U user -P password -c
+
+# Examples:
+freebcp sbnmaster..users out sybase_users.txt -S sybase_dev -U JAKE -P ibsibs2 -c
+freebcp sbnmaster..users out mssql_users.txt -S mssql_dev -U sa -P innsoft247 -c
+```
+
+**Note**: The Python scripts use `freebcp` on both platforms for true cross-platform parity.
+
+### Common freebcp Options
+
+| Flag | Meaning |
+|------|---------|
+| `-c` | Character mode (tab-delimited text) |
+| `-t,` | Use comma as delimiter |
+| `-r\n` | Row terminator (newline) |
+| `-b 1000` | Batch size for imports |
+
+---
+
+## WSL Management
+
+A WSL Ubuntu instance is configured for Linux testing of the Python compilers.
+
+### List Installed Distros
+
+```powershell
+wsl --list --verbose
+```
+
+### Find Distro Locations
+
+```powershell
+Get-ChildItem "HKCU:\Software\Microsoft\Windows\CurrentVersion\Lxss" | ForEach-Object { Get-ItemProperty $_.PSPath } | Select-Object DistributionName, BasePath
+```
+
+Default Microsoft Store location:
+```
+C:\Users\<username>\AppData\Local\Packages\CanonicalGroupLimited.Ubuntu_<id>\LocalState\
+```
+
+### Backup (Export)
+
+```powershell
+# Shutdown WSL first
+wsl --shutdown
+
+# Export to tar file
+wsl --export Ubuntu C:\Users\JakeWilliams\wsl_backup\ubuntu-backup.tar
+```
+
+### Restore (Import)
+
+```powershell
+# Create parent directory if needed
+mkdir C:\WSL
+
+# Import as new distro
+wsl --import <NewName> <InstallPath> <TarFilePath>
+
+# Example:
+wsl --import Ubuntu-Dev C:\WSL\Ubuntu-Dev "C:\Users\JakeWilliams\wsl_backup\test.tar"
+```
+
+### Run a Specific Distro
+
+```powershell
+wsl -d Ubuntu-Dev
+```
+
+### Set Default Distro
+
+```powershell
+wsl --set-default Ubuntu-Dev
+```
+
+### Remove a Distro
+
+```powershell
+wsl --unregister Ubuntu-Dev
+```
+
+**Warning**: This permanently deletes the distro and its files.
+
+### Change Default User
+
+From PowerShell:
+```powershell
+ubuntu config --default-user admin
+```
+
+Or edit `/etc/wsl.conf` inside WSL (as root):
+```bash
+[user]
+default=admin
+```
+
+Then restart:
+```powershell
+wsl --shutdown
+wsl
+```
+
+### Windows Firewall (for MSSQL from WSL)
+
+```powershell
+# Allow MSSQL port
+New-NetFirewallRule -DisplayName "MSSQL DEV01" -Direction Inbound -Protocol TCP -LocalPort 49694 -Action Allow
+```
+
+### Find Windows IP from WSL
+
+```bash
+cat /etc/resolv.conf | grep nameserver
+```
+
+### Test Port Connectivity
+
+```bash
+nc -zv <ip> <port>
+```
 
 ---
 
 ## Troubleshooting
 
-### Command Not Found
+### "runsql: command not found"
 
-**Symptom:** `runsql: command not found` or `bash: runsql: command not found`
-
-**Solutions:**
-1. **Close and reopen your terminal** (most common fix)
-2. Verify installation completed:
-   ```bash
-   pip show pyodbc
+1. Close and reopen terminal
+2. Check pip install succeeded: `pip show ibs_compilers`
+3. Add Python user scripts to PATH (Windows):
+   ```powershell
+   [Environment]::SetEnvironmentVariable(
+       "PATH",
+       [Environment]::GetEnvironmentVariable("PATH", "User") + ";C:\Users\<YourName>\AppData\Roaming\Python\Python314\Scripts",
+       "User"
+   )
    ```
-3. Check Python Scripts directory is in PATH:
-   - Windows: `C:\Users\<YourName>\AppData\Local\Programs\Python\Python3XX\Scripts`
-   - Linux: `/usr/local/bin` or `~/.local/bin`
+4. Restart PowerShell after PATH changes
 
-### No Module Named 'pyodbc'
+### "freebcp: command not found" or "tsql: command not found"
 
-**Symptom:** `ModuleNotFoundError: No module named 'pyodbc'`
+**Windows:**
+1. Verify MSYS2 FreeTDS is installed: Open UCRT64 terminal, run `pacman -Q mingw-w64-ucrt-x86_64-freetds`
+2. Verify PATH includes: `C:\msys64\ucrt64\bin`
+3. Restart terminal after PATH changes
 
-**Solution:**
+**Linux:**
 ```bash
-pip install pyodbc
-# or
-python -m pip install pyodbc
+sudo apt install freetds-bin
 ```
 
-### Data Source Name Not Found
+### "No module named 'pyodbc'"
 
-**Symptom:** `Data source name not found and no default driver specified`
+```bash
+pip install pyodbc
+# Or reinstall
+cd C:\Users\JakeWilliams\Projects\compilers\src
+pip install -e .
+```
 
-**Solutions:**
-1. **Check drivers are installed:**
-   ```bash
-   python test_connection.py --check-drivers
-   ```
+### "Data source name not found"
 
-2. **Windows - Check ODBC drivers:**
-   ```powershell
-   Get-OdbcDriver | Where-Object {$_.Name -like "*SQL*"}
-   ```
+Check FreeTDS configuration:
+```bash
+# Verify freetds.conf has your server defined
+tsql -C    # Shows config file location
+```
 
-3. **Linux - Check ODBC drivers:**
-   ```bash
-   odbcinst -q -d
-   ```
+### "Company option file missing: options.101"
 
-4. **Reinstall drivers** (see Installation section)
+1. Verify `IR` path in settings.json
+2. Check file exists: `ls C:\_innovative\_source\current.sql\CSS\Setup\options.101`
+3. Verify CMPY number is correct
 
-### Company Option File Missing
+### Connection timeout / "Unable to connect"
 
-**Symptom:** `Company option file missing: options.101`
+```bash
+# Test connectivity
+python test_connection.py --platform SYBASE --host <ip> --port <port> --username <user> --password <pass>
 
-**Solutions:**
-1. **Check IR path in settings.json:**
-   ```bash
-   cat settings.json
-   # Look for "IR" field
-   ```
+# Ping server
+ping <ip>
 
-2. **Verify option files exist:**
-   ```bash
-   ls C:\_innovative\_source\current.sql\CSS\Setup/options.101
-   # or
-   ls ~/innovative/current.sql/CSS/Setup/options.101
-   ```
+# Check port (Windows)
+Test-NetConnection -ComputerName <ip> -Port <port>
 
-3. **Verify CMPY number is correct** in settings.json
+# Check port (Linux)
+nc -zv <ip> <port>
+```
 
-### Connection Timeout
+### "Placeholder &dbtbl& not resolved"
 
-**Symptom:** Connection timeout or "Unable to connect"
-
-**Solutions:**
-1. **Test connection:**
-   ```bash
-   python test_connection.py --platform SYBASE --host 10.10.123.4 --port 5000 --username sa
-   ```
-
-2. **Check network:**
-   ```bash
-   ping 10.10.123.4
-   ```
-
-3. **Check port is open:**
-   ```bash
-   # Windows
-   Test-NetConnection -ComputerName 10.10.123.4 -Port 5000
-
-   # Linux
-   nc -zv 10.10.123.4 5000
-   ```
-
-4. **Check VPN** - May be required for remote servers
-
-5. **Verify credentials** - Test with SSMS (MSSQL) or Sybase Central
-
-### Placeholder Not Resolved
-
-**Symptom:** SQL contains `&dbtbl&` or other placeholders after compilation
-
-**Solutions:**
-1. **Check option files exist:**
-   ```bash
-   ls CSS/Setup/options.*
-   ls CSS/Setup/table_locations
-   ```
-
-2. **Clear cache files:**
+1. Check option files exist in `CSS\Setup\`
+2. Clear cache:
    ```bash
    # Windows
    del %TEMP%\options.*.tmp
@@ -654,19 +854,10 @@ python -m pip install pyodbc
    # Linux
    rm /tmp/options.*.tmp
    ```
-
-3. **Run in preview mode to diagnose:**
-   ```bash
-   runsql script.sql GONZO --preview
-   ```
-
-4. **Check for malformed option files** - Open in text editor
+3. Run with preview: `runsql script.sql GONZO --preview`
 
 ### Permission Denied
 
-**Symptom:** Permission denied when writing to database
-
-**Solutions:**
 1. Verify user has appropriate database permissions
 2. For stored procedures: Need CREATE PROCEDURE permission
 3. For tables: Need CREATE TABLE, ALTER TABLE permissions
@@ -674,64 +865,54 @@ python -m pip install pyodbc
 
 ### Debug Mode
 
-**Enable detailed logging:**
 ```bash
 # Windows
 set LOG_LEVEL=DEBUG
-runsql script.sql GONZO
+runsql <file> <profile>
 
 # Linux
 export LOG_LEVEL=DEBUG
-runsql script.sql GONZO
+runsql <file> <profile>
 ```
 
 ---
 
-## Cheat Sheet
+## Quick Reference
 
-### Installation (One-Time)
-```bash
-cd python-scripts/src
-python install.py
-python setup_profile.py
-```
-
-### Basic Commands
-```bash
-runsql <file> <profile>                    # Compile SQL
-runsql <file> <profile> --preview          # Preview only
-runsql <file> <profile> --changelog        # With audit trail
-runsql <file> <profile> -F 1 -L 10         # Sequences 1-10
-isqlline "SELECT @@version" <profile>      # Quick query
-eopt <profile>                             # Edit options
-eloc <profile>                             # Edit table locations
-bcp_data out <profile>                     # Export data
-bcp_data in <profile>                      # Import data
-```
-
-### Profile Management
-```bash
-python setup_profile.py                    # Create/edit profiles
-python test_connection.py --check-drivers  # Check drivers
-python test_connection.py --platform SYBASE --host <ip> --port 5000  # Test connection
-cat settings.json                          # View profiles (Linux)
-type settings.json                         # View profiles (Windows)
-```
-
-### Troubleshooting
-```bash
-runsql --help                              # Verify installation
-python test_connection.py --check-drivers  # Check drivers
-rm %TEMP%\options.*.tmp                    # Clear cache (Windows)
-rm /tmp/options.*.tmp                      # Clear cache (Linux)
-set LOG_LEVEL=DEBUG                        # Enable debug (Windows)
-export LOG_LEVEL=DEBUG                     # Enable debug (Linux)
-```
-
-### VS Code Shortcuts
-- `` Ctrl+` `` - Open terminal
-- `Ctrl+Shift+C` - Compile current file (after setup)
-- `Ctrl+Shift+P` - Preview current file (after setup)
+| Task | Command |
+|------|---------|
+| **Installation** | |
+| Run installer | `.\bootstrap.ps1` (Windows) |
+| Create profile | `python setup_profile.py` |
+| **Python Scripts** | |
+| Compile SQL | `runsql <file> <profile>` |
+| Preview SQL | `runsql <file> <profile> --preview` |
+| With audit trail | `runsql <file> <profile> --changelog` |
+| Sequences | `runsql <file> <profile> -F 1 -L 10` |
+| Quick query | `isqlline "SELECT ..." <profile>` |
+| Edit options | `eopt <profile>` |
+| Edit table locations | `eloc <profile>` |
+| BCP export | `bcp_data out <profile>` |
+| BCP import | `bcp_data in <profile>` |
+| **FreeTDS** | |
+| Check version | `tsql -C` |
+| Test connection | `tsql -S <server> -U <user> -P <pass>` |
+| BCP export | `freebcp db..table out file.txt -S server -U user -P pass -c` |
+| BCP import | `freebcp db..table in file.txt -S server -U user -P pass -c` |
+| **WSL** | |
+| Backup distro | `wsl --export Ubuntu backup.tar` |
+| Restore distro | `wsl --import Name Path backup.tar` |
+| List distros | `wsl --list --verbose` |
+| **Troubleshooting** | |
+| Verify installation | `runsql --help` |
+| Check FreeTDS config | `tsql -C` |
+| Clear cache (Windows) | `del %TEMP%\options.*.tmp` |
+| Clear cache (Linux) | `rm /tmp/options.*.tmp` |
+| Enable debug | `set LOG_LEVEL=DEBUG` (Win) / `export LOG_LEVEL=DEBUG` (Linux) |
+| **VS Code Shortcuts** | |
+| Open terminal | `` Ctrl+` `` |
+| Compile current file | `Ctrl+Shift+C` (after setup) |
+| Preview current file | `Ctrl+Shift+P` (after setup) |
 
 ---
 
@@ -801,6 +982,30 @@ python-scripts/
 - `inject_change_log()` - Prepend audit statements
 - Writes to ba_gen_chg_log table
 
+### The `ibs_compilers.egg-info/` Directory
+
+The `src/ibs_compilers.egg-info/` directory is **automatically generated by pip** when you install the package in editable/development mode (`pip install -e src/`).
+
+#### Contents
+
+| File | Purpose |
+|------|---------|
+| `PKG-INFO` | Package metadata (name, version, author, description) |
+| `entry_points.txt` | Console scripts defined in `pyproject.toml` (runsql, eopt, etc.) |
+| `requires.txt` | Package dependencies (pyodbc, etc.) |
+| `SOURCES.txt` | List of all source files in the package |
+| `top_level.txt` | Top-level Python modules/packages |
+| `dependency_links.txt` | Legacy field (usually empty) |
+
+#### Key Points
+
+- **Auto-generated** - Don't edit these files manually
+- **Recreated** on each `pip install -e`
+- **Can be deleted** - Will regenerate on next install
+- **Should be in `.gitignore`** - Not committed to version control
+
+This is how pip tracks that the package is installed and where to find the console script entry points (like `runsql`, `eopt`, `isqlline`).
+
 ### Testing
 
 ```bash
@@ -816,15 +1021,6 @@ python -c "from options import Options; opts = Options({'CMPY': 101, 'IR': '.', 
 
 ---
 
-## Additional Resources
-
-- **Complete Installation Guide**: `../GETTING_STARTED.md`
-- **Migration Plan**: `../migration_plan.md`
-- **Gap Analysis**: `../GAP_ANALYSIS.md`
-- **Project Overview**: `../../CLAUDE.md`
-
----
-
 ## Support
 
 **Having issues?**
@@ -833,7 +1029,6 @@ python -c "from options import Options; opts = Options({'CMPY': 101, 'IR': '.', 
 2. Read `GETTING_STARTED.md` for detailed setup instructions
 3. Run diagnostic: `python test_connection.py --check-drivers`
 4. Enable debug logging: `set LOG_LEVEL=DEBUG` (Windows) or `export LOG_LEVEL=DEBUG` (Linux)
-5. Contact: [team-email] or #ibs-compilers Slack channel
 
 ---
 
@@ -841,5 +1036,3 @@ python -c "from options import Options; opts = Options({'CMPY': 101, 'IR': '.', 
 **Python:** 3.8+
 **Platforms:** Windows, Linux, macOS
 **Databases:** Sybase ASE 15.5+, Microsoft SQL Server 2012+
-
-🚀 **Happy Compiling!**
