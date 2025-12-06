@@ -162,7 +162,7 @@ Notes:
                 'PASSWORD': password,
                 'PLATFORM': args.platform,
                 'DATABASE': database,
-                'PATH_APPEND': os.getcwd()
+                'SQL_SOURCE': os.getcwd()
             }
 
             host = args.host
@@ -196,9 +196,9 @@ Notes:
             config['DATABASE'] = database
             config['PROFILE_NAME'] = profile_name
 
-            # Expand PATH_APPEND - use current directory if not set
-            if not config.get('PATH_APPEND'):
-                config['PATH_APPEND'] = os.getcwd()
+            # Expand SQL_SOURCE - use current directory if not set
+            if not config.get('SQL_SOURCE'):
+                config['SQL_SOURCE'] = os.getcwd()
 
         else:
             # No profile and no direct connection params
@@ -235,8 +235,8 @@ Notes:
             return 1
 
         # Apply Options-based placeholder resolution (e.g., &users& -> sbnmaster..users)
-        # Only if we have a profile with the necessary config (CMPY, PROFILE_NAME)
-        if profile_name and config.get('CMPY'):
+        # Only if we have a profile with the necessary config (COMPANY, PROFILE_NAME)
+        if profile_name and config.get('COMPANY'):
             config['PROFILE_NAME'] = profile_name
             options = Options(config)
             if options.generate_option_files():
@@ -248,7 +248,7 @@ Notes:
                 options = None
         else:
             options = None
-            logging.debug("No profile or CMPY - skipping Options-based placeholder resolution")
+            logging.debug("No profile or COMPANY - skipping Options-based placeholder resolution")
 
         # Loop through the sequence
         current_seq = args.first_sequence

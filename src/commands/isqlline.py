@@ -85,7 +85,7 @@ Notes:
 
     # Advanced options
     parser.add_argument("--changelog", action="store_true",
-                        help="Enable changelog logging (requires profile with CMPY)")
+                        help="Enable changelog logging (requires profile with COMPANY)")
     parser.add_argument("--test-connection", action="store_true",
                         help="Test connection before executing SQL")
     parser.add_argument("--debug", action="store_true", help="Enable debug output")
@@ -206,8 +206,8 @@ Notes:
         )
 
         # Apply Options-based placeholder resolution (e.g., &users& -> sbnmaster..users)
-        # Only if we have a profile with the necessary config (CMPY, PROFILE_NAME)
-        if profile_name and config.get('CMPY'):
+        # Only if we have a profile with the necessary config (COMPANY, PROFILE_NAME)
+        if profile_name and config.get('COMPANY'):
             config['PROFILE_NAME'] = profile_name
             options = Options(config)
             if options.generate_option_files():

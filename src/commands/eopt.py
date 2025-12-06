@@ -66,9 +66,9 @@ def run_compile_options(config: dict):
     """
     logging.info("Starting import of options into database...")
     
-    opt_file_sql_type = Path(config.get('PATH_APPEND')) / 'setup' / 'css' / f"options.{config.get('PLATFORM').lower()}"
-    opt_file_company = Path(config.get('PATH_APPEND')) / 'setup' / 'css' / 'options.company'
-    opt_file_server = Path(config.get('PATH_APPEND')) / 'setup' / 'css' / f"options.{config.get('DSQUERY')}"
+    opt_file_sql_type = Path(config.get('SQL_SOURCE')) / 'setup' / 'css' / f"options.{config.get('PLATFORM').lower()}"
+    opt_file_company = Path(config.get('SQL_SOURCE')) / 'setup' / 'css' / 'options.company'
+    opt_file_server = Path(config.get('SQL_SOURCE')) / 'setup' / 'css' / f"options.{config.get('DSQUERY')}"
 
     tmp_opt_file_sql = load_options_file(opt_file_sql_type)
     tmp_opt_file_company = load_options_file(opt_file_company)
@@ -132,9 +132,9 @@ def main(args_list=None):
 
     logging.info(f"Starting eopt using profile for server '{config.get('DSQUERY')}'...")
 
-    opt_file_default = Path(config.get('PATH_APPEND')) / 'setup' / 'css' / 'options.def'
-    opt_file_company = Path(config.get('PATH_APPEND')) / 'setup' / 'css' / 'options.company'
-    opt_file_server = Path(config.get('PATH_APPEND')) / 'setup' / 'css' / f"options.{config.get('DSQUERY')}"
+    opt_file_default = Path(config.get('SQL_SOURCE')) / 'setup' / 'css' / 'options.def'
+    opt_file_company = Path(config.get('SQL_SOURCE')) / 'setup' / 'css' / 'options.company'
+    opt_file_server = Path(config.get('SQL_SOURCE')) / 'setup' / 'css' / f"options.{config.get('DSQUERY')}"
 
     if args.developer:
         logging.info(f"Developer mode: Launching editor for default options: {opt_file_default}")

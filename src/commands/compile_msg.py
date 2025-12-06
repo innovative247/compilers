@@ -63,8 +63,8 @@ def main(args_list=None):
     }
     
     # Paths for message files
-    main_dir = Path(config.get('PATH_APPEND')) / 'setup' / 'css'
-    bup_dir = Path(config.get('PATH_APPEND')) / 'bup' / f"{config.get('DSQUERY')}_css"
+    main_dir = Path(config.get('SQL_SOURCE')) / 'setup' / 'css'
+    bup_dir = Path(config.get('SQL_SOURCE')) / 'bup' / f"{config.get('DSQUERY')}_css"
     bup_dir.mkdir(parents=True, exist_ok=True) # Ensure backup directory exists
 
     # 1. Check for existence of source files

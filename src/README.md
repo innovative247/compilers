@@ -265,28 +265,26 @@ python setup_profile.py
 {
   "Profiles": {
     "GONZO": {
-      "CMPY": 101,
-      "IBSLANG": 1,
+      "COMPANY": 101,
+      "DEFAULT_LANGUAGE": 1,
       "IR": "C:\\_innovative\\_source\\current.sql",
-      "BCPJ": null,
       "PLATFORM": "SYBASE",
       "HOST": "10.10.123.4",
       "PORT": 5000,
       "USERNAME": "sa",
       "PASSWORD": "your_password",
-      "PATH_APPEND": "C:\\_innovative\\_source\\current.sql"
+      "SQL_SOURCE": "C:\\_innovative\\_source\\current.sql"
     },
     "TEST_MSSQL": {
-      "CMPY": 101,
-      "IBSLANG": 1,
+      "COMPANY": 101,
+      "DEFAULT_LANGUAGE": 1,
       "IR": "C:\\_innovative\\_source\\current.sql",
-      "BCPJ": null,
       "PLATFORM": "MSSQL",
       "HOST": "127.0.0.1",
       "PORT": 1433,
       "USERNAME": "sa",
       "PASSWORD": "your_password",
-      "PATH_APPEND": "C:\\_innovative\\_source\\current.sql"
+      "SQL_SOURCE": "C:\\_innovative\\_source\\current.sql"
     }
   }
 }
@@ -296,15 +294,15 @@ python setup_profile.py
 
 | Field | Description | Example |
 |-------|-------------|---------|
-| `CMPY` | Company number | `101` |
-| `IBSLANG` | Language ID | `1` |
+| `COMPANY` | Company number | `101` |
+| `DEFAULT_LANGUAGE` | Language ID | `1` |
 | `IR` | Installation Root - path to SQL source code | `C:\_innovative\_source\current.sql` |
 | `PLATFORM` | Database type | `SYBASE` or `MSSQL` |
 | `HOST` | Database server hostname or IP | `10.10.123.4` or `localhost` |
 | `PORT` | Database port | `5000` (Sybase) or `1433` (MSSQL) |
 | `USERNAME` | Database username | `sa` |
 | `PASSWORD` | Database password | `your_password` |
-| `PATH_APPEND` | Additional paths for file lookup | Same as IR typically |
+| `SQL_SOURCE` | Additional paths for file lookup | Same as IR typically |
 
 ### Multi-Version Support
 
@@ -792,6 +790,26 @@ nc -zv <ip> <port>
    ```
 4. Restart PowerShell after PATH changes
 
+### "ModuleNotFoundError: No module named 'commands'"
+
+**Symptom:** Running `runsql` or other commands shows:
+```
+ModuleNotFoundError: No module named 'commands'
+```
+
+**Cause:** The project was moved to a different directory. Editable installs (`pip install -e`) create a link to the original location, which breaks when the project moves.
+
+**Solution:** Re-run the editable install from the new location:
+```bash
+cd <new_project_path>\src
+pip install -e .
+```
+
+Or run the bootstrap installer again:
+```powershell
+.\bootstrap.ps1
+```
+
 ### "freebcp: command not found" or "tsql: command not found"
 
 **Windows:**
@@ -825,7 +843,7 @@ tsql -C    # Shows config file location
 
 1. Verify `IR` path in settings.json
 2. Check file exists: `ls C:\_innovative\_source\current.sql\CSS\Setup\options.101`
-3. Verify CMPY number is correct
+3. Verify COMPANY number is correct
 
 ### Connection timeout / "Unable to connect"
 
@@ -1016,7 +1034,7 @@ python test_connection.py --platform SYBASE --host localhost --port 5000
 runsql test_script.sql GONZO --preview
 
 # Test options resolution
-python -c "from options import Options; opts = Options({'CMPY': 101, 'IR': '.', 'PLATFORM': 'SYBASE', 'PROFILE_NAME': 'TEST'}); opts.generate_option_files()"
+python -c "from options import Options; opts = Options({'COMPANY': 101, 'IR': '.', 'PLATFORM': 'SYBASE', 'PROFILE_NAME': 'TEST'}); opts.generate_option_files()"
 ```
 
 ---

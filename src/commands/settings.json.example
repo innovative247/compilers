@@ -1,26 +1,24 @@
 {
   "Profiles": {
     "MSSQL_DEV01": {
-      "CMPY": 101,
-      "IBSLANG": 1,
-      "BCPJ": null,
+      "COMPANY": 101,
+      "DEFAULT_LANGUAGE": 1,
       "PLATFORM": "MSSQL",
       "HOST": "127.0.0.1",
       "PORT": 1433,
       "USERNAME": "sa",
       "PASSWORD": "1234",
-      "PATH_APPEND": "C:\\_innovative\\_source\\current.sql"
+      "SQL_SOURCE": "C:\\_innovative\\_source\\current.sql"
     },
     "GONZO": {
-      "CMPY": 101,
-      "IBSLANG": 1,
-      "BCPJ": null,
+      "COMPANY": 101,
+      "DEFAULT_LANGUAGE": 1,
       "PLATFORM": "SYBASE",
       "HOST": "54.235.236.130",
       "PORT": 5000,
       "USERNAME": "sbn0",
       "PASSWORD": "1234",
-      "PATH_APPEND": "C:\\_innovative\\_source\\current.sql"
+      "SQL_SOURCE": "C:\\_innovative\\_source\\current.sql"
     }
   }
 }

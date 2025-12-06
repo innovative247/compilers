@@ -37,7 +37,7 @@ class ChangeLog:
                 - COMMAND: Command being executed
                 - DATABASE: Database name
                 - SERVER: Server name
-                - CMPY: Company number
+                - COMPANY: Company number
                 - UPGRADE_NO: Upgrade reference number (optional)
         """
         self.config = config
@@ -74,7 +74,7 @@ class ChangeLog:
         command = self.config.get('COMMAND', '').replace("'", "''")  # SQL escape
         database = self.config.get('DATABASE', '')
         server = self.config.get('SERVER', '')
-        company = self.config.get('CMPY', '')
+        company = self.config.get('COMPANY', '')
         ref_no = self.config.get('UPGRADE_NO', '')
 
         # Construct command string

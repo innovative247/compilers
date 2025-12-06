@@ -19,7 +19,11 @@
       "Bash(\"C:\\Users\\JakeWilliams\\AppData\\Local\\Programs\\Python\\Python311\\Scripts\\isqlline.exe\" -e \"select top 10 s#us, userid from &users&\" sbnpro GONZO)",
       "Bash(py -m src.commands.runsql:*)",
       "Bash(del:*)",
-      "Bash(cmd /c del \"C:\\_innovative\\_source\\compilers\\src\\CHEAT_SHEET.md\")"
+      "Bash(cmd /c del \"C:\\_innovative\\_source\\compilers\\src\\CHEAT_SHEET.md\")",
+      "Bash(create_links:*)",
+      "Bash(ren:*)",
+      "Bash(cmd /c ren \"C:\\_innovative\\_source\\compilers\\src\\commands\\setup_profile.py\" set_profile.py)",
+      "Bash(set_profile:*)"
     ],
     "deny": [],
     "ask": []

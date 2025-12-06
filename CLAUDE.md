@@ -1,80 +1,17 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Claude Code when working with code in this repository.
 
-## Project Overview
+## Guidelines for Claude
 
-This project contains Python scripts that replace the C# IBS Compilers (`Ibs.Compilers`). The tools compile and deploy SQL objects to Sybase ASE and MSSQL databases.
-
-**Cross-Platform Requirement**: The compilers must work on **Windows, macOS, and Linux**. However, **Windows is the current focus** - macOS and Linux support will follow once Windows is complete and tested.
-
-All connection and compile settings are stored in `src/settings.json`.
-
-Do not read `CHEAT_SHEET.md` for context. This is only used by an end-user. Ignore this file unless explicitly told to update the file.
-
-
-### Development Environment (Windows - Current Focus)
-
-**Windows**: FreeTDS via MSYS2 (`tsql`, `freebcp` in `C:\msys64\ucrt64\bin`)
-
-The python scripts use `src/settings.json` as the single-source-of-truth, syncing to `freetds.conf` as needed.
-
-**Future platforms** (not yet implemented):
-- macOS: FreeTDS via Homebrew
-- Linux/WSL: FreeTDS via apt
-
-### Project Structure
-See `IMPLEMENTATION_ROADMAP.md`
-
-### C# Reference Implementation
-
-The original C# compilers are at: `C:\_innovative\_source\sbn-services\Ibs.Compilers`
-
-Key reference files:
-- `ibsCompilerCommon/options.cs` - Options class (soft-compiler logic)
-- `ibsCompilerCommon/common.cs` - Core utilities
-
-## Architecture
-
-### Python Compiler Tools (src/)
-
-| Command | Description |
-|---------|-------------|
-| `runsql` | Execute SQL scripts with placeholder resolution |
-| `runcreate` | Orchestrate master build scripts |
-| `eopt` | Edit and compile options |
-| `eloc` | Edit and compile table locations |
-| `eact` | Edit and compile actions |
-| `bcp_data` | Bulk copy data in/out |
-| `isqlline` | Execute single SQL commands |
-
-### Database Connectivity Stack
-
-**Unified across Windows, MAC, Linux:**
-- **FreeTDS**: TDS protocol library for Sybase ASE and MSSQL connections
-- **freebcp**: Bulk copy utility (replaces platform-specific `bcp` tools)
-- **tsql**: Connection testing utility
-- **pyodbc**: Python database driver (uses FreeTDS ODBC driver)
-
-Configuration: `freetds.conf` (same format on all platforms)
-
-### Connection Testing Tools
-- `python3 test_connection.py` - Python connection testing
-- `tsql`: Direct TDS connection testing (FreeTDS)
-- `isql`: ODBC connection testing (unixODBC)
-
-## Environment Setup (Windows)
-
-Run `.\install\bootstrap.ps1` which:
-1. Installs/verifies Python 3.8+
-2. Launches `.\install\installer.py`
-
-The installer handles MSYS2, FreeTDS, Python packages, and configuration. 
-
-
-## Key Configuration Paths (Windows)
-
-| File | Path |
-|------|------|
-| Python settings | `src/settings.json` |
-| FreeTDS config | `C:\msys64\ucrt64\etc\freetds.conf` |
+1. First think through the problem, read the codebase for relevant files, and write a plan to tasks/todo.md.
+2. The plan should have a list of todo items that you can check off as you complete them
+3. Before you begin working, check in with me and I will verify the plan.
+4. Then, begin working on the todo items, marking them as complete as you go.
+5. Please every step of the way just give me a high level explanation of what changes you made
+6. Make every task and code change you do as simple as possible. We want to avoid making any massive or complex changes. Every change should impact as little code as possible. Everything is about simplicity.
+7. Finally, add a review section to the todo.md file with a summary of the changes you made and any other relevant information.
+8. DO NOT BE LAZY. NEVER BE LAZY. IF THERE IS A BUG FIND THE ROOT CAUSE AND FIX IT. NO TEMPORARY FIXES. YOU ARE A SENIOR DEVELOPER. NEVER BE LAZY
+9. MAKE ALL FIXES AND CODE CHANGES AS SIMPLE AS HUMANLY POSSIBLE. THEY SHOULD ONLY IMPACT NECESSARY CODE RELEVANT TO THE TASK AND NOTHING ELSE. IT SHOULD IMPACT AS LITTLE CODE AS POSSIBLE. YOUR GOAL IS TO NOT INTRODUCE ANY BUGS. IT'S ALL ABOUT SIMPLICITY
+10. Do NOT create excessive documentation files. Only create files when absolutely necessary to move the project forward. Session summaries, completion announcements, checklists, and debug logs should NOT be saved as separate .md files.
+11. Do NOT create setup guides, completion summaries, F5 documentation, test checklists, fix summaries, or any other temporary documentation. If information is important for the lifetime of the project, update PROJECT-STATUS.md instead.

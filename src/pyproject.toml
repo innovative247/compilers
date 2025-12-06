@@ -11,6 +11,18 @@ dependencies = [
     "pyodbc"
 ]
 
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0"
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+
 [tool.setuptools]
 # Explicitly declare the package
 # ibs_common.py is now inside the commands package, not a separate module
@@ -23,11 +35,9 @@ eact = "commands.eact:main"
 eloc = "commands.eloc:main"
 eopt = "commands.eopt:main"
 bcp_data = "commands.bcp_data:main"
-check_tables = "commands.check_tables:main"
 compile_msg = "commands.compile_msg:main"
 compile_required_fields = "commands.compile_required_fields:main"
 i_run_upgrade = "commands.i_run_upgrade:main"
 runcreate = "commands.runcreate:main"
 tail = "commands.tail:main"
-test_connection = "commands.test_connection:main"
-test_options = "commands.test_options:main"
+set_profile = "commands.set_profile:main"

@@ -9,4 +9,4 @@ __pycache__/
 install/installer.log
 
 # User configuration (contains credentials)
-src/settings.json
+src/commands/settings.json

@@ -89,7 +89,7 @@ def main(args_list=None):
 
     logging.info(f"Starting eloc using profile for server '{config.get('DSQUERY')}'...")
 
-    locations_file = Path(config.get('PATH_APPEND')) / 'dat' / 'table_locations.dat'
+    locations_file = Path(config.get('SQL_SOURCE')) / 'dat' / 'table_locations.dat'
     
     if not locations_file.exists():
         logging.error(f"Table locations file missing: {locations_file}")

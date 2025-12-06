@@ -3,7 +3,6 @@ pyproject.toml
 commands/__init__.py
 commands/bcp_data.py
 commands/change_log.py
-commands/check_tables.py
 commands/compile_msg.py
 commands/compile_required_fields.py
 commands/eact.py
@@ -14,13 +13,15 @@ commands/ibs_common.py
 commands/isqlline.py
 commands/runcreate.py
 commands/runsql.py
-commands/setup_profile.py
+commands/set_profile.py
 commands/tail.py
-commands/test_connection.py
-commands/test_options.py
 ibs_compilers.egg-info/PKG-INFO
 ibs_compilers.egg-info/SOURCES.txt
 ibs_compilers.egg-info/dependency_links.txt
 ibs_compilers.egg-info/entry_points.txt
 ibs_compilers.egg-info/requires.txt
 ibs_compilers.egg-info/top_level.txt
+tests/test_convert_non_linked_paths.py
+tests/test_find_file.py
+tests/test_options_parsing.py
+tests/test_profile_management.py

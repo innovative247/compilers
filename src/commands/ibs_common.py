@@ -30,39 +30,13 @@ import getpass
 
 def find_settings_file() -> Path:
     """
-    Find settings.json in standard locations.
-
-    Searches in:
-    1. ../settings.json (relative to this script in src/commands/)
-    2. src/settings.json (from project root)
-    3. ./settings.json (current directory)
+    Find settings.json in the same directory as this script (src/commands/).
 
     Returns:
-        Path to settings.json if found
-
-    Raises:
-        FileNotFoundError: If settings.json cannot be found
+        Path to settings.json (src/commands/settings.json)
     """
     script_dir = Path(__file__).parent.resolve()
-
-    # Try ../settings.json (src/settings.json from src/commands/)
-    settings_path = script_dir.parent / "settings.json"
-    if settings_path.exists():
-        return settings_path
-
-    # Try finding from project root
-    project_root = script_dir.parent.parent
-    settings_path = project_root / "src" / "settings.json"
-    if settings_path.exists():
-        return settings_path
-
-    # Try current directory
-    settings_path = Path("settings.json")
-    if settings_path.exists():
-        return settings_path
-
-    # If not found, return the expected default location
-    return script_dir.parent / "settings.json"
+    return script_dir / "settings.json"
 
 def load_settings() -> dict:
     """
@@ -231,12 +205,11 @@ def prompt_for_new_profile(profile_name: str) -> dict:
     new_profile["PASSWORD"] = getpass.getpass("Enter database password: ")
 
     # Company and language
-    new_profile["CMPY"] = input("Enter Company ID (e.g., 101): ")
-    new_profile["IBSLANG"] = input("Enter Language ID (default: 1): ") or "1"
+    new_profile["COMPANY"] = input("Enter Company ID (e.g., 101): ")
+    new_profile["DEFAULT_LANGUAGE"] = input("Enter Language ID (default: 1): ") or "1"
 
     # Set sensible defaults for other fields
-    new_profile["BCPJ"] = None
-    new_profile["PATH_APPEND"] = None
+    new_profile["SQL_SOURCE"] = None
 
     logging.info(f"New profile '{profile_name}' created.")
     return new_profile
@@ -682,11 +655,11 @@ def get_config(args_list=None, profile_name=None, existing_config=None):
     # Merge with existing_config last (from calling scripts)
     final_config.update(config)
 
-    # Expand PATH_APPEND (installation root) - use current directory if not set or null
-    if 'PATH_APPEND' not in final_config or final_config['PATH_APPEND'] is None:
-        final_config['PATH_APPEND'] = os.getcwd()
+    # Expand SQL_SOURCE (installation root) - use current directory if not set or null
+    if 'SQL_SOURCE' not in final_config or final_config['SQL_SOURCE'] is None:
+        final_config['SQL_SOURCE'] = os.getcwd()
     else:
-        final_config['PATH_APPEND'] = str(Path(final_config['PATH_APPEND']).resolve())
+        final_config['SQL_SOURCE'] = str(Path(final_config['SQL_SOURCE']).resolve())
                 
     final_config['_remaining_args'] = remaining_args
     
@@ -894,56 +867,35 @@ def convert_non_linked_paths(filename):
         convert_non_linked_paths("css/ss/ba/pro_users.sql")
         -> "css/SQL_Sources/Basics/pro_users.sql"
     """
-    # Path mappings from C# NonLinkedFilename
-    # Format: (symbolic_path, real_path)
+    # Path mappings from C# NonLinkedFilename (common.cs)
+    # Format: (symbolic_path, real_path) - using forward slashes only
+    # Input is normalized to forward slashes before matching, then converted
+    # back to OS-appropriate separator (os.sep) on output.
+    # This ensures cross-platform compatibility (Windows, macOS, Linux).
     convert_paths = [
-        (r"/ss/api/",    "/SQL_Sources/Application_Program_Interface/"),
-        (r"/ss/api2/",   "/SQL_Sources/Application_Program_Interface_V2/"),
-        (r"/ss/api3/",   "/SQL_Sources/Application_Program_Interface_V3/"),
-        (r"/ss/at/",     "/SQL_Sources/Alarm_Treatment/"),
-        (r"/ss/ba/",     "/SQL_Sources/Basics/"),
-        (r"/ss/bl/",     "/SQL_Sources/Billing/"),
-        (r"/ss/ct/",     "/SQL_Sources/Create_Temp/"),
-        (r"/ss/cv/",     "/SQL_Sources/Conversions/"),
-        (r"/ss/da/",     "/SQL_Sources/da/"),
-        (r"/ss/dv/",     "/SQL_Sources/IBS_Development/"),
-        (r"/ss/fe/",     "/SQL_Sources/Front_End/"),
-        (r"/ss/in/",     "/SQL_Sources/Internal/"),
-        (r"/ss/ma/",     "/SQL_Sources/Co_Monitoring/"),
-        (r"/ss/mb/",     "/SQL_Sources/Mobile/"),
-        (r"/ss/mo/",     "/SQL_Sources/Monitoring/"),
-        (r"/ss/mobile/", "/SQL_Sources/Mobile/"),
-        (r"/ss/sdi/",    "/SQL_Sources/SDI_App/"),
-        (r"/ss/si/",     "/SQL_Sources/System_Init/"),
-        (r"/ss/sv/",     "/SQL_Sources/Service/"),
-        (r"/ss/tm/",     "/SQL_Sources/Telemarketing/"),
-        (r"/ss/test/",   "/SQL_Sources/Test/"),
-        (r"/ss/ub/",     "/SQL_Sources/US_Basics/"),
-        (r"/ibs/ss/",    "/IBS/SQL_Sources/"),
-        # Windows-style paths
-        (r"\\ss\\api\\",    "\\SQL_Sources\\Application_Program_Interface\\"),
-        (r"\\ss\\api2\\",   "\\SQL_Sources\\Application_Program_Interface_V2\\"),
-        (r"\\ss\\api3\\",   "\\SQL_Sources\\Application_Program_Interface_V3\\"),
-        (r"\\ss\\at\\",     "\\SQL_Sources\\Alarm_Treatment\\"),
-        (r"\\ss\\ba\\",     "\\SQL_Sources\\Basics\\"),
-        (r"\\ss\\bl\\",     "\\SQL_Sources\\Billing\\"),
-        (r"\\ss\\ct\\",     "\\SQL_Sources\\Create_Temp\\"),
-        (r"\\ss\\cv\\",     "\\SQL_Sources\\Conversions\\"),
-        (r"\\ss\\da\\",     "\\SQL_Sources\\da\\"),
-        (r"\\ss\\dv\\",     "\\SQL_Sources\\IBS_Development\\"),
-        (r"\\ss\\fe\\",     "\\SQL_Sources\\Front_End\\"),
-        (r"\\ss\\in\\",     "\\SQL_Sources\\Internal\\"),
-        (r"\\ss\\ma\\",     "\\SQL_Sources\\Co_Monitoring\\"),
-        (r"\\ss\\mb\\",     "\\SQL_Sources\\Mobile\\"),
-        (r"\\ss\\mo\\",     "\\SQL_Sources\\Monitoring\\"),
-        (r"\\ss\\mobile\\", "\\SQL_Sources\\Mobile\\"),
-        (r"\\ss\\sdi\\",    "\\SQL_Sources\\SDI_App\\"),
-        (r"\\ss\\si\\",     "\\SQL_Sources\\System_Init\\"),
-        (r"\\ss\\sv\\",     "\\SQL_Sources\\Service\\"),
-        (r"\\ss\\tm\\",     "\\SQL_Sources\\Telemarketing\\"),
-        (r"\\ss\\test\\",   "\\SQL_Sources\\Test\\"),
-        (r"\\ss\\ub\\",     "\\SQL_Sources\\US_Basics\\"),
-        (r"\\ibs\\ss\\",    "\\IBS\\SQL_Sources\\"),
+        ("/ss/api/",    "/SQL_Sources/Application_Program_Interface/"),
+        ("/ss/api2/",   "/SQL_Sources/Application_Program_Interface_V2/"),
+        ("/ss/api3/",   "/SQL_Sources/Application_Program_Interface_V3/"),
+        ("/ss/at/",     "/SQL_Sources/Alarm_Treatment/"),
+        ("/ss/ba/",     "/SQL_Sources/Basics/"),
+        ("/ss/bl/",     "/SQL_Sources/Billing/"),
+        ("/ss/ct/",     "/SQL_Sources/Create_Temp/"),
+        ("/ss/cv/",     "/SQL_Sources/Conversions/"),
+        ("/ss/da/",     "/SQL_Sources/da/"),
+        ("/ss/dv/",     "/SQL_Sources/IBS_Development/"),
+        ("/ss/fe/",     "/SQL_Sources/Front_End/"),
+        ("/ss/in/",     "/SQL_Sources/Internal/"),
+        ("/ss/ma/",     "/SQL_Sources/Co_Monitoring/"),
+        ("/ss/mb/",     "/SQL_Sources/Mobile/"),
+        ("/ss/mo/",     "/SQL_Sources/Monitoring/"),
+        ("/ss/mobile/", "/SQL_Sources/Mobile/"),
+        ("/ss/sdi/",    "/SQL_Sources/SDI_App/"),
+        ("/ss/si/",     "/SQL_Sources/System_Init/"),
+        ("/ss/sv/",     "/SQL_Sources/Service/"),
+        ("/ss/tm/",     "/SQL_Sources/Telemarketing/"),
+        ("/ss/test/",   "/SQL_Sources/Test/"),
+        ("/ss/ub/",     "/SQL_Sources/US_Basics/"),
+        ("/ibs/ss/",    "/IBS/SQL_Sources/"),
     ]
 
     # Check if filename contains css or ibs (case-insensitive)
@@ -952,22 +904,13 @@ def convert_non_linked_paths(filename):
 
     # Normalize to forward slashes for consistent matching
     converted = filename.replace('\\', '/')
-    original_length = len(converted)
 
-    # Try each path conversion
+    # Try each path conversion (case-insensitive)
     for symbolic, real in convert_paths:
-        # Normalize symbolic path to forward slashes
-        symbolic_normalized = symbolic.replace('\\', '/')
-        real_normalized = real.replace('\\', '/')
-
-        # Case-insensitive replacement
-        if symbolic_normalized.lower() in converted.lower():
-            # Find the position (case-insensitive)
-            idx = converted.lower().find(symbolic_normalized.lower())
-            if idx != -1:
-                # Replace while preserving the rest of the string
-                converted = converted[:idx] + real_normalized + converted[idx + len(symbolic_normalized):]
-                break
+        idx = converted.lower().find(symbolic.lower())
+        if idx != -1:
+            converted = converted[:idx] + real + converted[idx + len(symbolic):]
+            break
 
     # Convert back to OS-appropriate path separator
     if os.sep == '\\':
@@ -980,8 +923,8 @@ def create_symbolic_links(config: dict) -> bool:
     """
     Creates symbolic links for the compiler directory structure.
 
-    Only creates links if PATH_APPEND is defined and valid in the config.
-    Links are created relative to the PATH_APPEND directory.
+    Only creates links if SQL_SOURCE is defined and valid in the config.
+    Links are created relative to the SQL_SOURCE directory.
 
     Directory structure created:
         css/ss      -> SQL_Sources
@@ -1000,21 +943,21 @@ def create_symbolic_links(config: dict) -> bool:
         ibs/ss      -> SQL_Sources
 
     Args:
-        config: Configuration dictionary containing PATH_APPEND
+        config: Configuration dictionary containing SQL_SOURCE
 
     Returns:
         True if all links created successfully (or already exist), False otherwise
     """
-    path_append = config.get('PATH_APPEND')
+    path_append = config.get('SQL_SOURCE')
 
     if not path_append:
-        logging.warning("PATH_APPEND not defined in config - skipping symbolic link creation")
+        logging.warning("SQL_SOURCE not defined in config - skipping symbolic link creation")
         return False
 
     base_path = Path(path_append)
 
     if not base_path.exists():
-        logging.warning(f"PATH_APPEND directory does not exist: {base_path} - skipping symbolic link creation")
+        logging.warning(f"SQL_SOURCE directory does not exist: {base_path} - skipping symbolic link creation")
         return False
 
     # Define symbolic links: (link_path, target_path) relative to base_path
@@ -1103,17 +1046,17 @@ def create_symbolic_links(config: dict) -> bool:
 
 def find_file(filename, config):
     """
-    Searches for a file in specified paths (e.g., PATH_APPEND path, current dir).
+    Searches for a file in specified paths (e.g., SQL_SOURCE path, current dir).
 
     Enhanced to support:
     - Non-linked path conversion (\\ss\\ba\\ -> \\SQL_Sources\\Basics\\)
     - Automatic .sql extension appending
     - Wildcard support (basic)
-    - Multiple search locations (current dir, PATH_APPEND path)
+    - Multiple search locations (current dir, SQL_SOURCE path)
 
     Args:
         filename: File path to search for
-        config: Configuration dictionary containing PATH_APPEND path
+        config: Configuration dictionary containing SQL_SOURCE path
 
     Returns:
         Absolute path to file if found, None otherwise
@@ -1137,16 +1080,16 @@ def find_file(filename, config):
         if (Path.cwd() / sql_file).exists():
             return str((Path.cwd() / sql_file).resolve())
 
-    # Try in PATH_APPEND path
-    path_append_str = config.get('PATH_APPEND', '')
+    # Try in SQL_SOURCE path
+    path_append_str = config.get('SQL_SOURCE', '')
     if path_append_str:
         path_append = Path(path_append_str)
 
-        # Try direct path in PATH_APPEND
+        # Try direct path in SQL_SOURCE
         if (path_append / file_path).exists():
             return str((path_append / file_path).resolve())
 
-        # Try with .sql extension in PATH_APPEND
+        # Try with .sql extension in SQL_SOURCE
         if not filename.endswith('.sql'):
             sql_file = Path(filename + '.sql')
             if (path_append / sql_file).exists():
@@ -1221,7 +1164,7 @@ class Options:
     3. options.{company}.{server}       (e.g., options.101.GONZO) - OPTIONAL
     4. table_locations                  (table location mappings) - REQUIRED
 
-    All files are found in {PATH_APPEND}\\CSS\\Setup.
+    All files are found in {SQL_SOURCE}\\CSS\\Setup.
     Later files override earlier files (opposite of previous implementation).
     """
 
@@ -1230,7 +1173,7 @@ class Options:
         Initialize Options with configuration.
 
         Args:
-            config: Configuration dict with CMPY, PLATFORM, PROFILE_NAME, PATH_APPEND, etc.
+            config: Configuration dict with COMPANY, PLATFORM, PROFILE_NAME, SQL_SOURCE, etc.
         """
         self.config = config
         self._options = {}  # Dictionary of placeholder -> value
@@ -1483,7 +1426,7 @@ class Options:
         Returns:
             Path to cache file in temp directory
         """
-        company = self.config.get('CMPY', 'default')
+        company = self.config.get('COMPANY', 'default')
         server = self.config.get('PROFILE_NAME', 'default')
         platform = self.config.get('PLATFORM', 'SYBASE')
 
@@ -1574,7 +1517,7 @@ class Options:
         3. options.{company}.{server}   (e.g., options.101.GONZO) - OPTIONAL
         4. table_locations              (table location mappings) - REQUIRED
 
-        All files must be in {PATH_APPEND}\\CSS\\Setup.
+        All files must be in {SQL_SOURCE}\\CSS\\Setup.
 
         Args:
             force_rebuild: If True, ignore cache and rebuild
@@ -1591,14 +1534,14 @@ class Options:
         # Mark that we're rebuilding
         self._was_rebuilt = True
 
-        # Get base path for option files: {PATH_APPEND}\CSS\Setup
-        path_append = self.config.get('PATH_APPEND', os.getcwd())
+        # Get base path for option files: {SQL_SOURCE}\CSS\Setup
+        path_append = self.config.get('SQL_SOURCE', os.getcwd())
         base_path = os.path.join(path_append, 'CSS', 'Setup')
 
         # Normalize path separators for Windows
         base_path = os.path.normpath(base_path)
 
-        company = str(self.config.get('CMPY', ''))
+        company = str(self.config.get('COMPANY', ''))
         server = str(self.config.get('PROFILE_NAME', ''))
 
         # Helper to print search context on error
@@ -1624,8 +1567,8 @@ class Options:
 
         # 2. options.{company} - REQUIRED
         if not company:
-            logging.error("Company (CMPY) not specified in configuration")
-            print("\nERROR: Company (CMPY) not specified in profile configuration.")
+            logging.error("Company (COMPANY) not specified in configuration")
+            print("\nERROR: Company (COMPANY) not specified in profile configuration.")
             print_search_context()
             return False
 
@@ -1833,7 +1776,7 @@ def build_sql_script(sql_command: str, config: dict = None,
 
     # Add changelog SQL if enabled
     if changelog_enabled and config:
-        company = config.get('CMPY', '')
+        company = config.get('COMPANY', '')
         current_user = os.environ.get('USERNAME', os.environ.get('USER', 'unknown'))
 
         changelog_lines = generate_changelog_sql(

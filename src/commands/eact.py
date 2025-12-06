@@ -105,8 +105,8 @@ def main(args_list=None):
 
     logging.info(f"Starting eact using profile for server '{config.get('DSQUERY')}'...")
 
-    actions_header_file = Path(config.get('PATH_APPEND')) / 'dat' / 'actions.dat'
-    actions_detail_file = Path(config.get('PATH_APPEND')) / 'dat' / 'actions_dtl.dat'
+    actions_header_file = Path(config.get('SQL_SOURCE')) / 'dat' / 'actions.dat'
+    actions_detail_file = Path(config.get('SQL_SOURCE')) / 'dat' / 'actions_dtl.dat'
     
     if not actions_header_file.exists():
         logging.error(f"Action header file missing: {actions_header_file}")

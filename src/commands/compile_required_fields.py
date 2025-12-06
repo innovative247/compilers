@@ -53,8 +53,8 @@ def main(args_list=None):
         sys.exit(1)
 
     # Paths for required field files
-    main_dir = Path(config.get('PATH_APPEND')) / 'setup' / 'css'
-    bup_dir = Path(config.get('PATH_APPEND')) / 'bup' / f"{config.get('DSQUERY')}_css"
+    main_dir = Path(config.get('SQL_SOURCE')) / 'setup' / 'css'
+    bup_dir = Path(config.get('SQL_SOURCE')) / 'bup' / f"{config.get('DSQUERY')}_css"
     bup_dir.mkdir(parents=True, exist_ok=True) # Ensure backup directory exists
 
     required_files_map = {
