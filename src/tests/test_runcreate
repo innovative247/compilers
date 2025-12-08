@@ -1,0 +1,9 @@
+# 07.93.26887 #&if_ivr&runsql $1 $ir>css>ss>ba>pro_ivr_activity_log.sql &dbpro& &sv&
+
+
+runsql $1 $ir>css>ss>ba>pro_ba_agent_activity &dbpro& &sv&
+runsql $1 $ir>css>ss>ba>u_get_user_info &dbpro& &sv&
+runsql $1 $ir>css>ss>ba>u_get_user_skill_combo &dbpro& &sv&
+runsql $1 $ir>css>ss>ba>u_validate_email &dbpro& &sv&
+
+runcreate -o $1 $ir>css>ss>ba>create_pro &sv&

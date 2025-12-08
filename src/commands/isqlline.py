@@ -4,14 +4,14 @@ isqlline.py: Execute a single SQL command against a database.
 
 This script replaces the C# isqlline project, providing a way to execute
 ad-hoc SQL commands from the command line. It matches the C# implementation
-by using native SQL tools (tsql/sqlcmd) via subprocess instead of pyodbc.
+by using native SQL tools (tsql) via subprocess.
 
 Key features:
 - Placeholder replacement (&OPTIONS&, &DBPRO&, etc.)
-- Changelog support (optional SQL injection before user command)
-- Temporary script file generation and cleanup
-- Native compiler execution (tsql for Sybase, sqlcmd for MSSQL)
+- Native compiler execution (tsql for both Sybase and MSSQL)
 - Output file support
+
+Note: isqlline does NOT log to changelog. Use runsql for audit-logged operations.
 
 Usage:
     isqlline 'select @@version' sbnmaster SBNA
@@ -54,9 +54,9 @@ Examples:
   isqlline 'select @@version' -D sbnmaster -H 10.0.0.1 -p 5000 -U sa --platform MSSQL
 
 Notes:
-  - Uses native SQL compilers (tsql for Sybase, sqlcmd for MSSQL)
+  - Uses FreeTDS tsql for both Sybase and MSSQL
   - Supports placeholder replacement (&OPTIONS&, &DBPRO&, etc.) when using profiles
-  - Can optionally enable changelog logging with --changelog flag
+  - Does NOT log to changelog (use runsql for audit-logged operations)
   - Use -S to specify profile (prevents last positional arg from being treated as profile)
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter
@@ -84,8 +84,6 @@ Notes:
     parser.add_argument("-e", "--echo", action="store_true", help="Echo input commands")
 
     # Advanced options
-    parser.add_argument("--changelog", action="store_true",
-                        help="Enable changelog logging (requires profile with COMPANY)")
     parser.add_argument("--test-connection", action="store_true",
                         help="Test connection before executing SQL")
     parser.add_argument("--debug", action="store_true", help="Enable debug output")
@@ -196,11 +194,11 @@ Notes:
                 return 1
             print(f"Connection test successful: {msg}", file=sys.stderr)
 
-        # Build SQL script with changelog and placeholder replacement
+        # Build SQL script with placeholder replacement (no changelog for isqlline)
         sql_script = build_sql_script(
             args.sql_command,
             config=config,
-            changelog_enabled=args.changelog,
+            changelog_enabled=False,
             database=database,
             host=host
         )

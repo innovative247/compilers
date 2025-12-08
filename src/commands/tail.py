@@ -1,7 +1,10 @@
 """
-tail.py: Python script to continuously monitor and display new lines appended to a file.
+tail.py: Display the last N lines of a file, optionally following for new content.
 
-This script replaces the C# tail project, mimicking the Unix 'tail -f' command.
+Mimics Unix 'tail' command:
+  tail <file>        - Show last 10 lines
+  tail -n 20 <file>  - Show last 20 lines
+  tail -f <file>     - Follow file for new content
 """
 
 import argparse
@@ -9,65 +12,82 @@ import time
 import os
 import sys
 from pathlib import Path
+from collections import deque
 
-# Import shared functions for logging setup (relative import within commands package)
-from .ibs_common import setup_logging, get_config
-import logging
+
+def tail_lines(file_path: Path, num_lines: int) -> list:
+    """
+    Read and return the last N lines of a file.
+    Uses a deque for memory-efficient reading of large files.
+    """
+    try:
+        with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
+            return list(deque(f, maxlen=num_lines))
+    except FileNotFoundError:
+        print(f"tail: cannot open '{file_path}' for reading: No such file", file=sys.stderr)
+        sys.exit(1)
+    except PermissionError:
+        print(f"tail: cannot open '{file_path}' for reading: Permission denied", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"tail: error reading '{file_path}': {e}", file=sys.stderr)
+        sys.exit(1)
+
 
 def follow(file_path: Path):
     """
     Generator function that yields new lines from a file as it grows.
     """
-    try:
-        f = open(file_path, 'r')
+    with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
         # Seek to the end of the file initially
         f.seek(0, os.SEEK_END)
-        
+
         while True:
             line = f.readline()
             if not line:
-                time.sleep(0.1) # Sleep briefly if no new data
+                time.sleep(0.1)  # Sleep briefly if no new data
                 continue
             yield line
-    except FileNotFoundError:
-        logging.error(f"Error: File not found at {file_path}")
-        sys.exit(1)
-    except Exception as e:
-        logging.error(f"An error occurred while trying to follow file {file_path}: {e}")
-        sys.exit(1)
+
 
 def main(args_list=None):
     if args_list is None:
         args_list = sys.argv[1:]
 
-    parser = argparse.ArgumentParser(description="Continuously display new lines appended to a file (like 'tail -f').")
-    parser.add_argument("file", help="The path to the file to tail.")
-    parser.add_argument("profile_or_server", nargs='?', help="Configuration profile or server name (optional).")
-    parser.add_argument("-O", "--outfile", help="Output file for logging (overrides default logging).")
-    
+    parser = argparse.ArgumentParser(
+        description="Display the last part of a file.",
+        usage="tail [-n NUM] [-f] <file>"
+    )
+    parser.add_argument("file", help="The file to display.")
+    parser.add_argument("-n", "--lines", type=int, default=10,
+                        help="Number of lines to display (default: 10).")
+    parser.add_argument("-f", "--follow", action="store_true",
+                        help="Output appended data as the file grows.")
+
     args = parser.parse_args(args_list)
 
-    # Minimal config to setup logging, tail doesn't use many config options
-    config = get_config(args_list=args_list) # Pass args_list for profile/server determination
-    setup_logging(config)
+    file_path = Path(args.file)
+    if not file_path.is_absolute():
+        file_path = Path(os.getcwd()) / file_path
 
-    file_to_tail = Path(args.file)
-    if not file_to_tail.is_absolute():
-        file_to_tail = Path(os.getcwd()) / file_to_tail
-        
-    logging.info(f"Tailing file: {file_to_tail} (Press Ctrl+C to exit)")
-    
-    try:
-        for line in follow(file_to_tail):
-            sys.stdout.write(line)
-            sys.stdout.flush()
-            
-    except KeyboardInterrupt:
-        logging.info("\nExiting tail utility.")
-        sys.exit(0)
-    except Exception as e:
-        logging.error(f"An unexpected error occurred: {e}")
-        sys.exit(1)
+    # Show last N lines
+    lines = tail_lines(file_path, args.lines)
+    for line in lines:
+        sys.stdout.write(line)
+    sys.stdout.flush()
+
+    # If follow mode, continue watching for new content
+    if args.follow:
+        try:
+            for line in follow(file_path):
+                sys.stdout.write(line)
+                sys.stdout.flush()
+        except KeyboardInterrupt:
+            sys.exit(0)
+        except Exception as e:
+            print(f"tail: error following '{file_path}': {e}", file=sys.stderr)
+            sys.exit(1)
+
 
 if __name__ == "__main__":
     main()

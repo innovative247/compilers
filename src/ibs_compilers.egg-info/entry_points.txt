@@ -1,10 +1,9 @@
 [console_scripts]
-bcp_data = commands.bcp_data:main
 compile_msg = commands.compile_msg:main
-compile_required_fields = commands.compile_required_fields:main
 eact = commands.eact:main
 eloc = commands.eloc:main
 eopt = commands.eopt:main
+ereq = commands.ereq:main
 i_run_upgrade = commands.i_run_upgrade:main
 isqlline = commands.isqlline:main
 runcreate = commands.runcreate:main

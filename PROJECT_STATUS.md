@@ -135,6 +135,32 @@ Input:  css/ss/ba/pro_users.sql   (Unix)
 Output: css/SQL_Sources/Basics/pro_users.sql  (normalized)
 ```
 
+### Options System (Soft-Compiler)
+
+The options system resolves `&placeholder&` values in SQL files. There are four types:
+
+| Prefix | Type | Resolution | Example |
+|--------|------|------------|---------|
+| `v:` | Static value | Compiled into SQL | `v:af <<2>>` → `&af&` = `2` |
+| `V:` | Dynamic value | Queried from `&options&` table at runtime | `V:attpath <<>>` |
+| `c:` | Static on/off | Compiled as `&if_/&endif_` comment blocks | `c:adspl +` → `&if_adspl&` = `` |
+| `C:` | Dynamic on/off | Queried from `&options&.act_flg` at runtime | `C:gclog12 -` |
+
+**Static options** (`v:`, `c:`) are resolved at compile time and baked into the SQL.
+
+**Dynamic options** (`V:`, `C:`) are NOT resolved by the compiler. The SQL contains runtime checks like:
+```sql
+if exists (select * from &options& where id = 'gclog12' and act_flg = '+')
+```
+
+**Option File Hierarchy** (later files override earlier):
+1. `options.def` - Default values (REQUIRED)
+2. `options.{company}` - Company-specific (REQUIRED)
+3. `options.{company}.{profile}` - Profile-specific (OPTIONAL)
+4. `table_locations` - Table location mappings (REQUIRED)
+
+All files are in `{SQL_SOURCE}/CSS/Setup/`.
+
 ---
 
 ## Key File Locations
@@ -147,7 +173,6 @@ Output: css/SQL_Sources/Basics/pro_users.sql  (normalized)
 | `src/commands/set_profile.py` | Profile wizard with connection/options testing |
 | `src/commands/isqlline.py` | Execute single SQL command |
 | `src/commands/runsql.py` | Execute SQL scripts with sequences |
-| `src/commands/change_log.py` | Audit trail module |
 | `src/commands/bcp_data.py` | Bulk copy data in/out |
 | `src/commands/tail.py` | Tail log files |
 | `src/commands/eloc.py` | Edit and compile table locations |
@@ -208,39 +233,34 @@ Tasks are ordered by implementation priority.
 | Done | `-F`/`-L` sequence flags |
 | Done | `-e` echo, `-O` output file flags |
 
-### Phase 5: change_log
-| Status | Task |
-|--------|------|
-| Pending | `change_log.py` module |
-| Pending | Audit trail to `ba_gen_chg_log` table |
-| Pending | `--changelog` flag in runsql |
-| Pending | `--changelog` flag in isqlline |
-
-### Phase 6: bcp_data
-| Status | Task |
-|--------|------|
-| Done | `execute_bcp()` in `ibs_common.py` using freebcp |
-| Done | `bcp_data.py` - Bulk copy data in/out |
-| Pending | `--drop-indexes` flag |
-| Pending | `--drop-triggers` flag |
-| Pending | CRLF/LF normalization (`BuildTempFileForBcp`) |
-
-### Phase 7: tail
+### Phase 5: tail
 | Status | Task |
 |--------|------|
 | Done | `tail.py` - Tail log files |
 
+### Phase 6: change_log
+| Status | Task |
+|--------|------|
+| Done | `is_changelog_enabled()` in `ibs_common.py` |
+| Done | `insert_changelog_entry()` in `ibs_common.py` |
+| Done | `generate_changelog_sql()` in `ibs_common.py` |
+| Done | `test_changelog()` in `set_profile.py` |
+| Done | runsql: changelog ON by default, `--no-changelog` to disable |
+| Done | isqlline: never logs to changelog |
+| Note | runcreate will pass `--no-changelog` to runsql |
+| Note | i_run_upgrade uses runsql default (changelog ON) |
+
 ### Phase 8: table_locations / eloc
 | Status | Task |
 |--------|------|
-| Done | `eloc.py` - Edit table locations |
-| Pending | Compile table locations into database |
+| Done | `eloc.py` - Edit and compile table locations |
+| Done | `compile_table_locations()` - Insert via SQL INSERT (BCP has 255 char limit) |
 
 ### Phase 9: actions / eact
 | Status | Task |
 |--------|------|
 | Done | `eact.py` - Edit actions |
-| Pending | `compile_actions()` - Fixed-width parsing |
+| Done | `compile_actions()` - Fixed-width parsing and SQL INSERT |
 
 ### Phase 10: options / eopt
 | Status | Task |
@@ -249,27 +269,31 @@ Tasks are ordered by implementation priority.
 | Done | `_parse_v_option()`, `_parse_c_option()`, `_parse_table_option()` |
 | Done | `generate_option_files()` with caching (24-hour expiry) |
 | Done | `replace_options()` with @sequence@ support |
-| Done | `eopt.py` - Edit options |
-| Pending | `GenerateImportOptionFile()` - `:>` format conversion |
+| Done | `eopt.py` - Edit options (add, edit, merge modes) |
+| Done | `compile_options()` - Insert options into database via SQL INSERT |
+| Done | `compile_table_locations()` - Insert table_locations via SQL INSERT |
+| Done | Interactive option creation wizard with MOD # tracking |
+| Done | Merge options from options.def into company/profile files |
 
 ### Phase 11: messages / compile_msg
 | Status | Task |
 |--------|------|
-| Done | `compile_msg.py` - Compile messages |
-| Pending | CRLF/LF normalization |
+| Done | `compile_msg.py` - Compile messages (import mode) |
+| Done | `export_messages()` - Export messages from database to flat files |
+| Note | CRLF/LF normalization - may need testing |
 
-### Phase 12: required_fields / compile_required_fields
+### Phase 12: required_fields / ereq
 | Status | Task |
 |--------|------|
-| Done | `compile_required_fields.py` - Basic structure |
-| Pending | Full implementation |
+| Done | `ereq.py` - Edit and compile required fields via SQL INSERT |
 
 ### Phase 13: upgrade / i_run_upgrade
 | Status | Task |
 |--------|------|
-| Done | `i_run_upgrade.py` - Run upgrade scripts |
-| Pending | `GetSeq()` extraction |
-| Pending | `--changelog` flag |
+| Done | `i_run_upgrade.py` - Run upgrade scripts (thin wrapper around runsql) |
+| Done | Changelog - inherits runsql default behavior (ON) |
+| Done | `-e` echo, `-O` output file flags |
+| Note | GetSeq() extraction handled by runsql `-F`/`-L` flags |
 
 ### Phase 14: runcreate
 - runcreate is an orchestrator that reads create scripts and calls runsql/others
@@ -278,15 +302,18 @@ Tasks are ordered by implementation priority.
 
 | Status | Task |
 |--------|------|
-| Done | `runcreate.py` - Basic orchestrator |
-| Pending | Line parser (extract command type, clean line) |
-| Pending | `$ir>path` conversion to `{SQL_SOURCE}\path` |
-| Pending | Leading `&option&` resolution (conditional lines) |
-| Pending | `-F`/`-L` sequence flag extraction |
-| Pending | `#NT` Windows-specific line handling |
-| Pending | Multiple `-D` database handling |
-| Pending | Recursive runcreate calls |
-| Pending | Output file append mode |
+| Done | `runcreate.py` - Full rewrite matching C# functionality |
+| Done | Line parser (extract command type, clean line) |
+| Done | `$ir>path` conversion to `{SQL_SOURCE}/path` |
+| Done | Leading `&option&` resolution (conditional lines) |
+| Done | `-F`/`-L` sequence flag extraction |
+| Done | `#NT` Windows-specific line handling |
+| Done | Multiple `-D` database handling |
+| Done | Positional `&db*&` placeholder handling |
+| Done | Recursive runcreate calls |
+| Done | Ctrl-C signal handler (shared in ibs_common.py) |
+| Done | Output file append mode (`-O` flag) |
+| Done | `-e` echo flag (propagates to all child calls) |
 
 ---
 
@@ -365,3 +392,150 @@ When completing a feature, add corresponding tests:
 - Uses Python logging module instead of C# approach
 - Editor detection uses $EDITOR, code, notepad, or vim
 - Assumes tsql/freebcp in PATH (MSYS2 on Windows)
+
+---
+
+## Testing Checklist
+
+All phases are complete. Use this checklist for manual testing.
+
+### Prerequisites
+1. Ensure MSYS2 is installed with FreeTDS (`tsql`, `freebcp` in PATH)
+2. Have a working Sybase ASE or MSSQL server available
+3. Have a valid `SQL_SOURCE` directory with options files
+
+### Test 1: Profile Setup (`set_profile`)
+```bash
+set_profile
+```
+- [ ] Create a new profile (e.g., `TEST`)
+- [ ] Enter connection details (HOST, PORT, USERNAME, PASSWORD)
+- [ ] Test connection succeeds
+- [ ] Test options loading succeeds
+- [ ] Profile saved to `settings.json`
+
+### Test 2: Single SQL Command (`isqlline`)
+```bash
+# Basic query
+isqlline "select @@version" master TEST
+
+# With output file
+isqlline "select @@version" master TEST -O test_output.txt
+
+# With echo
+isqlline "select @@version" master TEST -e
+
+# Both flags
+isqlline "select @@version" master TEST -O test_output.txt -e
+```
+- [ ] Query executes and returns results
+- [ ] `-O` creates output file with results
+- [ ] `-e` shows SQL before execution
+- [ ] Combined flags work correctly
+
+### Test 3: SQL Script Execution (`runsql`)
+```bash
+# Basic script
+runsql script.sql sbnmaster TEST
+
+# With output file
+runsql script.sql sbnmaster TEST -O runsql_output.txt
+
+# With echo
+runsql script.sql sbnmaster TEST -e
+
+# With sequences
+runsql script.sql sbnmaster TEST -F1 -L3
+
+# Preview mode (no execution)
+runsql script.sql sbnmaster TEST --preview
+```
+- [ ] Script executes with placeholder resolution
+- [ ] `-O` creates output file
+- [ ] `-e` echoes resolved SQL
+- [ ] `-F`/`-L` loops through sequences
+- [ ] `--preview` shows SQL without executing
+
+### Test 4: Upgrade Scripts (`i_run_upgrade`)
+```bash
+# Script without upgrade number
+i_run_upgrade sbnmaster TEST script.sql
+
+# Script with upgrade number in filename
+i_run_upgrade sbnmaster TEST sct_07.95.12345_bef.sql
+
+# With output file
+i_run_upgrade sbnmaster TEST script.sql -O upgrade_output.txt
+
+# With echo
+i_run_upgrade sbnmaster TEST script.sql -e
+```
+- [ ] Script executes correctly
+- [ ] Upgrade number extracted from filename
+- [ ] `-O` creates output file
+- [ ] `-e` echoes resolved SQL
+
+### Test 5: Build Orchestration (`runcreate`)
+```bash
+# Basic create script
+runcreate create_test TEST
+
+# With output file (overwrites then appends)
+runcreate create_test TEST -O build.log
+
+# With echo (propagates to all child calls)
+runcreate create_test TEST -e
+
+# Both flags
+runcreate create_test TEST -O build.log -e
+```
+- [ ] Create script parses and executes all lines
+- [ ] Nested `runcreate` calls work
+- [ ] `-O` creates file at start, appends for each child
+- [ ] `-e` propagates to all runsql/isqlline calls
+
+### Test 6: Output File Behavior
+| Command | Expected Behavior |
+|---------|-------------------|
+| `isqlline ... -O out.txt` | Creates/overwrites `out.txt` |
+| `runsql ... -O out.txt` | Creates/overwrites `out.txt` |
+| `i_run_upgrade ... -O out.txt` | Creates/overwrites `out.txt` |
+| `runcreate ... -O out.txt` | Creates/overwrites at start, appends for each child |
+
+- [ ] Each command creates output file correctly
+- [ ] runcreate appends child output to same file
+- [ ] Output contains all expected content
+
+### Test 7: Echo Flag Behavior (`-e`)
+All commands should:
+- [ ] Print resolved SQL before execution
+- [ ] Pass `-v` flag to tsql for verbose mode
+- [ ] When combined with `-O`, echo goes to file only
+
+### Test 8: Editor Commands
+```bash
+# Edit table locations
+eloc TEST
+
+# Edit actions
+eact TEST
+
+# Edit options
+eopt TEST
+
+# Edit required fields
+ereq TEST
+```
+- [ ] Each opens editor with correct file
+- [ ] Saves compile to database on exit
+
+### Test 9: Compile Commands
+```bash
+# Compile messages
+compile_msg TEST
+
+# Tail log file
+tail /path/to/logfile
+```
+- [ ] Messages import correctly
+- [ ] Tail follows file updates

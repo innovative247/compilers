@@ -964,7 +964,6 @@ python-scripts/
 │   ├── settings.json            # User profiles (created at runtime)
 │   ├── ibs_common.py            # Shared library
 │   ├── options.py               # Soft-compiler (placeholder resolution)
-│   ├── change_log.py            # Audit trail logging
 │   ├── install.py               # Automated installer
 │   ├── setup_profile.py         # Profile wizard
 │   ├── test_connection.py       # Connection tester
@@ -995,10 +994,10 @@ python-scripts/
 - `combine_option_files()` - Merge option files
 - Supports: v: values, c: conditionals, -> table locations, @sequence@
 
-**`change_log.py`** - Audit logging:
-- `ChangeLog` class - Generate audit SQL
-- `inject_change_log()` - Prepend audit statements
-- Writes to ba_gen_chg_log table
+**Change Log Functions** (in `ibs_common.py`):
+- `is_changelog_enabled()` - Check if gclog12 is enabled and ba_gen_chg_log_new exists
+- `insert_changelog_entry()` - Insert entry via ba_gen_chg_log_new
+- `generate_changelog_sql()` - Generate SQL for audit trail injection
 
 ### The `ibs_compilers.egg-info/` Directory
 

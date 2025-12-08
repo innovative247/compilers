@@ -1,122 +1,126 @@
 """
-eloc.py: Python script for interactive editing and compilation of table location definitions.
+eloc.py: Edit and compile table_locations.
 
-This script replaces the C# eloc project and the compile_table_locations logic, allowing
-users to edit table location files and then compile them into the database.
+This command allows editing and importing the table_locations mapping file into the
+database. The table_locations table maps logical table names to physical database
+locations, enabling the IBS compiler system to resolve &table& placeholders.
+
+SOURCE FILE:
+    {SQL_SOURCE}/CSS/Setup/table_locations
+
+    The source file contains lines in the format:
+        -> table_name    &db_placeholder&    description
+
+    Example:
+        -> users         &dbtbl&             User accounts table
+        -> options       &dbibs&             System options
+
+TARGET TABLE:
+    &table_locations& (typically ibs..table_locations)
+
+    Schema:
+        table_name   varchar(40)   - The logical table name
+        logical_db   varchar(8)    - The option placeholder name (e.g., "dbtbl")
+        physical_db  varchar(32)   - The resolved database name (e.g., "sbnmaster")
+        db_table     varchar(100)  - Full path (e.g., "sbnmaster..users")
+
+PROCESS:
+    1. Prompt to edit the source file (default: Yes)
+    2. Open vim editor if user confirms
+    3. Prompt to compile into database (default: Yes)
+    4. Parse the source file, resolving &placeholders& using current options
+    5. Truncate the target table_locations table
+    6. Insert all rows using SQL INSERT statements
+
+USAGE:
+    eloc PROFILE [-O output_file]
+
+ARGUMENTS:
+    PROFILE     Configuration profile name (e.g., GONZO, PROD)
+    -O          Optional output file for messages (not currently used)
+
+EXAMPLES:
+    eloc GONZO          Edit and compile table_locations for GONZO profile
+    eloc PROD           Edit and compile table_locations for PROD profile
+
+RELATED:
+    eopt - Edit and compile options (also updates table_locations)
+
+NOTE:
+    This command uses SQL INSERT statements instead of BCP (Bulk Copy Program)
+    to avoid the 255 character limit in freebcp.
 """
 
 import argparse
 import sys
-from pathlib import Path
-import subprocess
-import tempfile
-import re
+import os
 
-# Import shared functions from the common module (relative import within commands package)
 from .ibs_common import (
     get_config,
-    verify_database_tools,
-    execute_sql,
-    execute_bcp,
+    get_table_locations_path,
+    compile_table_locations,
     console_yes_no,
-    replace_placeholders,
     launch_editor,
-    setup_logging
 )
-import logging
-
-def parse_and_clean_locations_file(source_path: Path, config: dict, temp_dir: Path):
-    """
-    Reads table_locations.dat, replaces placeholders, and creates a
-    temporary file suitable for BCP.
-    """
-    temp_locations_path = temp_dir / "table_locations.tmp"
-
-    logging.info(f"Processing table locations file: {source_path}")
-    try:
-        with source_path.open('r') as infile, temp_locations_path.open('w', newline='\n') as outfile:
-            for line in infile:
-                line = line.strip()
-                if not line or not line.startswith('->'):
-                    continue
-                
-                try:
-                    first_ampersand_idx = line.find('&', 2)
-                    if first_ampersand_idx == -1:
-                        logging.warning(f"Malformed line (no first '&'): {line}")
-                        continue
-                        
-                    tbl_name = line[2:first_ampersand_idx].replace('\t', ' ').strip()
-                    
-                    second_ampersand_idx = line.find('&', first_ampersand_idx + 1)
-                    if second_ampersand_idx == -1:
-                        logging.warning(f"Malformed line (no second '&'): {line}")
-                        continue
-                    
-                    opt_name_raw = line[first_ampersand_idx : second_ampersand_idx + 1]
-                    
-                    db_name = replace_placeholders(opt_name_raw, config, remove_ampersands=True)
-                    full_name = f"{db_name}..{tbl_name}"
-                    
-                    outfile.write(f"{tbl_name}\t{opt_name_raw.strip('&')}\t{db_name}\t{full_name}\n")
-                    
-                except Exception as e:
-                    logging.warning(f"Error parsing line '{line}': {e}. Skipping.")
-                
-    except Exception as e:
-        logging.error(f"Error processing table locations file {source_path}: {e}")
-        raise
-
-    return temp_locations_path
 
 
 def main(args_list=None):
+    """
+    Main entry point for the eloc command.
+
+    Workflow:
+        1. Load configuration for the specified profile
+        2. Locate the table_locations source file
+        3. Prompt user to edit the file (default: Yes)
+        4. Prompt user to compile into database (default: Yes)
+        5. Call compile_table_locations() to parse and insert data
+
+    Args:
+        args_list: Command line arguments (defaults to sys.argv[1:])
+    """
     if args_list is None:
         args_list = sys.argv[1:]
-        
-    parser = argparse.ArgumentParser(description="Interactively edit and compile table location definitions.")
-    parser.add_argument("profile_or_server", nargs='?', help="Configuration profile or server name (optional).")
-    parser.add_argument("-S", "--server", help="Server name (overrides profile and positional server).")
-    parser.add_argument("-U", "--username", help="Database username (overrides profile).")
-    parser.add_argument("-P", "--password", help="Database password (overrides profile).")
-    parser.add_argument("-O", "--outfile", help="Output file for logging (overrides default logging).")
-    
+
+    parser = argparse.ArgumentParser(
+        description="Edit and compile table_locations.",
+        usage="eloc PROFILE [-O output_file]"
+    )
+    parser.add_argument("profile", help="Configuration profile (required)")
+    parser.add_argument("-O", "--outfile", help="Output file for messages")
+
     args = parser.parse_args(args_list)
 
-    config = get_config(args_list=args_list)
-    setup_logging(config)
-    verify_database_tools(config)
+    # Load config from profile (contains HOST, PORT, USERNAME, PASSWORD, SQL_SOURCE, etc.)
+    config = get_config(profile_name=args.profile)
+    config['PROFILE_NAME'] = args.profile.upper()
 
-    logging.info(f"Starting eloc using profile for server '{config.get('DSQUERY')}'...")
+    # Get path to table_locations source file: {SQL_SOURCE}/CSS/Setup/table_locations
+    locations_file = get_table_locations_path(config)
 
-    locations_file = Path(config.get('SQL_SOURCE')) / 'dat' / 'table_locations.dat'
-    
-    if not locations_file.exists():
-        logging.error(f"Table locations file missing: {locations_file}")
+    if not os.path.exists(locations_file):
+        print(f"ERROR: table_locations file not found: {locations_file}")
         sys.exit(1)
 
-    logging.info(f"Launching editor for {locations_file}...")
-    launch_editor(locations_file)
-    
-    if not console_yes_no(f"Compile table locations into {config.get('DSQUERY')}?"):
-        logging.info("Compilation cancelled by user.")
+    # Prompt to edit the source file (default: Yes)
+    if console_yes_no(f"Edit {locations_file}?", default=True):
+        launch_editor(locations_file)
+
+    # Prompt to compile/insert into database (default: Yes)
+    if not console_yes_no(f"Compile table_locations into {args.profile.upper()}?", default=True):
+        print("Cancelled.")
         sys.exit(0)
 
-    logging.info("Proceeding with compile_table_locations logic...")
-    
-    with tempfile.TemporaryDirectory() as tmp_dir_name:
-        tmp_dir = Path(tmp_dir_name)
-        temp_bcp_file = parse_and_clean_locations_file(locations_file, config, tmp_dir)
-        
-        logging.info("Truncating table ibs..table_locations...")
-        execute_sql(config, "TRUNCATE TABLE table_locations", database="ibs")
-        
-        logging.info(f"Importing {temp_bcp_file.name} into ibs..table_locations...")
-        if not execute_bcp(config, "ibs..table_locations", "in", temp_bcp_file):
-            logging.error("BCP for table locations failed. Aborting.")
-            sys.exit(1)
-        
-    logging.info("eloc DONE.")
+    # Compile: parse source file and insert rows into table_locations table
+    print("Compiling table_locations...")
+    success, message, row_count = compile_table_locations(config)
+
+    if success:
+        print(f"Inserted {row_count} rows into table_locations")
+        print("SUCCESS")
+    else:
+        print(f"ERROR: {message}")
+        sys.exit(1)
+
 
 if __name__ == "__main__":
     main()

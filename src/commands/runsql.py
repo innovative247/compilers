@@ -8,19 +8,24 @@ runner that uses FreeTDS tsql for execution.
 Key Features:
 - Full soft-compiler support (v:, c:, ->, @sequence@ placeholders)
 - Hierarchical option file merging (SQL -> Company -> Server)
-- Change logging for audit compliance
+- Change logging ON by default (use --no-changelog to disable)
 - Sequence processing (-F/-L flags)
 - Preview mode (--preview)
+
+Changelog Behavior:
+- runsql logs to ba_gen_chg_log by default (if gclog12 is enabled in database)
+- Use --no-changelog to disable (e.g., when called by runcreate)
+- isqlline never logs to changelog
 
 Usage:
     runsql script.sql sbnmaster SBNA
     runsql script.sql sbnmaster -S SBNA
     runsql script.sql sbnmaster SBNA -O output.txt
-    runsql script.sql sbnmaster -H 10.0.0.1 -p 5000 -U sa -P pass
+    runsql script.sql sbnmaster SBNA --no-changelog
 
 CHG 241124 Integrated Options class and change_log for full soft-compiler support
 CHG 241129 Refactored to use tsql native execution like isqlline
-CHG 241129 Updated to use Options class for placeholder resolution, matching isqlline pattern
+CHG 241206 Changed changelog to ON by default, added --no-changelog flag
 """
 
 import argparse
@@ -41,8 +46,6 @@ from .ibs_common import (
     Options
 )
 
-# Import audit module
-from .change_log import inject_change_log
 
 
 def main():
@@ -100,8 +103,8 @@ Notes:
     # Advanced options
     parser.add_argument("--preview", action="store_true",
                         help="Print processed SQL to console instead of executing")
-    parser.add_argument("--changelog", action="store_true",
-                        help="Enable changelog logging (writes to ba_gen_chg_log)")
+    parser.add_argument("--no-changelog", action="store_true",
+                        help="Disable changelog logging (default: changelog ON)")
     parser.add_argument("--test-connection", action="store_true",
                         help="Test connection before executing SQL")
     parser.add_argument("--debug", action="store_true", help="Enable debug output")
@@ -261,13 +264,25 @@ Notes:
             # Start with the original file content
             sql_content = script_content
 
-            # Inject change log if enabled (prepend to content)
-            if args.changelog:
-                logging.info("Change logging enabled. Injecting audit trail SQL...")
-                config['COMMAND'] = args.script_file
-                changelog_lines = inject_change_log([], config)
-                changelog_sql = '\n'.join(changelog_lines)
-                sql_content = changelog_sql + '\n' + sql_content
+            # Inject change log (ON by default, use --no-changelog to disable)
+            if not args.no_changelog:
+                from .ibs_common import is_changelog_enabled, generate_changelog_sql
+                enabled, msg = is_changelog_enabled(config)
+                if enabled:
+                    logging.info("Change logging enabled. Injecting audit trail SQL...")
+                    username = config.get('USERNAME', os.environ.get('USERNAME', 'unknown'))
+                    changelog_lines = generate_changelog_sql(
+                        sql_command=args.script_file,
+                        database=database,
+                        server=config.get('PROFILE_NAME', host),
+                        company=str(config.get('COMPANY', '')),
+                        username=username,
+                        changelog_enabled=True
+                    )
+                    changelog_sql = '\n'.join(changelog_lines)
+                    sql_content = changelog_sql + '\n' + sql_content
+                else:
+                    logging.debug(f"Changelog not available: {msg}")
 
             # Apply placeholder resolution
             if options:
