@@ -19,7 +19,10 @@
       "Bash(git rm:*)",
       "Bash(dir /s /b \"C:\\_innovative\\_source\\current.sql\")",
       "WebFetch(domain:www.freetds.org)",
-      "WebFetch(domain:manpages.ubuntu.com)"
+      "WebFetch(domain:manpages.ubuntu.com)",
+      "Bash(python -c:*)",
+      "Bash(git config:*)",
+      "Bash(cmdkey /list:*)"
     ],
     "deny": [],
     "ask": []

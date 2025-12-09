@@ -128,11 +128,11 @@ def main(args_list=None):
     args = parser.parse_args(args_list)
 
     # Load config from profile
+    # PROFILE_NAME is set by get_config (resolves aliases to real profile name)
     config = get_config(profile_name=args.profile)
-    config['PROFILE_NAME'] = args.profile.upper()
 
-    # Check if this is GONZO profile
-    is_gonzo = is_gonzo_profile(args.profile)
+    # Check if this is GONZO profile (use resolved name from config)
+    is_gonzo = is_gonzo_profile(config['PROFILE_NAME'])
 
     # Prompt for operation mode
     mode = prompt_mode()

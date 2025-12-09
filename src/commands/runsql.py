@@ -197,7 +197,7 @@ Notes:
             config['USERNAME'] = username
             config['PASSWORD'] = password
             config['DATABASE'] = database
-            config['PROFILE_NAME'] = profile_name
+            # PROFILE_NAME is already set by load_profile (resolves aliases)
 
             # Expand SQL_SOURCE - use current directory if not set
             if not config.get('SQL_SOURCE'):
@@ -240,7 +240,6 @@ Notes:
         # Apply Options-based placeholder resolution (e.g., &users& -> sbnmaster..users)
         # Only if we have a profile with the necessary config (COMPANY, PROFILE_NAME)
         if profile_name and config.get('COMPANY'):
-            config['PROFILE_NAME'] = profile_name
             options = Options(config)
             if options.generate_option_files():
                 # Options loaded successfully - we'll use them for placeholder resolution

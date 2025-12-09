@@ -140,6 +140,9 @@ def load_profile(profile_name: str) -> dict:
     if missing:
         raise ValueError(f"Profile '{found_name}' missing required fields: {', '.join(missing)}")
 
+    # Store the canonical profile name (resolves aliases to real name)
+    profile['PROFILE_NAME'] = found_name.upper()
+
     return profile
 
 
@@ -761,10 +764,14 @@ def get_config(args_list=None, profile_name=None, existing_config=None, allow_cr
             settings_data["Profiles"] = profiles
             save_settings(settings_data)  # Save the new profile for future use
             profile_config = new_profile_data.copy()
+            # Store the canonical profile name
+            profile_config['PROFILE_NAME'] = selected_profile_name.upper()
         else:
             raise KeyError(f"Profile '{selected_profile_name}' not found")
     else:
         profile_config = profile_data.copy()
+        # Store the canonical profile name (resolves aliases to real name)
+        profile_config['PROFILE_NAME'] = found_name.upper()
 
     # Merge profile config with overrides
     final_config = profile_config

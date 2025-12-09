@@ -22,8 +22,158 @@ from .ibs_common import (
     load_profile,
     save_profile,
     list_profiles as ibs_list_profiles,
-    validate_profile_aliases
+    validate_profile_aliases,
+    find_profile_by_name_or_alias
 )
+
+
+# =============================================================================
+# STARTUP VALIDATION
+# =============================================================================
+
+def check_settings_integrity(settings: dict) -> list:
+    """
+    Check settings.json for duplicate profile names and alias conflicts.
+
+    Returns:
+        List of error messages (empty list = no issues)
+    """
+    errors = []
+    profiles = settings.get("Profiles", {})
+
+    # Check for duplicate profile names (case-insensitive)
+    profile_names_seen = {}  # uppercase name -> original name
+    for name in profiles.keys():
+        name_upper = name.upper()
+        if name_upper in profile_names_seen:
+            errors.append(f"Profile name '{name}' is used more than once (also exists as '{profile_names_seen[name_upper]}')")
+        else:
+            profile_names_seen[name_upper] = name
+
+    # Check for alias conflicts using existing validation
+    alias_errors = validate_profile_aliases(settings)
+    errors.extend(alias_errors)
+
+    return errors
+
+
+def prompt_settings_fix(errors: list, settings_path) -> bool:
+    """
+    Display integrity errors and offer to open settings.json for manual fix.
+
+    Args:
+        errors: List of error messages
+        settings_path: Path to settings.json
+
+    Returns:
+        True if user wants to continue anyway, False to exit
+    """
+    print_error("Settings.json has integrity issues:")
+    print()
+    for err in errors:
+        print(f"  - {err}")
+    print()
+
+    choice = input("Would you like to open settings.json to fix these issues? [Y/n]: ").strip().lower()
+
+    if choice in ('y', 'yes', ''):
+        # Open settings.json in editor
+        import subprocess
+        import platform
+
+        try:
+            if platform.system() == 'Windows':
+                os.startfile(str(settings_path))
+            elif platform.system() == 'Darwin':
+                subprocess.run(['open', str(settings_path)])
+            else:
+                # Try common editors
+                for editor in ['code', 'vim', 'nano', 'vi']:
+                    try:
+                        subprocess.run([editor, str(settings_path)])
+                        break
+                    except FileNotFoundError:
+                        continue
+
+            print(f"\nOpened: {settings_path}")
+            print("Please fix the issues and restart set_profile.")
+            return False
+        except Exception as e:
+            print(f"Could not open editor: {e}")
+            print(f"Please manually edit: {settings_path}")
+            return False
+
+    # User chose not to open - ask if they want to continue anyway
+    continue_choice = input("Continue anyway (not recommended)? [y/N]: ").strip().lower()
+    return continue_choice in ('y', 'yes')
+
+
+# =============================================================================
+# ALIAS INPUT HELPER
+# =============================================================================
+
+def prompt_for_aliases(settings: dict, profile_name: str, current_aliases: list = None) -> list:
+    """
+    Prompt user for aliases with validation and retry on conflict.
+
+    Args:
+        settings: Current settings dictionary
+        profile_name: Name of the profile being edited/created
+        current_aliases: Current aliases (for edit mode)
+
+    Returns:
+        List of valid aliases, or empty list if none/cleared
+    """
+    while True:
+        if current_aliases:
+            current_str = ", ".join(current_aliases)
+            print(f"  Current aliases: {current_str}")
+            print("  (Enter new aliases, 'clear' to remove all, or blank to keep current)")
+        else:
+            print("  Aliases allow shortcuts for this profile (e.g., 'G' for 'GONZO').")
+            print("  (Enter comma-separated aliases, or blank to skip)")
+
+        aliases_input = input("  Aliases: ").strip()
+
+        # Handle blank input
+        if not aliases_input:
+            return current_aliases if current_aliases else []
+
+        # Handle clear
+        if aliases_input.lower() == 'clear':
+            print("  Aliases cleared.")
+            return []
+
+        # Parse and uppercase aliases
+        new_aliases = [a.strip().upper() for a in aliases_input.split(',') if a.strip()]
+
+        if not new_aliases:
+            return current_aliases if current_aliases else []
+
+        # Validate aliases by building temporary settings
+        temp_settings = settings.copy()
+        temp_settings["Profiles"] = settings.get("Profiles", {}).copy()
+
+        # Create/update the profile entry with new aliases
+        if profile_name in temp_settings["Profiles"]:
+            temp_profile = temp_settings["Profiles"][profile_name].copy()
+        else:
+            temp_profile = {}
+        temp_profile["ALIASES"] = new_aliases
+        temp_settings["Profiles"][profile_name] = temp_profile
+
+        # Validate
+        errors = validate_profile_aliases(temp_settings)
+
+        if errors:
+            print("\n  Alias validation errors:")
+            for err in errors:
+                print(f"    - {err}")
+            print("  Please enter different aliases.\n")
+            # Loop continues - user can retry
+        else:
+            print(f"  Aliases set: {', '.join(new_aliases)}")
+            return new_aliases
 
 
 # =============================================================================
@@ -170,6 +320,8 @@ def print_error(text):
 
 def load_settings():
     """Load existing settings.json or create new"""
+    import platform as plat
+
     # Use find_settings_file from ibs_common (returns src/settings.json by default)
     settings_path = find_settings_file()
 
@@ -181,8 +333,31 @@ def load_settings():
                 return settings, settings_path
         except json.JSONDecodeError as e:
             print_error(f"Invalid JSON in settings file: {e}")
-            print("Starting with empty settings...")
-            return {"Profiles": {}}, settings_path
+            print()
+            choice = input("Would you like to open settings.json to fix the error? [Y/n]: ").strip().lower()
+            if choice in ('y', 'yes', ''):
+                try:
+                    if plat.system() == 'Windows':
+                        os.startfile(str(settings_path))
+                    elif plat.system() == 'Darwin':
+                        subprocess.run(['open', str(settings_path)])
+                    else:
+                        for editor in ['code', 'vim', 'nano', 'vi']:
+                            try:
+                                subprocess.run([editor, str(settings_path)])
+                                break
+                            except FileNotFoundError:
+                                continue
+                    print(f"\nOpened: {settings_path}")
+                    print("Please fix the JSON error and restart set_profile.")
+                    sys.exit(0)
+                except Exception as open_err:
+                    print(f"Could not open editor: {open_err}")
+                    print(f"Please manually edit: {settings_path}")
+                    sys.exit(1)
+            else:
+                print("Starting with empty settings...")
+                return {"Profiles": {}}, settings_path
         except Exception as e:
             print_error(f"Could not read settings file: {e}")
             return {"Profiles": {}}, settings_path
@@ -203,6 +378,27 @@ def save_settings(settings, settings_path):
         return False
 
 
+def display_single_profile(name, profile):
+    """Display a single profile's details."""
+    company = profile.get("COMPANY", "unknown")
+    platform = profile.get("PLATFORM", "unknown")
+    host = profile.get("HOST", "unknown")
+    port = profile.get("PORT", "unknown")
+    path_append = profile.get("SQL_SOURCE", "unknown")
+    aliases = profile.get("ALIASES", [])
+
+    # Format profile name with aliases if present
+    if aliases:
+        aliases_str = ", ".join(aliases)
+        print(f"\nProfile: {name} (aliases: {aliases_str})")
+    else:
+        print(f"\nProfile: {name}")
+    print(f"  Company: {company}")
+    print(f"  Platform: {platform}")
+    print(f"  Server: {host}:{port}")
+    print(f"  SQL Source: {path_append}")
+
+
 def list_profiles(settings):
     """Display all profiles"""
     if not settings.get("Profiles"):
@@ -213,25 +409,33 @@ def list_profiles(settings):
     print("-" * 70)
 
     for name, profile in settings["Profiles"].items():
-        company = profile.get("COMPANY", "unknown")
-        platform = profile.get("PLATFORM", "unknown")
-        host = profile.get("HOST", "unknown")
-        port = profile.get("PORT", "unknown")
-        path_append = profile.get("SQL_SOURCE", "unknown")
-        aliases = profile.get("ALIASES", [])
-
-        # Format profile name with aliases if present
-        if aliases:
-            aliases_str = ", ".join(aliases)
-            print(f"\nProfile: {name} (aliases: {aliases_str})")
-        else:
-            print(f"\nProfile: {name}")
-        print(f"  Company: {company}")
-        print(f"  Platform: {platform}")
-        print(f"  Server: {host}:{port}")
-        print(f"  SQL Source: {path_append}")
+        display_single_profile(name, profile)
 
     print("-" * 70)
+
+
+def view_profile(settings):
+    """View a specific profile or all profiles."""
+    if not settings.get("Profiles"):
+        print("No profiles configured yet.")
+        return
+
+    input_name = input("\nEnter profile name (or blank for all): ").strip()
+
+    if not input_name:
+        # Show all profiles
+        list_profiles(settings)
+    else:
+        # Find profile by name or alias
+        profile_name, profile_data = find_profile_by_name_or_alias(settings, input_name.upper())
+
+        if profile_name is None:
+            print_error(f"Profile '{input_name}' not found.")
+            return
+
+        print("-" * 70)
+        display_single_profile(profile_name, profile_data)
+        print("-" * 70)
 
 
 def test_connection(profile):
@@ -559,13 +763,14 @@ def test_profile_menu(settings):
 
     list_profiles(settings)
 
-    profile_name = input("\nEnter profile name to test: ").strip().upper()
+    input_name = input("\nEnter profile name to test: ").strip().upper()
 
-    if profile_name not in settings["Profiles"]:
-        print_error(f"Profile '{profile_name}' not found.")
+    # Find profile by name or alias
+    profile_name, profile = find_profile_by_name_or_alias(settings, input_name)
+
+    if profile_name is None:
+        print_error(f"Profile '{input_name}' not found.")
         return
-
-    profile = settings["Profiles"][profile_name]
 
     while True:
         print(f"\nTesting profile: {profile_name}")
@@ -625,6 +830,20 @@ def edit_profile_inline(profile, current_name=None):
             else:
                 print("    Invalid name. Use only letters, numbers, and underscores. Name not changed.")
 
+    # Aliases - with retry on conflict (right after profile name)
+    profile_name = new_name if new_name else current_name
+    current_aliases = profile.get("ALIASES", [])
+    settings = ibs_load_settings()
+    # Remove the current profile from settings so we can validate against other profiles only
+    if profile_name in settings.get("Profiles", {}):
+        del settings["Profiles"][profile_name]
+    new_aliases = prompt_for_aliases(settings, profile_name, current_aliases)
+    if new_aliases:
+        profile["ALIASES"] = new_aliases
+    elif "ALIASES" in profile and not new_aliases:
+        # User cleared aliases
+        del profile["ALIASES"]
+
     # Fields in requested order: COMPANY, PLATFORM, HOST, PORT, USERNAME, PASSWORD, SQL_SOURCE
     for key in ["COMPANY", "PLATFORM", "HOST", "PORT", "USERNAME", "PASSWORD", "SQL_SOURCE"]:
         current = profile.get(key, "")
@@ -648,42 +867,6 @@ def edit_profile_inline(profile, current_name=None):
             else:
                 profile[key] = new_value
 
-    # Aliases
-    current_aliases = profile.get("ALIASES", [])
-    current_aliases_str = ", ".join(current_aliases) if current_aliases else "(none)"
-    print(f"  ALIASES [{current_aliases_str}]")
-    print(f"    (Enter comma-separated aliases, or 'clear' to remove all)")
-    aliases_input = input(f"    New value: ").strip()
-
-    if aliases_input:
-        if aliases_input.lower() == 'clear':
-            if "ALIASES" in profile:
-                del profile["ALIASES"]
-            print("    Aliases cleared.")
-        else:
-            # Parse and uppercase aliases
-            new_aliases = [a.strip().upper() for a in aliases_input.split(',') if a.strip()]
-            if new_aliases:
-                # Validate before setting
-                profile_name = new_name if new_name else current_name
-                temp_settings = ibs_load_settings()
-                temp_profile = profile.copy()
-                temp_profile["ALIASES"] = new_aliases
-                # Remove old profile entry if renaming
-                if profile_name in temp_settings.get("Profiles", {}):
-                    del temp_settings["Profiles"][profile_name]
-                temp_settings.setdefault("Profiles", {})[profile_name] = temp_profile
-
-                errors = validate_profile_aliases(temp_settings)
-                if errors:
-                    print("\n    Alias validation errors:")
-                    for err in errors:
-                        print(f"      {err}")
-                    print("    Aliases not changed.")
-                else:
-                    profile["ALIASES"] = new_aliases
-                    print(f"    Aliases set: {', '.join(new_aliases)}")
-
     print_success("Profile updated.")
     return new_name
 
@@ -700,6 +883,13 @@ def create_profile():
         if name:
             break
         print("Profile name is required.")
+
+    # Aliases (optional) - with retry on conflict
+    print()
+    settings = ibs_load_settings()
+    aliases = prompt_for_aliases(settings, name, current_aliases=None)
+    if aliases:
+        profile["ALIASES"] = aliases
 
     # Company (required)
     while True:
@@ -792,32 +982,6 @@ def create_profile():
     # Language (set default - user can change via edit if needed)
     profile["DEFAULT_LANGUAGE"] = 1
 
-    # Aliases (optional)
-    print("\nAliases allow shortcuts for this profile (e.g., 'G' for 'GONZO').")
-    aliases_input = input("Enter aliases (comma-separated, or blank to skip): ").strip()
-
-    if aliases_input:
-        # Parse, clean, and uppercase aliases
-        aliases = [a.strip().upper() for a in aliases_input.split(',') if a.strip()]
-
-        if aliases:
-            # Validate aliases before adding
-            # Build temporary settings to validate
-            temp_settings = ibs_load_settings()
-            temp_profile = profile.copy()
-            temp_profile["ALIASES"] = aliases
-            temp_settings.setdefault("Profiles", {})[name] = temp_profile
-
-            errors = validate_profile_aliases(temp_settings)
-            if errors:
-                print("\nAlias validation errors:")
-                for err in errors:
-                    print(f"  {err}")
-                print("Aliases not saved. You can add them later via edit.")
-            else:
-                profile["ALIASES"] = aliases
-                print(f"Aliases set: {', '.join(aliases)}")
-
     return name, profile
 
 
@@ -829,14 +993,17 @@ def edit_profile(settings, settings_path):
 
     list_profiles(settings)
 
-    profile_name = input("\nEnter profile name to edit: ").strip().upper()
+    input_name = input("\nEnter profile name to edit: ").strip().upper()
 
-    if profile_name not in settings["Profiles"]:
-        print_error(f"Profile '{profile_name}' not found.")
+    # Find profile by name or alias
+    profile_name, profile_data = find_profile_by_name_or_alias(settings, input_name)
+
+    if profile_name is None:
+        print_error(f"Profile '{input_name}' not found.")
         return False
 
     # Make a copy to edit
-    profile = settings["Profiles"][profile_name].copy()
+    profile = profile_data.copy()
 
     # Edit inline
     new_name = edit_profile_inline(profile, profile_name)
@@ -868,10 +1035,13 @@ def delete_profile(settings):
 
     list_profiles(settings)
 
-    profile_name = input("\nEnter profile name to delete: ").strip().upper()
+    input_name = input("\nEnter profile name to delete: ").strip().upper()
 
-    if profile_name not in settings["Profiles"]:
-        print_error(f"Profile '{profile_name}' not found.")
+    # Find profile by name or alias
+    profile_name, profile_data = find_profile_by_name_or_alias(settings, input_name)
+
+    if profile_name is None:
+        print_error(f"Profile '{input_name}' not found.")
         return
 
     confirm = input(f"Are you sure you want to delete '{profile_name}'? [y/n]: ").strip().lower()
@@ -885,16 +1055,22 @@ def delete_profile(settings):
 
 def main_menu():
     """Main menu loop"""
-    print_header("IBS Compiler Profile Setup Wizard")
+    print_header("Innovative247 Compiler Profile Setup Wizard")
 
     settings, settings_path = load_settings()
+
+    # Check for integrity issues on startup
+    integrity_errors = check_settings_integrity(settings)
+    if integrity_errors:
+        if not prompt_settings_fix(integrity_errors, settings_path):
+            return  # User chose to fix manually or exit
 
     while True:
         print("\nWhat would you like to do?")
         print("  1. Create a new profile")
         print("  2. Edit existing profile")
         print("  3. Delete a profile")
-        print("  4. View all profiles")
+        print("  4. View profile")
         print("  5. Test a profile")
         print("  6. Exit")
 
@@ -919,8 +1095,8 @@ def main_menu():
             save_settings(settings, settings_path)
 
         elif choice == "4":
-            # View profiles
-            list_profiles(settings)
+            # View profile(s)
+            view_profile(settings)
 
         elif choice == "5":
             # Test a profile

@@ -73,8 +73,8 @@ def main(args_list=None):
     args = parser.parse_args(args_list)
 
     # Load config from profile
+    # PROFILE_NAME is set by get_config (resolves aliases to real profile name)
     config = get_config(profile_name=args.profile)
-    config['PROFILE_NAME'] = args.profile.upper()
 
     # Get paths to source files
     rf_file = get_required_fields_path(config)

@@ -1,24 +1,17 @@
 {
   "Profiles": {
-    "MSSQL_DEV01": {
-      "COMPANY": 101,
-      "DEFAULT_LANGUAGE": 1,
-      "PLATFORM": "MSSQL",
-      "HOST": "127.0.0.1",
-      "PORT": 1433,
-      "USERNAME": "sa",
-      "PASSWORD": "1234",
-      "SQL_SOURCE": "C:\\_innovative\\_source\\current.sql"
-    },
     "GONZO": {
+      "ALIASES": [
+        "G"
+      ],
       "COMPANY": 101,
       "DEFAULT_LANGUAGE": 1,
       "PLATFORM": "SYBASE",
       "HOST": "54.235.236.130",
       "PORT": 5000,
       "USERNAME": "sbn0",
-      "PASSWORD": "1234",
-      "SQL_SOURCE": "C:\\_innovative\\_source\\current.sql"
+      "PASSWORD": "*****",
+      "SQL_SOURCE": "C:\\_innovative\\_source\\current.sql",
     }
   }
 }

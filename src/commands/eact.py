@@ -95,8 +95,8 @@ def main(args_list=None):
     args = parser.parse_args(args_list)
 
     # Load config from profile (contains HOST, PORT, USERNAME, PASSWORD, SQL_SOURCE, etc.)
+    # PROFILE_NAME is set by get_config (resolves aliases to real profile name)
     config = get_config(profile_name=args.profile)
-    config['PROFILE_NAME'] = args.profile.upper()
 
     # Get paths to source files
     actions_file = get_actions_path(config)

@@ -205,8 +205,8 @@ Notes:
 
         # Apply Options-based placeholder resolution (e.g., &users& -> sbnmaster..users)
         # Only if we have a profile with the necessary config (COMPANY, PROFILE_NAME)
+        # PROFILE_NAME is already set by load_profile (resolves aliases)
         if profile_name and config.get('COMPANY'):
-            config['PROFILE_NAME'] = profile_name
             options = Options(config)
             if options.generate_option_files():
                 sql_script = options.replace_options(sql_script)

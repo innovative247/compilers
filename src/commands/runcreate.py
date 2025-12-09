@@ -565,7 +565,7 @@ def main(args_list=None):
     except KeyError:
         print(f"Profile '{profile}' does not exist. Run `set_profile`, then retry this command.")
         sys.exit(1)
-    config['PROFILE_NAME'] = profile.upper()
+    # PROFILE_NAME is already set by get_config (resolves aliases to real profile name)
 
     # Initialize options
     options = Options(config)
