@@ -2318,22 +2318,29 @@ def compile_table_locations(config: dict, options: 'Options' = None) -> tuple:
         full_name = full_name.replace("'", "''")
         sql_lines.append(f"insert {target_table} (table_name, logical_db, physical_db, db_table) values ('{table_name}', '{opt_name}', '{db_name}', '{full_name}')")
 
-    sql_content = "\n".join(sql_lines)
+    print(f"Inserting {len(sql_lines)} rows into {target_table}...")
 
-    success, output = execute_sql_native(
-        host=config.get('HOST'),
-        port=config.get('PORT'),
-        username=config.get('USERNAME'),
-        password=config.get('PASSWORD'),
-        database=target_db,
-        platform=config.get('PLATFORM', 'SYBASE'),
-        sql_content=sql_content
-    )
+    # Execute in batches of 1000
+    batch_size = 1000
+    total = len(sql_lines)
+    for i in range(0, total, batch_size):
+        batch = sql_lines[i:i + batch_size]
+        end_idx = min(i + batch_size, total)
+        print(f"  Inserting {i + 1}-{end_idx}")
+        sql_content = "\n".join(batch)
+        success, output = execute_sql_native(
+            host=config.get('HOST'),
+            port=config.get('PORT'),
+            username=config.get('USERNAME'),
+            password=config.get('PASSWORD'),
+            database=target_db,
+            platform=config.get('PLATFORM', 'SYBASE'),
+            sql_content=sql_content
+        )
+        if not success:
+            return False, f"Insert failed: {output}", 0
 
-    if success:
-        return True, f"Compiled into {target_table}", len(rows)
-    else:
-        return False, f"Insert failed: {output}", 0
+    return True, f"Compiled into {target_table}", len(rows)
 
 
 # =============================================================================
@@ -2522,18 +2529,25 @@ def compile_actions(config: dict, options: 'Options' = None) -> tuple:
             escaped_line = line.replace("'", "''")
             sql_lines.append(f"insert {w_actions} (lineix, message) values ({row_num}, '{escaped_line}')")
 
-        sql_content = "\n".join(sql_lines)
-        success, output = execute_sql_native(
-            host=config.get('HOST'),
-            port=config.get('PORT'),
-            username=config.get('USERNAME'),
-            password=config.get('PASSWORD'),
-            database=work_db,
-            platform=config.get('PLATFORM', 'SYBASE'),
-            sql_content=sql_content
-        )
-        if not success:
-            return False, f"Failed to insert action headers: {output}"
+        # Execute in batches of 1000
+        batch_size = 1000
+        total = len(sql_lines)
+        for i in range(0, total, batch_size):
+            batch = sql_lines[i:i + batch_size]
+            end_idx = min(i + batch_size, total)
+            print(f"  Inserting {i + 1}-{end_idx}")
+            sql_content = "\n".join(batch)
+            success, output = execute_sql_native(
+                host=config.get('HOST'),
+                port=config.get('PORT'),
+                username=config.get('USERNAME'),
+                password=config.get('PASSWORD'),
+                database=work_db,
+                platform=config.get('PLATFORM', 'SYBASE'),
+                sql_content=sql_content
+            )
+            if not success:
+                return False, f"Failed to insert action headers: {output}"
 
     # Insert action details
     if detail_rows:
@@ -2549,18 +2563,25 @@ def compile_actions(config: dict, options: 'Options' = None) -> tuple:
             col6 = col6.replace("'", "''")
             sql_lines.append(f"insert {w_actions_dtl} ([s#act], typ, ix, [s#msgno], shix, text) values ({col1}, {col2}, {col3}, {col4}, {col5}, '{col6}')")
 
-        sql_content = "\n".join(sql_lines)
-        success, output = execute_sql_native(
-            host=config.get('HOST'),
-            port=config.get('PORT'),
-            username=config.get('USERNAME'),
-            password=config.get('PASSWORD'),
-            database=work_db,
-            platform=config.get('PLATFORM', 'SYBASE'),
-            sql_content=sql_content
-        )
-        if not success:
-            return False, f"Failed to insert action details: {output}"
+        # Execute in batches of 1000
+        batch_size = 1000
+        total = len(sql_lines)
+        for i in range(0, total, batch_size):
+            batch = sql_lines[i:i + batch_size]
+            end_idx = min(i + batch_size, total)
+            print(f"  Inserting {i + 1}-{end_idx}")
+            sql_content = "\n".join(batch)
+            success, output = execute_sql_native(
+                host=config.get('HOST'),
+                port=config.get('PORT'),
+                username=config.get('USERNAME'),
+                password=config.get('PASSWORD'),
+                database=work_db,
+                platform=config.get('PLATFORM', 'SYBASE'),
+                sql_content=sql_content
+            )
+            if not success:
+                return False, f"Failed to insert action details: {output}"
 
     # Execute ba_compile_actions stored procedure
     print(f"Executing {dbpro}..ba_compile_actions...")
@@ -2745,18 +2766,25 @@ def compile_required_fields(config: dict, options: 'Options' = None) -> tuple:
             c5 = row[5].strip() or '0'  # s#sk - numeric
             sql_lines.append(f"insert {w_rf} values ({c0}, '{c1}', '{c2}', '{c3}', '{c4}', {c5})")
 
-        sql_content = "\n".join(sql_lines)
-        success, output = execute_sql_native(
-            host=config.get('HOST'),
-            port=config.get('PORT'),
-            username=config.get('USERNAME'),
-            password=config.get('PASSWORD'),
-            database=work_db,
-            platform=config.get('PLATFORM', 'SYBASE'),
-            sql_content=sql_content
-        )
-        if not success:
-            return False, f"Failed to insert required field headers: {output}"
+        # Execute in batches of 1000
+        batch_size = 1000
+        total = len(sql_lines)
+        for i in range(0, total, batch_size):
+            batch = sql_lines[i:i + batch_size]
+            end_idx = min(i + batch_size, total)
+            print(f"  Inserting {i + 1}-{end_idx}")
+            sql_content = "\n".join(batch)
+            success, output = execute_sql_native(
+                host=config.get('HOST'),
+                port=config.get('PORT'),
+                username=config.get('USERNAME'),
+                password=config.get('PASSWORD'),
+                database=work_db,
+                platform=config.get('PLATFORM', 'SYBASE'),
+                sql_content=sql_content
+            )
+            if not success:
+                return False, f"Failed to insert required field headers: {output}"
 
     # Insert required field details
     # 34 columns - numeric columns identified by data pattern (-1, 0, 1045, etc.)
@@ -2778,18 +2806,25 @@ def compile_required_fields(config: dict, options: 'Options' = None) -> tuple:
                     values.append(f"'{val}'")
             sql_lines.append(f"insert {w_rf_dtl} values ({', '.join(values)})")
 
-        sql_content = "\n".join(sql_lines)
-        success, output = execute_sql_native(
-            host=config.get('HOST'),
-            port=config.get('PORT'),
-            username=config.get('USERNAME'),
-            password=config.get('PASSWORD'),
-            database=work_db,
-            platform=config.get('PLATFORM', 'SYBASE'),
-            sql_content=sql_content
-        )
-        if not success:
-            return False, f"Failed to insert required field details: {output}"
+        # Execute in batches of 1000
+        batch_size = 1000
+        total = len(sql_lines)
+        for i in range(0, total, batch_size):
+            batch = sql_lines[i:i + batch_size]
+            end_idx = min(i + batch_size, total)
+            print(f"  Inserting {i + 1}-{end_idx}")
+            sql_content = "\n".join(batch)
+            success, output = execute_sql_native(
+                host=config.get('HOST'),
+                port=config.get('PORT'),
+                username=config.get('USERNAME'),
+                password=config.get('PASSWORD'),
+                database=work_db,
+                platform=config.get('PLATFORM', 'SYBASE'),
+                sql_content=sql_content
+            )
+            if not success:
+                return False, f"Failed to insert required field details: {output}"
 
     # Execute i_required_fields_install stored procedure
     print(f"Executing {dbpro}..i_required_fields_install...")
@@ -2830,11 +2865,18 @@ def get_messages_path(config: dict, file_ext: str) -> str:
 
 def compile_messages(config: dict, options: 'Options' = None) -> tuple:
     """
-    Compile message source files into the database.
+    Compile message source files into the database (Import mode).
 
     This function reads the message flat files, parses them, and inserts them
     into work tables using SQL INSERT statements. Then it executes stored
     procedures to move data to final tables.
+
+    PROCESS:
+        1. Validate all source files exist
+        2. Preserve translated messages via ba_compile_gui_messages_save proc
+        3. Truncate work tables
+        4. Insert all rows via SQL INSERT
+        5. Execute compile stored procedures (i_compile_messages handles restore)
 
     MESSAGE TYPES:
         ibs - IBS framework messages
@@ -2853,13 +2895,6 @@ def compile_messages(config: dict, options: 'Options' = None) -> tuple:
     FILE FORMATS:
         *_msg files: 7 columns (tab-delimited)
         *_msgrp files: 3 columns (tab-delimited)
-
-    PROCESS:
-        1. Validate all source files exist
-        2. Preserve translated messages (ba_compile_gui_messages_save)
-        3. Truncate work tables
-        4. Insert all rows via SQL INSERT
-        5. Execute compile stored procedures
 
     Args:
         config: Configuration dictionary with connection info
@@ -2895,20 +2930,14 @@ def compile_messages(config: dict, options: 'Options' = None) -> tuple:
         if not os.path.exists(grp_file):
             return False, f"{msg_type.upper()} Message Group file is missing ({grp_file})"
 
-    # Resolve database names
+    # Resolve database name
     dbpro = options.replace_options("&dbpro&")
     dbwrk = options.replace_options("&dbwrk&")
-    gui_messages_save = options.replace_options("&gui_messages_save&")
 
-    # Preserve translated messages to profile-specific file
-    profile_name = config.get('PROFILE_NAME', 'DEFAULT')
-    sql_source = config.get('SQL_SOURCE', os.getcwd())
-    temp_dir = os.path.join(sql_source, 'CSS', 'Setup', 'temp')
-    os.makedirs(temp_dir, exist_ok=True)
-    backup_file = os.path.join(temp_dir, f'{profile_name}_gui_messages_save.tmp')
-
-    # Count messages in database
-    print("Counting translated messages in database...")
+    # Step 1: Preserve translated messages via stored procedure
+    # This copies user translations from gui_messages to gui_messages_save
+    print("Preserving translated messages into table gui_messages_save...")
+    ba_compile_gui_messages_save = options.replace_options("&dbpro&..ba_compile_gui_messages_save")
     success, output = execute_sql_native(
         host=config.get('HOST'),
         port=config.get('PORT'),
@@ -2916,67 +2945,12 @@ def compile_messages(config: dict, options: 'Options' = None) -> tuple:
         password=config.get('PASSWORD'),
         database=dbpro,
         platform=config.get('PLATFORM', 'SYBASE'),
-        sql_content=f"select count(*) from {gui_messages_save}"
+        sql_content=f"exec {ba_compile_gui_messages_save}"
     )
-    db_count = 0
-    if success and output:
-        # Parse count from output
-        for line in output.strip().split('\n'):
-            line = line.strip()
-            if line.isdigit():
-                db_count = int(line)
-                break
+    if not success:
+        return False, f"ba_compile_gui_messages_save failed: {output}"
 
-    # Check if backup file already exists
-    file_count = 0
-    use_existing_file = False
-    if os.path.exists(backup_file):
-        # Count lines in existing file
-        with open(backup_file, 'r', encoding='utf-8', errors='replace') as f:
-            file_count = sum(1 for line in f if line.strip())
-
-        print(f"\nTranslated messages backup file exists: {backup_file}")
-        print(f"  Messages in existing file: {file_count}")
-        print(f"  Messages in database: {db_count}")
-        print("\nOptions:")
-        print("  1. Use existing messages from file")
-        print("  2. Overwrite file with messages from database")
-
-        while True:
-            choice = input("\nChoose [1-2]: ").strip()
-            if choice == '1':
-                use_existing_file = True
-                print("Using existing backup file.")
-                break
-            elif choice == '2':
-                use_existing_file = False
-                print("Will overwrite with database messages.")
-                break
-            else:
-                print("Invalid choice. Please enter 1 or 2.")
-
-    # Export translated messages from database to file (unless using existing)
-    if not use_existing_file:
-        print(f"Exporting translated messages to {backup_file}...")
-        success, output = execute_sql_native(
-            host=config.get('HOST'),
-            port=config.get('PORT'),
-            username=config.get('USERNAME'),
-            password=config.get('PASSWORD'),
-            database=dbpro,
-            platform=config.get('PLATFORM', 'SYBASE'),
-            sql_content=f"select * from {gui_messages_save}"
-        )
-        if not success:
-            return False, f"Failed to export translated messages: {output}"
-
-        # Write results to backup file (tab-delimited)
-        with open(backup_file, 'w', encoding='utf-8') as f:
-            if output:
-                f.write(output)
-        print(f"Exported {db_count} translated messages to backup file.")
-
-    # Process each message type
+    # Step 2: Truncate work tables and insert from flat files
     total_msg_rows = 0
     total_grp_rows = 0
 
@@ -3017,6 +2991,7 @@ def compile_messages(config: dict, options: 'Options' = None) -> tuple:
 
         # Parse and insert message file (7 columns)
         # Columns: s#msgno (int), lang (int), cmpy (int), grp (varchar), upd_flg (char), chg_tm (int), message (varchar)
+        print(f"Importing {msg_type.upper()} Messages...")
         msg_rows = []
         with open(msg_file, 'r', encoding='utf-8', errors='replace') as f:
             for line in f:
@@ -3028,7 +3003,8 @@ def compile_messages(config: dict, options: 'Options' = None) -> tuple:
                     msg_rows.append(parts[:7])
 
         if msg_rows:
-            print(f"Inserting {len(msg_rows)} rows into {w_msg}...")
+            print(f"  Inserting {len(msg_rows)} rows into {w_msg}...")
+            # Build SQL statements
             sql_lines = []
             for row in msg_rows:
                 # Numeric: 0 (s#msgno), 1 (lang), 2 (cmpy), 5 (chg_tm)
@@ -3042,18 +3018,25 @@ def compile_messages(config: dict, options: 'Options' = None) -> tuple:
                 c6 = row[6].replace("'", "''")
                 sql_lines.append(f"insert {w_msg} values ({c0}, {c1}, {c2}, '{c3}', '{c4}', {c5}, '{c6}')")
 
-            sql_content = "\n".join(sql_lines)
-            success, output = execute_sql_native(
-                host=config.get('HOST'),
-                port=config.get('PORT'),
-                username=config.get('USERNAME'),
-                password=config.get('PASSWORD'),
-                database=dbwrk,
-                platform=config.get('PLATFORM', 'SYBASE'),
-                sql_content=sql_content
-            )
-            if not success:
-                return False, f"Failed to insert {msg_type} messages: {output}"
+            # Execute in batches of 1000
+            batch_size = 1000
+            total = len(sql_lines)
+            for i in range(0, total, batch_size):
+                batch = sql_lines[i:i + batch_size]
+                end_idx = min(i + batch_size, total)
+                print(f"    Inserting {i + 1}-{end_idx}")
+                sql_content = "\n".join(batch)
+                success, output = execute_sql_native(
+                    host=config.get('HOST'),
+                    port=config.get('PORT'),
+                    username=config.get('USERNAME'),
+                    password=config.get('PASSWORD'),
+                    database=dbwrk,
+                    platform=config.get('PLATFORM', 'SYBASE'),
+                    sql_content=sql_content
+                )
+                if not success:
+                    return False, f"Failed to insert {msg_type} messages: {output}"
             total_msg_rows += len(msg_rows)
 
         # Parse and insert message group file (3 columns)
@@ -3069,7 +3052,8 @@ def compile_messages(config: dict, options: 'Options' = None) -> tuple:
                     grp_rows.append(parts[:3])
 
         if grp_rows:
-            print(f"Inserting {len(grp_rows)} rows into {w_grp}...")
+            print(f"  Inserting {len(grp_rows)} rows into {w_grp}...")
+            # Build SQL statements
             sql_lines = []
             for row in grp_rows:
                 # String: 0 (grp), 2 (description); Numeric: 1 (s#minmsg)
@@ -3078,22 +3062,31 @@ def compile_messages(config: dict, options: 'Options' = None) -> tuple:
                 c2 = row[2].replace("'", "''")
                 sql_lines.append(f"insert {w_grp} values ('{c0}', {c1}, '{c2}')")
 
-            sql_content = "\n".join(sql_lines)
-            success, output = execute_sql_native(
-                host=config.get('HOST'),
-                port=config.get('PORT'),
-                username=config.get('USERNAME'),
-                password=config.get('PASSWORD'),
-                database=dbwrk,
-                platform=config.get('PLATFORM', 'SYBASE'),
-                sql_content=sql_content
-            )
-            if not success:
-                return False, f"Failed to insert {msg_type} message groups: {output}"
+            # Execute in batches of 1000
+            batch_size = 1000
+            total = len(sql_lines)
+            for i in range(0, total, batch_size):
+                batch = sql_lines[i:i + batch_size]
+                end_idx = min(i + batch_size, total)
+                print(f"    Inserting {i + 1}-{end_idx}")
+                sql_content = "\n".join(batch)
+                success, output = execute_sql_native(
+                    host=config.get('HOST'),
+                    port=config.get('PORT'),
+                    username=config.get('USERNAME'),
+                    password=config.get('PASSWORD'),
+                    database=dbwrk,
+                    platform=config.get('PLATFORM', 'SYBASE'),
+                    sql_content=sql_content
+                )
+                if not success:
+                    return False, f"Failed to insert {msg_type} message groups: {output}"
             total_grp_rows += len(grp_rows)
 
-    # Execute compile stored procedures
-    print(f"Running {dbpro}..i_compile_messages...")
+    # Step 3: Execute compile stored procedures
+    # i_compile_messages moves work tables to final tables and calls i_compile_gui_messages
+    # i_compile_gui_messages restores translations from gui_messages_save
+    print(f"Running i_compile_messages...")
     success, output = execute_sql_native(
         host=config.get('HOST'),
         port=config.get('PORT'),
@@ -3106,7 +3099,7 @@ def compile_messages(config: dict, options: 'Options' = None) -> tuple:
     if not success:
         return False, f"i_compile_messages failed: {output}"
 
-    print(f"Running {dbpro}..i_compile_jam_messages...")
+    print(f"Running i_compile_jam_messages...")
     success, output = execute_sql_native(
         host=config.get('HOST'),
         port=config.get('PORT'),
@@ -3119,7 +3112,7 @@ def compile_messages(config: dict, options: 'Options' = None) -> tuple:
     if not success:
         return False, f"i_compile_jam_messages failed: {output}"
 
-    print(f"Running {dbpro}..i_compile_jrw_messages...")
+    print(f"Running i_compile_jrw_messages...")
     success, output = execute_sql_native(
         host=config.get('HOST'),
         port=config.get('PORT'),
@@ -3131,61 +3124,6 @@ def compile_messages(config: dict, options: 'Options' = None) -> tuple:
     )
     if not success:
         return False, f"i_compile_jrw_messages failed: {output}"
-
-    # Restore translated messages from backup file
-    if os.path.exists(backup_file):
-        print(f"Restoring translated messages from {backup_file}...")
-
-        # Read backup file and parse rows
-        restore_rows = []
-        with open(backup_file, 'r', encoding='utf-8', errors='replace') as f:
-            for line in f:
-                line = line.rstrip('\r\n')
-                if not line:
-                    continue
-                parts = line.split('\t')
-                if len(parts) >= 7:
-                    restore_rows.append(parts[:7])
-
-        if restore_rows:
-            # Clear gui_messages_save table first
-            success, output = execute_sql_native(
-                host=config.get('HOST'),
-                port=config.get('PORT'),
-                username=config.get('USERNAME'),
-                password=config.get('PASSWORD'),
-                database=dbpro,
-                platform=config.get('PLATFORM', 'SYBASE'),
-                sql_content=f"truncate table {gui_messages_save}"
-            )
-
-            # Insert restored messages
-            print(f"Inserting {len(restore_rows)} translated messages...")
-            sql_lines = []
-            for row in restore_rows:
-                # Same format as *_msg files: Numeric: 0, 1, 2, 5; String: 3, 4, 6
-                c0 = row[0].strip() or '0'
-                c1 = row[1].strip() or '0'
-                c2 = row[2].strip() or '0'
-                c3 = row[3].replace("'", "''")
-                c4 = row[4].replace("'", "''")
-                c5 = row[5].strip() or '0'
-                c6 = row[6].replace("'", "''")
-                sql_lines.append(f"insert {gui_messages_save} values ({c0}, {c1}, {c2}, '{c3}', '{c4}', {c5}, '{c6}')")
-
-            sql_content = "\n".join(sql_lines)
-            success, output = execute_sql_native(
-                host=config.get('HOST'),
-                port=config.get('PORT'),
-                username=config.get('USERNAME'),
-                password=config.get('PASSWORD'),
-                database=dbpro,
-                platform=config.get('PLATFORM', 'SYBASE'),
-                sql_content=sql_content
-            )
-            if not success:
-                return False, f"Failed to restore translated messages: {output}"
-            print(f"Restored {len(restore_rows)} translated messages.")
 
     return True, f"Compiled {total_msg_rows} messages and {total_grp_rows} message groups"
 
@@ -3675,20 +3613,25 @@ def compile_options(config: dict, options: 'Options' = None) -> tuple:
         escaped_opt = opt.replace("'", "''")
         sql_lines.append(f"insert {work_table} (line) values ('{escaped_opt}')")
 
-    sql_content = "\n".join(sql_lines)
-
-    success, output = execute_sql_native(
-        host=config.get('HOST'),
-        port=config.get('PORT'),
-        username=config.get('USERNAME'),
-        password=config.get('PASSWORD'),
-        database=work_db,
-        platform=config.get('PLATFORM', 'SYBASE'),
-        sql_content=sql_content
-    )
-
-    if not success:
-        return False, f"Failed to insert options: {output}"
+    # Execute in batches of 1000
+    batch_size = 1000
+    total = len(sql_lines)
+    for i in range(0, total, batch_size):
+        batch = sql_lines[i:i + batch_size]
+        end_idx = min(i + batch_size, total)
+        print(f"  Inserting {i + 1}-{end_idx}")
+        sql_content = "\n".join(batch)
+        success, output = execute_sql_native(
+            host=config.get('HOST'),
+            port=config.get('PORT'),
+            username=config.get('USERNAME'),
+            password=config.get('PASSWORD'),
+            database=work_db,
+            platform=config.get('PLATFORM', 'SYBASE'),
+            sql_content=sql_content
+        )
+        if not success:
+            return False, f"Failed to insert options: {output}"
 
     # Execute i_import_options stored procedure
     dbpro = options.replace_options("&dbpro&")

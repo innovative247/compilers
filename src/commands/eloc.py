@@ -101,6 +101,16 @@ def main(args_list=None):
         print(f"ERROR: table_locations file not found: {locations_file}")
         sys.exit(1)
 
+    # Collect output messages
+    output_lines = []
+
+    def output(msg):
+        """Write message to output file or console."""
+        if args.outfile:
+            output_lines.append(msg)
+        else:
+            print(msg)
+
     # Prompt to edit the source file (default: Yes)
     if console_yes_no(f"Edit {locations_file}?", default=True):
         launch_editor(locations_file)
@@ -111,14 +121,25 @@ def main(args_list=None):
         sys.exit(0)
 
     # Compile: parse source file and insert rows into table_locations table
-    print("Compiling table_locations...")
+    output("Compiling table_locations...")
     success, message, row_count = compile_table_locations(config)
 
     if success:
-        print(f"Inserted {row_count} rows into table_locations")
-        print("SUCCESS")
+        output(f"Inserted {row_count} rows into table_locations")
+        output("SUCCESS")
     else:
-        print(f"ERROR: {message}")
+        output(f"ERROR: {message}")
+
+    # Write output file if specified
+    if args.outfile:
+        try:
+            with open(args.outfile, 'w', encoding='utf-8') as f:
+                f.write("\n".join(output_lines) + "\n")
+        except IOError as e:
+            print(f"ERROR: Failed to write output file: {e}", file=sys.stderr)
+            sys.exit(1)
+
+    if not success:
         sys.exit(1)
 
 

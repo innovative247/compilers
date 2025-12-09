@@ -240,24 +240,28 @@ Notes:
         if success:
             if output and output.strip():
                 output_parts.append(output)
+        else:
+            # Append error to output
+            output_parts.append(f"ERROR: {output}")
 
-            if args.output:
-                # Write all output to file
-                try:
-                    with open(args.output, 'w', encoding='utf-8') as f:
-                        f.write("\n".join(output_parts) + "\n")
-                except IOError as e:
-                    print(f"ERROR: Failed to write output file: {e}", file=sys.stderr)
-                    return 1
-            else:
-                # Print output to stdout (echo already printed above)
+        # Write output to file or console
+        if args.output:
+            # Write all output to file
+            try:
+                with open(args.output, 'w', encoding='utf-8') as f:
+                    f.write("\n".join(output_parts) + "\n")
+            except IOError as e:
+                print(f"ERROR: Failed to write output file: {e}", file=sys.stderr)
+                return 1
+        else:
+            # Print to console
+            if success:
                 if output and output.strip():
                     print(output)
-            return 0
-        else:
-            # Error occurred
-            print(f"ERROR: {output}", file=sys.stderr)
-            return 1
+            else:
+                print(f"ERROR: {output}", file=sys.stderr)
+
+        return 0 if success else 1
 
     except KeyboardInterrupt:
         print("\nInterrupted by user", file=sys.stderr)

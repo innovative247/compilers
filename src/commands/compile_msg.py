@@ -6,7 +6,7 @@ then executes stored procedures to move data to final tables.
 
 MODES:
     1. Import - Push messages from files into the database (preserving translations)
-    2. Export - Export messages from database to files (not yet implemented)
+    2. Export - Export messages from database to files
 
 MESSAGE TYPES:
     ibs - IBS framework messages
@@ -32,9 +32,14 @@ IMPORT PROCESS:
     3. Truncate work tables
     4. Insert all rows via SQL INSERT
     5. Execute compile stored procedures:
-       - i_compile_messages
+       - i_compile_messages (which calls i_compile_gui_messages to restore translations)
        - i_compile_jam_messages
        - i_compile_jrw_messages
+
+EXPORT PROCESS:
+    Export messages from the database to flat files. GONZO (or G) is the
+    canonical source of messages. When importing to GONZO, export must be
+    done first to preserve any new messages.
 
 USAGE:
     compile_msg PROFILE
@@ -82,6 +87,21 @@ def prompt_mode():
             print("Invalid choice. Please enter 1 or 2.")
 
 
+def is_gonzo_profile(profile_name: str) -> bool:
+    """
+    Check if the profile is GONZO (the canonical message source).
+
+    GONZO can be specified as 'GONZO', 'G', or 'gonzo' (case insensitive).
+
+    Args:
+        profile_name: Profile name to check
+
+    Returns:
+        True if this is the GONZO profile
+    """
+    return profile_name.upper() in ('GONZO', 'G')
+
+
 def main(args_list=None):
     """
     Main entry point for the compile_msg command.
@@ -89,8 +109,9 @@ def main(args_list=None):
     Workflow:
         1. Prompt user for import/export mode
         2. Load configuration for the specified profile
-        3. For import: validate source files and call compile_messages()
-        4. For export: not yet implemented
+        3. For GONZO import: require export first to preserve new messages
+        4. For import: validate source files and call compile_messages()
+        5. For export: call export_messages()
 
     Args:
         args_list: Command line arguments (defaults to sys.argv[1:])
@@ -110,11 +131,25 @@ def main(args_list=None):
     config = get_config(profile_name=args.profile)
     config['PROFILE_NAME'] = args.profile.upper()
 
+    # Check if this is GONZO profile
+    is_gonzo = is_gonzo_profile(args.profile)
+
     # Prompt for operation mode
     mode = prompt_mode()
 
     if mode == 'export':
         # Export mode: pull messages from database to files
+
+        # Warn if exporting from non-GONZO server
+        if not is_gonzo:
+            print()
+            print("WARNING: Exporting from this server will override local message files.")
+            choice = input("Are you sure? Y/n: ").strip().lower()
+            if choice not in ('y', 'yes', ''):
+                print("Cancelled.")
+                sys.exit(0)
+            print()
+
         print("Exporting messages from database...")
         success, message = export_messages(config)
 
@@ -126,6 +161,46 @@ def main(args_list=None):
             sys.exit(1)
     else:
         # Import mode: push messages from files into database
+
+        # GONZO protection: require export before import
+        if is_gonzo:
+            print()
+            print("=" * 60)
+            print("WARNING: You are importing to GONZO (canonical message source)")
+            print("=" * 60)
+            print()
+            print("GONZO is the master source for messages. Before importing,")
+            print("you should export first to capture any new messages that")
+            print("may have been added directly to the database.")
+            print()
+            print("Options:")
+            print("  1) Export first, then import (recommended)")
+            print("  2) Import only (skip export)")
+            print("  3) Cancel")
+            print()
+
+            while True:
+                choice = input("Enter choice (1, 2, or 3): ").strip()
+                if choice == '1':
+                    # Export first
+                    print()
+                    print("Exporting messages from GONZO...")
+                    success, message = export_messages(config)
+                    if not success:
+                        print(f"ERROR: Export failed: {message}")
+                        sys.exit(1)
+                    print(message)
+                    print()
+                    break
+                elif choice == '2':
+                    # Skip export, proceed to import
+                    print("Skipping export, proceeding to import...")
+                    break
+                elif choice == '3':
+                    print("Cancelled.")
+                    sys.exit(0)
+                else:
+                    print("Invalid choice. Please enter 1, 2, or 3.")
 
         # Quick check that at least one source file exists
         test_file = get_messages_path(config, '.ibs_msg')

@@ -329,7 +329,20 @@ Notes:
                     if output and output.strip():
                         all_output.append(output)
                 else:
-                    print(f"ERROR at sequence {current_seq}: {output}", file=sys.stderr)
+                    # Append error to output
+                    all_output.append(f"ERROR at sequence {current_seq}: {output}")
+
+                    # Write to file or stderr before returning
+                    if not args.preview:
+                        combined_output = "\n".join(all_output)
+                        if args.output:
+                            try:
+                                with open(args.output, 'w', encoding='utf-8') as f:
+                                    f.write(combined_output + "\n")
+                            except IOError as e:
+                                print(f"ERROR: Failed to write output file: {e}", file=sys.stderr)
+                        else:
+                            print(f"ERROR at sequence {current_seq}: {output}", file=sys.stderr)
                     return 1
 
             current_seq += 1

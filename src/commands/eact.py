@@ -111,6 +111,16 @@ def main(args_list=None):
         print(f"ERROR: actions_dtl file not found: {actions_dtl_file}")
         sys.exit(1)
 
+    # Collect output messages
+    output_lines = []
+
+    def output(msg):
+        """Write message to output file or console."""
+        if args.outfile:
+            output_lines.append(msg)
+        else:
+            print(msg)
+
     # Prompt to edit the actions file (default: Yes)
     if console_yes_no(f"Edit {actions_file}?", default=True):
         launch_editor(actions_file)
@@ -125,14 +135,25 @@ def main(args_list=None):
         sys.exit(0)
 
     # Compile: parse source files and insert into database
-    print("Compiling actions...")
+    output("Compiling actions...")
     success, message = compile_actions(config)
 
     if success:
-        print(message)
-        print("SUCCESS")
+        output(message)
+        output("SUCCESS")
     else:
-        print(f"ERROR: {message}")
+        output(f"ERROR: {message}")
+
+    # Write output file if specified
+    if args.outfile:
+        try:
+            with open(args.outfile, 'w', encoding='utf-8') as f:
+                f.write("\n".join(output_lines) + "\n")
+        except IOError as e:
+            print(f"ERROR: Failed to write output file: {e}", file=sys.stderr)
+            sys.exit(1)
+
+    if not success:
         sys.exit(1)
 
 

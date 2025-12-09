@@ -1178,15 +1178,36 @@ def main(args_list=None):
         print("Finished.")
         sys.exit(0)
 
+    # Collect output messages
+    output_lines = []
+
+    def output(msg):
+        """Write message to output file or console."""
+        if args.outfile:
+            output_lines.append(msg)
+        else:
+            print(msg)
+
     # Compile: parse options files and insert into database
     # This also updates table_locations since options may affect database mappings
-    print("Compiling options...")
+    output("Compiling options...")
     success, message = compile_options(config)
 
     if success:
-        print(f"SUCCESS: {message}")
+        output(f"SUCCESS: {message}")
     else:
-        print(f"ERROR: {message}")
+        output(f"ERROR: {message}")
+
+    # Write output file if specified
+    if args.outfile:
+        try:
+            with open(args.outfile, 'w', encoding='utf-8') as f:
+                f.write("\n".join(output_lines) + "\n")
+        except IOError as e:
+            print(f"ERROR: Failed to write output file: {e}", file=sys.stderr)
+            sys.exit(1)
+
+    if not success:
         sys.exit(1)
 
 
