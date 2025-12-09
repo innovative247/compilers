@@ -4,7 +4,58 @@
 
 Python replacement for the C# IBS Compilers (`Ibs.Compilers`). Tools compile and deploy SQL objects to Sybase ASE and MSSQL databases.
 
-**Current Focus: Windows only.** macOS and Linux support will be added after Windows is complete and tested.
+**Current Focus: Windows complete, now testing Ubuntu/Linux.**
+
+---
+
+## Phase 15: Ubuntu/Linux Testing
+
+### Status: In Progress
+
+Windows implementation is complete. Now testing on Ubuntu to validate cross-platform compatibility.
+
+### Known Areas Requiring Attention
+
+| Area | Windows | Ubuntu | Notes |
+|------|---------|--------|-------|
+| FreeTDS installation | MSYS2 | `apt install freetds-bin freetds-dev` | Different package manager |
+| Python installation | Python.org installer | `apt install python3 python3-pip` | System package |
+| Path separators | `\` | `/` | Code uses `os.sep` - should work |
+| Symbolic links | Requires Admin | Native support | `create_symbolic_links()` in ibs_common.py |
+| settings.json location | `src/commands/` | Same | Verify path resolution |
+| Line endings | CRLF | LF | SQL files, options files |
+| Editor detection | notepad, code | vim, nano, code | `launch_editor()` in ibs_common.py |
+
+### Ubuntu Installation Steps (To Be Tested)
+
+```bash
+# Install FreeTDS
+sudo apt update
+sudo apt install freetds-bin freetds-dev
+
+# Verify tsql is available
+which tsql
+tsql -C
+
+# Install Python package
+cd /path/to/compilers/src
+pip install -e .
+
+# Test commands are available
+set_profile --help
+isqlline --help
+runsql --help
+runcreate --help
+```
+
+### Potential Issues to Watch
+
+1. **Symbolic links** - Windows requires Administrator; Linux should work natively
+2. **Case sensitivity** - Linux filesystem is case-sensitive; Windows is not
+3. **Path handling** - `os.path.isabs()` behavior differs slightly
+4. **Temp file locations** - `/tmp` vs `%TEMP%`
+5. **ODBC drivers** - pyodbc may need unixODBC and FreeTDS ODBC driver
+6. **Line ending handling** - Options files and SQL scripts may have CRLF from Windows
 
 ---
 
