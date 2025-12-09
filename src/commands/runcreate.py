@@ -56,23 +56,18 @@ from .ibs_common import (
 )
 
 
-def write_output(message: str, output_file: str = None):
+def write_output(message: str, output_handle=None):
     """
-    Write a message to console and/or output file.
+    Write a message to stdout or to an open file handle.
 
     Args:
         message: The message to write
-        output_file: If provided, append to this file; otherwise print to console
+        output_handle: Open file handle, or None for stdout
     """
-    if output_file:
-        # Append to output file
-        try:
-            with open(output_file, 'a', encoding='utf-8') as f:
-                f.write(message + '\n')
-        except IOError as e:
-            print(f"ERROR: Failed to write to output file: {e}")
+    if output_handle:
+        output_handle.write(message + '\n')
+        output_handle.flush()
     else:
-        # Print to console
         print(message)
 
 
@@ -297,7 +292,7 @@ def parse_line(line: str, options: Options, sql_source: str) -> dict:
 
 
 def execute_runsql(config: dict, options: Options, script_file: str, database: str,
-                   seq_first: int = 1, seq_last: int = 1, output_file: str = None,
+                   seq_first: int = 1, seq_last: int = 1, output_handle=None,
                    echo_input: bool = False):
     """
     Execute a SQL script file, looping through sequences if specified.
@@ -315,7 +310,7 @@ def execute_runsql(config: dict, options: Options, script_file: str, database: s
         database: Target database name
         seq_first: First sequence number (default 1)
         seq_last: Last sequence number (default 1)
-        output_file: If provided, append output to this file
+        output_handle: Open file handle for output, or None for stdout
         echo_input: If True, echo SQL input (maps to tsql -v)
     """
     # Add .sql extension if not present and not a create* file
@@ -328,11 +323,11 @@ def execute_runsql(config: dict, options: Options, script_file: str, database: s
         if os.path.isfile(script_file):
             script_path = script_file
         else:
-            write_output(f"  ERROR: File not found: {script_file}", output_file)
+            write_output(f"  ERROR: File not found: {script_file}", output_handle)
             return False
     else:
         # Relative path not supported in runcreate - log error and continue
-        write_output(f"  ERROR: Relative path not supported: {script_file}", output_file)
+        write_output(f"  ERROR: Relative path not supported: {script_file}", output_handle)
         return False
 
     # Read script content once
@@ -344,18 +339,18 @@ def execute_runsql(config: dict, options: Options, script_file: str, database: s
     # Loop through sequences
     for seq in range(seq_first, seq_last + 1):
         if seq_first != seq_last:
-            write_output(f"Running {seq} of {seq_last}: {script_path} on {profile}.{database}", output_file)
+            write_output(f"Running {seq} of {seq_last}: {script_path} on {profile}.{database}", output_handle)
         else:
-            write_output(f"Running: {script_path} on {profile}.{database}", output_file)
+            write_output(f"Running: {script_path} on {profile}.{database}", output_handle)
 
         # Replace placeholders including @sequence@
         sql_content = options.replace_options(raw_sql, sequence=seq)
 
         # Echo input if requested
         if echo_input:
-            write_output(f"-- Executing SQL (sequence {seq}):", output_file)
-            write_output(sql_content, output_file)
-            write_output("--", output_file)
+            write_output(f"-- Executing SQL (sequence {seq}):", output_handle)
+            write_output(sql_content, output_handle)
+            write_output("--", output_handle)
 
         # Execute
         success, output = execute_sql_native(
@@ -370,18 +365,18 @@ def execute_runsql(config: dict, options: Options, script_file: str, database: s
         )
 
         if not success:
-            write_output(f"    ERROR: {output[:200]}", output_file)
+            write_output(f"    ERROR: {output[:200]}", output_handle)
             return False
 
         # Write SQL output if any
         if output and output.strip():
-            write_output(output.strip(), output_file)
+            write_output(output.strip(), output_handle)
 
     return True
 
 
 def execute_isqlline(config: dict, options: Options, sql: str, database: str,
-                     output_file: str = None, echo_input: bool = False):
+                     output_handle=None, echo_input: bool = False):
     """
     Execute inline SQL.
 
@@ -390,19 +385,19 @@ def execute_isqlline(config: dict, options: Options, sql: str, database: str,
         options: Options instance for placeholder resolution
         sql: SQL command to execute
         database: Target database name
-        output_file: If provided, append output to this file
+        output_handle: Open file handle for output, or None for stdout
         echo_input: If True, echo SQL input (maps to tsql -v)
     """
     # Resolve placeholders in SQL
     sql = options.replace_options(sql)
 
-    write_output(f"  isqlline -> {database}", output_file)
+    write_output(f"  isqlline -> {database}", output_handle)
 
     # Echo input if requested
     if echo_input:
-        write_output("-- Executing SQL:", output_file)
-        write_output(sql, output_file)
-        write_output("--", output_file)
+        write_output("-- Executing SQL:", output_handle)
+        write_output(sql, output_handle)
+        write_output("--", output_handle)
 
     success, output = execute_sql_native(
         host=config.get('HOST'),
@@ -416,18 +411,18 @@ def execute_isqlline(config: dict, options: Options, sql: str, database: str,
     )
 
     if not success:
-        write_output(f"    ERROR: {output[:200]}", output_file)
+        write_output(f"    ERROR: {output[:200]}", output_handle)
         return False
 
     # Write SQL output if any
     if output and output.strip():
-        write_output(output.strip(), output_file)
+        write_output(output.strip(), output_handle)
 
     return True
 
 
 def run_create_file(config: dict, options: Options, create_file_path: str,
-                    output_file: str = None, echo_input: bool = False):
+                    output_handle=None, echo_input: bool = False):
     """
     Process a create file and execute each command.
 
@@ -435,13 +430,13 @@ def run_create_file(config: dict, options: Options, create_file_path: str,
         config: Configuration dictionary
         options: Options instance
         create_file_path: Path to the create file
-        output_file: If provided, append all output to this file
+        output_handle: Open file handle for output, or None for stdout
         echo_input: If True, echo SQL input (maps to tsql -v)
     """
     sql_source = config.get('SQL_SOURCE', os.getcwd())
     server = config.get('PROFILE_NAME', '')
 
-    write_output(f"RUNCREATE {create_file_path} on {server}...", output_file)
+    write_output(f"RUNCREATE {create_file_path} on {server}...", output_handle)
 
     with open(create_file_path, 'r', encoding='utf-8', errors='replace') as f:
         lines = f.readlines()
@@ -460,7 +455,7 @@ def run_create_file(config: dict, options: Options, create_file_path: str,
 
         if command == 'runsql':
             if not script_file:
-                write_output(f"  Line {line_num}: runsql missing script file", output_file)
+                write_output(f"  Line {line_num}: runsql missing script file", output_handle)
                 continue
 
             # If no databases specified, use default from config
@@ -470,11 +465,11 @@ def run_create_file(config: dict, options: Options, create_file_path: str,
 
             # Execute for each database
             for db in databases:
-                execute_runsql(config, options, script_file, db, seq_first, seq_last, output_file, echo_input)
+                execute_runsql(config, options, script_file, db, seq_first, seq_last, output_handle, echo_input)
 
         elif command == 'runcreate':
             if not script_file:
-                write_output(f"  Line {line_num}: runcreate missing script file", output_file)
+                write_output(f"  Line {line_num}: runcreate missing script file", output_handle)
                 continue
 
             # runcreate never searches - paths must be fully specified via $ir conversion
@@ -482,19 +477,19 @@ def run_create_file(config: dict, options: Options, create_file_path: str,
                 if os.path.isfile(script_file):
                     nested_path = script_file
                 else:
-                    write_output(f"  ERROR: File not found: {script_file}", output_file)
+                    write_output(f"  ERROR: File not found: {script_file}", output_handle)
                     continue
             else:
-                write_output(f"  ERROR: Relative path not supported: {script_file}", output_file)
+                write_output(f"  ERROR: Relative path not supported: {script_file}", output_handle)
                 continue
 
-            # Recursive call - passes same output_file and echo_input
-            run_create_file(config, options, nested_path, output_file, echo_input)
+            # Recursive call - passes same output_handle and echo_input
+            run_create_file(config, options, nested_path, output_handle, echo_input)
 
         elif command == 'i_run_upgrade':
             # i_run_upgrade format: i_run_upgrade ... sct_xx.yy.zzzzz...
             # The upgrade_no and script are parsed from the line
-            write_output(f"  i_run_upgrade (line {line_num}): {parsed['raw_line'][:60]}...", output_file)
+            write_output(f"  i_run_upgrade (line {line_num}): {parsed['raw_line'][:60]}...", output_handle)
             # For now, just note it - full implementation would call i_run_upgrade
 
         elif command == 'isqlline':
@@ -506,26 +501,26 @@ def run_create_file(config: dict, options: Options, create_file_path: str,
                 # Get database from the line
                 db = databases[0] if databases else config.get('DATABASE', '')
                 if db:
-                    execute_isqlline(config, options, sql, db, output_file, echo_input)
+                    execute_isqlline(config, options, sql, db, output_handle, echo_input)
 
         elif command == 'install_msg':
-            write_output(f"  install_msg (line {line_num})", output_file)
+            write_output(f"  install_msg (line {line_num})", output_handle)
             # Would call compile_msg
 
         elif command == 'install_required_fields':
-            write_output(f"  install_required_fields (line {line_num})", output_file)
+            write_output(f"  install_required_fields (line {line_num})", output_handle)
             # Would call compile_required_fields
 
         elif command == 'import_options':
-            write_output(f"  import_options (line {line_num})", output_file)
+            write_output(f"  import_options (line {line_num})", output_handle)
             # Would call eopt
 
         elif command == 'create_tbl_locations':
-            write_output(f"  create_tbl_locations (line {line_num})", output_file)
+            write_output(f"  create_tbl_locations (line {line_num})", output_handle)
             # Would call eloc
 
         elif command == 'compile_actions':
-            write_output(f"  compile_actions (line {line_num})", output_file)
+            write_output(f"  compile_actions (line {line_num})", output_handle)
             # Would call eact
 
         else:
@@ -587,6 +582,13 @@ def main(args_list=None):
     create_file = positional_args[0]
     profile = positional_args[1]
 
+    # Open output file handle if -O specified (kept open for entire run)
+    output_handle = None
+    if output_file:
+        if os.path.exists(output_file):
+            os.remove(output_file)
+        output_handle = open(output_file, 'w', encoding='utf-8')
+
     # Load configuration
     try:
         config = get_config(args_list=[], profile_name=profile, allow_create=False)
@@ -612,24 +614,14 @@ def main(args_list=None):
         print(f"ERROR: Create file not found: {create_file}")
         sys.exit(1)
 
-    # Initialize output file (create/overwrite at start)
-    if output_file:
-        try:
-            with open(output_file, 'w', encoding='utf-8') as f:
-                # Write header with timestamp
-                from datetime import datetime
-                f.write(f"# runcreate output - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-                f.write(f"# Create file: {create_path}\n")
-                f.write(f"# Profile: {profile}\n")
-                f.write("#" + "=" * 60 + "\n")
-        except IOError as e:
-            print(f"ERROR: Failed to create output file: {e}")
-            sys.exit(1)
-
     # Run the create file
-    run_create_file(config, options, create_path, output_file, echo_input)
+    run_create_file(config, options, create_path, output_handle, echo_input)
 
-    write_output("runcreate DONE.", output_file)
+    write_output("runcreate DONE.", output_handle)
+
+    # Close output file if open
+    if output_handle:
+        output_handle.close()
 
 
 if __name__ == "__main__":

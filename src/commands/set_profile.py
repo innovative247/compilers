@@ -787,6 +787,64 @@ def test_table_locations(profile, profile_name):
         print_error(f"  {message}")
 
 
+def test_symbolic_links(profile):
+    """Test if symbolic links exist, create if needed."""
+    from .ibs_common import _get_symbolic_links_config
+
+    print("\nTesting symbolic links...")
+
+    sql_source = profile.get('SQL_SOURCE', '')
+    if not sql_source:
+        print_error("SQL_SOURCE is not set!")
+        return
+
+    base_path = Path(sql_source)
+    if not base_path.exists():
+        print_error(f"SQL_SOURCE directory does not exist: {sql_source}")
+        return
+
+    symbolic_links = _get_symbolic_links_config()
+
+    # Check which links exist and which are missing
+    existing = []
+    missing = []
+
+    for link_rel, target_name in symbolic_links:
+        link_path = base_path / link_rel
+        target_path = base_path / target_name
+
+        # Skip if target doesn't exist (link not needed)
+        if not target_path.exists():
+            continue
+
+        if link_path.exists() or link_path.is_symlink():
+            existing.append(link_rel)
+        else:
+            missing.append((link_rel, target_name))
+
+    print(f"\n  Existing links: {len(existing)}")
+    print(f"  Missing links:  {len(missing)}")
+
+    if not missing:
+        print_success("\n  All symbolic links exist!")
+        return
+
+    # Show missing links
+    print("\n  Missing links:")
+    for link_rel, target_name in missing[:10]:  # Show first 10
+        print(f"    {link_rel} -> {target_name}")
+    if len(missing) > 10:
+        print(f"    ... and {len(missing) - 10} more")
+
+    # Try to create them
+    print("\n  Attempting to create missing links...")
+    if create_symbolic_links(profile, prompt=False):
+        print_success("  Symbolic links created successfully!")
+    else:
+        print_error("  Failed to create symbolic links.")
+        print("  Please run set_profile as Administrator and try again.")
+
+
 def print_profile_summary(name, profile):
     """Print a summary of a profile."""
     print("\n" + "=" * 70)
@@ -826,9 +884,10 @@ def test_profile_menu(settings):
         print("  3. Test options")
         print("  4. Test changelog")
         print("  5. Test table locations")
-        print("  6. Return to main menu")
+        print("  6. Test symbolic links")
+        print("  7. Return to main menu")
 
-        choice = input("\nChoose [1-6]: ").strip()
+        choice = input("\nChoose [1-7]: ").strip()
 
         if choice == "1":
             # Test SQL Source path
@@ -855,10 +914,14 @@ def test_profile_menu(settings):
             test_table_locations(profile, profile_name)
 
         elif choice == "6":
+            # Test symbolic links
+            test_symbolic_links(profile)
+
+        elif choice == "7":
             return
 
         else:
-            print("Invalid choice. Please enter 1-6.")
+            print("Invalid choice. Please enter 1-7.")
 
 
 def edit_profile_inline(profile, current_name=None):
