@@ -23,7 +23,8 @@ from .ibs_common import (
     save_profile,
     list_profiles as ibs_list_profiles,
     validate_profile_aliases,
-    find_profile_by_name_or_alias
+    find_profile_by_name_or_alias,
+    create_symbolic_links,
 )
 
 
@@ -300,6 +301,52 @@ def prompt_to_save_profile(host: str, port: int, username: str,
 # =============================================================================
 # DISPLAY HELPERS
 # =============================================================================
+
+def check_and_create_symbolic_links(profile: dict) -> None:
+    """
+    Check if symbolic links exist for the profile's SQL_SOURCE and prompt to create them.
+
+    Args:
+        profile: Profile dictionary containing SQL_SOURCE
+    """
+    sql_source = profile.get('SQL_SOURCE')
+    if not sql_source:
+        return
+
+    # Build a minimal config for create_symbolic_links
+    config = {'SQL_SOURCE': sql_source}
+
+    # Check if any links need to be created by importing the config function
+    from .ibs_common import _get_symbolic_links_config
+
+    base_path = Path(sql_source)
+    if not base_path.exists():
+        return
+
+    symbolic_links = _get_symbolic_links_config()
+    links_needed = []
+
+    for link_rel, target_name in symbolic_links:
+        link_path = base_path / link_rel
+        target_path = base_path / target_name
+
+        # Check if link needs to be created
+        if not link_path.exists() and not link_path.is_symlink():
+            if target_path.exists():
+                links_needed.append(link_rel)
+
+    if not links_needed:
+        return  # All links exist or no targets found
+
+    print(f"\n{len(links_needed)} symbolic links need to be created in {sql_source}")
+    response = input("Would you like to create them now? [Y/n]: ").strip().lower()
+
+    if response in ('', 'y', 'yes'):
+        if create_symbolic_links(config):
+            print_success(f"Symbolic links created successfully.")
+        else:
+            print_error("Failed to create some symbolic links.")
+
 
 def print_header(text):
     """Print formatted header"""
@@ -1023,6 +1070,8 @@ def edit_profile(settings, settings_path):
     settings["Profiles"][final_name] = profile
     if save_settings(settings, settings_path):
         print_success(f"Profile '{final_name}' saved!")
+        # Check for symbolic links after saving
+        check_and_create_symbolic_links(profile)
         return True
     return False
 
@@ -1084,6 +1133,8 @@ def main_menu():
                 settings.setdefault("Profiles", {})[name] = profile
                 if save_settings(settings, settings_path):
                     print_success(f"Profile '{name}' created!")
+                    # Check for symbolic links after saving
+                    check_and_create_symbolic_links(profile)
 
         elif choice == "2":
             # Edit profile

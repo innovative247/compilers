@@ -1048,31 +1048,129 @@ def convert_non_linked_paths(filename):
     return converted
 
 
-def create_symbolic_links(config: dict) -> bool:
+def _get_symbolic_links_config():
+    """Returns the list of symbolic links to create: (link_path, target_directory)."""
+    return [
+        # CSS top-level links
+        ("CSS/ss", "CSS/SQL_Sources"),
+        ("CSS/upd", "CSS/Updates"),
+        # CSS/ss subdirectory links - each points to a directory under CSS/SQL_Sources
+        ("CSS/ss/api", "CSS/SQL_Sources/Application_Program_Interface"),
+        ("CSS/ss/api2", "CSS/SQL_Sources/Application_Program_Interface_V2"),
+        ("CSS/ss/api3", "CSS/SQL_Sources/Application_Program_Interface_V3"),
+        ("CSS/ss/at", "CSS/SQL_Sources/Alarm_Treatment"),
+        ("CSS/ss/ba", "CSS/SQL_Sources/Basics"),
+        ("CSS/ss/bl", "CSS/SQL_Sources/Billing"),
+        ("CSS/ss/ct", "CSS/SQL_Sources/Create_Temp"),
+        ("CSS/ss/da", "CSS/SQL_Sources/da"),
+        ("CSS/ss/dv", "CSS/SQL_Sources/IBS_Development"),
+        ("CSS/ss/fe", "CSS/SQL_Sources/Front_End"),
+        ("CSS/ss/in", "CSS/SQL_Sources/Internal"),
+        ("CSS/ss/ma", "CSS/SQL_Sources/Co_Monitoring"),
+        ("CSS/ss/mb", "CSS/SQL_Sources/Mobile"),
+        ("CSS/ss/mo", "CSS/SQL_Sources/Monitoring"),
+        ("CSS/ss/mobile", "CSS/SQL_Sources/Mobile"),
+        ("CSS/ss/sdi", "CSS/SQL_Sources/SDI_App"),
+        ("CSS/ss/si", "CSS/SQL_Sources/System_Init"),
+        ("CSS/ss/sv", "CSS/SQL_Sources/Service"),
+        ("CSS/ss/tm", "CSS/SQL_Sources/Telemarketing"),
+        ("CSS/ss/ub", "CSS/SQL_Sources/US_Basics"),
+        # IBS links
+        ("IBS/ss", "IBS/SQL_Sources"),
+    ]
+
+
+def _run_elevated_symlink_creation(base_path: str) -> bool:
+    """
+    Run symlink creation with elevated privileges on Windows.
+    Creates a temporary script and runs it with UAC elevation.
+    """
+    import subprocess
+    import tempfile
+
+    # Build the mklink commands
+    symbolic_links = _get_symbolic_links_config()
+    commands = []
+
+    for link_rel, target_name in symbolic_links:
+        link_path = Path(base_path) / link_rel
+        target_path = Path(base_path) / target_name
+
+        # Skip if link already exists
+        if link_path.exists() or link_path.is_symlink():
+            continue
+
+        # Skip if target doesn't exist
+        if not target_path.exists():
+            continue
+
+        # Ensure parent exists
+        link_parent = link_path.parent
+        if not link_parent.exists():
+            commands.append(f'mkdir "{link_parent}"')
+
+        # Calculate relative target
+        try:
+            relative_target = os.path.relpath(target_path, link_parent)
+        except ValueError:
+            relative_target = str(target_path)
+
+        commands.append(f'mklink /D "{link_path}" "{relative_target}"')
+
+    if not commands:
+        return True  # Nothing to do
+
+    # Create a batch file with all commands
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.bat', delete=False) as f:
+        f.write('@echo off\n')
+        for cmd in commands:
+            f.write(cmd + '\n')
+        f.write('pause\n')
+        batch_file = f.name
+
+    try:
+        # Run with elevation using ShellExecute
+        import ctypes
+        result = ctypes.windll.shell32.ShellExecuteW(
+            None,           # hwnd
+            "runas",        # operation - triggers UAC
+            "cmd.exe",      # file
+            f'/c "{batch_file}"',  # parameters
+            None,           # directory
+            1               # show command (SW_SHOWNORMAL)
+        )
+        # ShellExecuteW returns > 32 on success
+        return result > 32
+    finally:
+        # Clean up batch file after a delay (let it run first)
+        import threading
+        def cleanup():
+            import time
+            time.sleep(5)
+            try:
+                os.unlink(batch_file)
+            except:
+                pass
+        threading.Thread(target=cleanup, daemon=True).start()
+
+
+def create_symbolic_links(config: dict, prompt: bool = True) -> bool:
     """
     Creates symbolic links for the compiler directory structure.
 
     Only creates links if SQL_SOURCE is defined and valid in the config.
     Links are created relative to the SQL_SOURCE directory.
 
-    Directory structure created:
-        css/ss      -> SQL_Sources
-        css/upd     -> Updates
-        css/ss/api  -> Application_Program_Interface
-        css/ss/ba   -> Basics
-        css/ss/bl   -> Billing
-        css/ss/ma   -> Co_Monitoring
-        css/ss/fe   -> Front_End
-        css/ss/mo   -> Monitoring
-        css/ss/sv   -> Service
-        css/ss/si   -> System_Init
-        css/ss/tm   -> Telemarketing
-        css/ss/ub   -> US_Basics
-        css/ss/mb   -> Mobile
-        ibs/ss      -> SQL_Sources
+    On Windows, if symlink creation fails due to privileges, can prompt for
+    Administrator elevation via UAC (controlled by prompt parameter).
+
+    This should be called at the start of runcreate to ensure all symbolic
+    links exist before processing create files that reference them.
 
     Args:
         config: Configuration dictionary containing SQL_SOURCE
+        prompt: If True, prompt user for elevation on Windows when needed.
+                If False, just attempt and return success/failure.
 
     Returns:
         True if all links created successfully (or already exist), False otherwise
@@ -1089,47 +1187,32 @@ def create_symbolic_links(config: dict) -> bool:
         logging.warning(f"SQL_SOURCE directory does not exist: {base_path} - skipping symbolic link creation")
         return False
 
-    # Define symbolic links: (link_path, target_path) relative to base_path
-    # Note: targets are relative to the link's parent directory
-    symbolic_links = [
-        # css directory links
-        ("css/ss", "SQL_Sources"),
-        ("css/upd", "Updates"),
-        # css/ss subdirectory links (targets relative to css/ss, so need ../..)
-        ("css/ss/api", "Application_Program_Interface"),
-        ("css/ss/ba", "Basics"),
-        ("css/ss/bl", "Billing"),
-        ("css/ss/ma", "Co_Monitoring"),
-        ("css/ss/fe", "Front_End"),
-        ("css/ss/mo", "Monitoring"),
-        ("css/ss/sv", "Service"),
-        ("css/ss/si", "System_Init"),
-        ("css/ss/tm", "Telemarketing"),
-        ("css/ss/ub", "US_Basics"),
-        ("css/ss/mb", "Mobile"),
-        # ibs directory links
-        ("ibs/ss", "SQL_Sources"),
-    ]
+    symbolic_links = _get_symbolic_links_config()
 
-    success = True
-
+    # First, check which links need to be created
+    links_needed = []
     for link_rel, target_name in symbolic_links:
         link_path = base_path / link_rel
-
-        # Calculate relative target path from link's parent directory
-        link_parent = link_path.parent
-        # Target is always at base_path level
         target_path = base_path / target_name
 
         # Skip if link already exists
         if link_path.exists() or link_path.is_symlink():
-            logging.debug(f"Symbolic link already exists: {link_path}")
             continue
 
-        # Check if target exists
+        # Skip if target doesn't exist
         if not target_path.exists():
-            logging.warning(f"Target directory does not exist: {target_path} - skipping link {link_rel}")
             continue
+
+        links_needed.append((link_rel, target_name, link_path, target_path))
+
+    if not links_needed:
+        return True  # All links already exist
+
+    success = True
+    needs_elevation = False
+
+    for link_rel, target_name, link_path, target_path in links_needed:
+        link_parent = link_path.parent
 
         # Ensure parent directory exists
         try:
@@ -1143,23 +1226,25 @@ def create_symbolic_links(config: dict) -> bool:
         try:
             relative_target = os.path.relpath(target_path, link_parent)
         except ValueError:
-            # On Windows, relpath fails if paths are on different drives
             relative_target = str(target_path)
 
         # Create the symbolic link
         try:
             if os.name == 'nt':
-                # Windows: use subprocess to run mklink (requires admin or developer mode)
+                # Windows: try mklink /D (directory symlink)
                 import subprocess
-                # mklink /D creates a directory symbolic link
                 result = subprocess.run(
                     ['cmd', '/c', 'mklink', '/D', str(link_path), relative_target],
                     capture_output=True,
                     text=True
                 )
                 if result.returncode != 0:
-                    logging.error(f"Failed to create symbolic link {link_path}: {result.stderr.strip()}")
-                    success = False
+                    if 'privilege' in result.stderr.lower():
+                        needs_elevation = True
+                        break  # Stop and request elevation
+                    else:
+                        logging.error(f"Failed to create symbolic link {link_path}: {result.stderr.strip()}")
+                        success = False
                 else:
                     logging.info(f"Created symbolic link: {link_path} -> {relative_target}")
             else:
@@ -1169,6 +1254,27 @@ def create_symbolic_links(config: dict) -> bool:
         except OSError as e:
             logging.error(f"Failed to create symbolic link {link_path}: {e}")
             success = False
+
+    # If we need elevation on Windows
+    if needs_elevation and os.name == 'nt':
+        if prompt:
+            # Interactive mode - ask user
+            print("\nSymbolic link creation requires Administrator privileges.")
+            response = input("Would you like to run as Administrator? [Y/n]: ").strip().lower()
+            if response in ('', 'y', 'yes'):
+                if _run_elevated_symlink_creation(str(base_path)):
+                    print("Administrator command launched. Please approve the UAC prompt.")
+                    print("After the command window closes, re-run your original command.")
+                    return True
+                else:
+                    logging.error("Failed to launch elevated command")
+                    return False
+            else:
+                print("Skipping symbolic link creation. Some file paths may not resolve correctly.")
+                return False
+        else:
+            # Non-interactive mode - just fail
+            return False
 
     return success
 
@@ -1236,7 +1342,9 @@ def find_file(filename, config):
                 return str((path_append / sql_file).resolve())
 
         # Recursive search in SQL_SOURCE subdirectories
-        search_pattern = filename if filename.endswith('.sql') else filename + '.sql'
+        # Use only the basename for rglob - it requires a relative pattern
+        basename = file_path.name if file_path.name else filename
+        search_pattern = basename if basename.endswith('.sql') else basename + '.sql'
         matches = list(path_append.rglob(search_pattern))
 
         if len(matches) == 1:

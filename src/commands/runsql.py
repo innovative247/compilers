@@ -43,7 +43,7 @@ from .ibs_common import (
     test_connection,
     execute_sql_native,
     find_file,
-    Options
+    Options,
 )
 
 

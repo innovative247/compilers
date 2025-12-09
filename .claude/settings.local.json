@@ -22,7 +22,8 @@
       "WebFetch(domain:manpages.ubuntu.com)",
       "Bash(python -c:*)",
       "Bash(git config:*)",
-      "Bash(cmdkey /list:*)"
+      "Bash(cmdkey /list:*)",
+      "Bash(pip show:*)"
     ],
     "deny": [],
     "ask": []

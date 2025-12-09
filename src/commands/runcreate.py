@@ -51,6 +51,8 @@ from .ibs_common import (
     execute_sql_native,
     find_file,
     Options,
+    convert_non_linked_paths,
+    create_symbolic_links,
 )
 
 
@@ -76,26 +78,35 @@ def write_output(message: str, output_file: str = None):
 
 def convert_ir_path(line: str, sql_source: str) -> str:
     """
-    Convert $ir>path>to>file to {SQL_SOURCE}/path/to/file.
+    Convert $ir>path>to>file or $ir/path/to/file to {SQL_SOURCE}/path/to/file.
+
+    Handles both formats found in create files:
+        $ir>css>ss>ub>filename (> separators)
+        $ir/css/ss/ub/filename (/ separators)
 
     Args:
-        line: Line containing $ir>... path
+        line: Line containing $ir... path
         sql_source: Base SQL_SOURCE directory
 
     Returns:
         Line with $ir path converted to full path
     """
-    if '$ir>' not in line.lower():
+    # Check for $ir followed by either > or /
+    if '$ir' not in line.lower():
         return line
 
-    # Find the $ir>...>file portion and convert
-    # Pattern: $ir>path>path>file (may or may not have extension)
-    match = re.search(r'\$ir>([^\s]+)', line, re.IGNORECASE)
+    # Match $ir followed by > or / and then the path
+    # Pattern: $ir>path>path>file OR $ir/path/path/file
+    match = re.search(r'\$ir[>/]([^\s]+)', line, re.IGNORECASE)
     if match:
-        ir_path = match.group(0)  # Full match including $ir>
-        path_part = match.group(1)  # Just the path after $ir>
-        # Convert > to os.sep
-        converted_path = path_part.replace('>', os.sep)
+        ir_path = match.group(0)  # Full match including $ir> or $ir/
+        path_part = match.group(1)  # Just the path after $ir> or $ir/
+        # Convert > to / (handles both formats uniformly)
+        converted_path = path_part.replace('>', '/')
+        # Apply symbolic path conversion (e.g., ss/ub -> SQL_Sources/US_Basics)
+        converted_path = convert_non_linked_paths(converted_path)
+        # Now convert to OS separator and join with sql_source
+        converted_path = converted_path.replace('/', os.sep)
         full_path = os.path.join(sql_source, converted_path)
         line = line.replace(ir_path, full_path)
 
@@ -300,16 +311,28 @@ def execute_runsql(config: dict, options: Options, script_file: str, database: s
     Args:
         config: Configuration dictionary
         options: Options instance for placeholder resolution
-        script_file: Path to the SQL script file
+        script_file: Path to the SQL script file (may be full path or relative)
         database: Target database name
         seq_first: First sequence number (default 1)
         seq_last: Last sequence number (default 1)
         output_file: If provided, append output to this file
         echo_input: If True, echo SQL input (maps to tsql -v)
     """
-    script_path = find_file(script_file, config)
-    if not script_path:
-        write_output(f"  ERROR: Script file not found: {script_file}", output_file)
+    # Add .sql extension if not present and not a create* file
+    if not script_file.endswith('.sql') and not os.path.basename(script_file).startswith('create'):
+        script_file = script_file + '.sql'
+
+    # runcreate never searches - paths must be fully specified via $ir conversion
+    # This ensures no interactive prompts when running with -O output file
+    if os.path.isabs(script_file):
+        if os.path.isfile(script_file):
+            script_path = script_file
+        else:
+            write_output(f"  ERROR: File not found: {script_file}", output_file)
+            return False
+    else:
+        # Relative path not supported in runcreate - log error and continue
+        write_output(f"  ERROR: Relative path not supported: {script_file}", output_file)
         return False
 
     # Read script content once
@@ -454,10 +477,15 @@ def run_create_file(config: dict, options: Options, create_file_path: str,
                 write_output(f"  Line {line_num}: runcreate missing script file", output_file)
                 continue
 
-            # Find the nested create file
-            nested_path = find_file(script_file, config)
-            if not nested_path:
-                write_output(f"  ERROR: Create file not found: {script_file}", output_file)
+            # runcreate never searches - paths must be fully specified via $ir conversion
+            if os.path.isabs(script_file):
+                if os.path.isfile(script_file):
+                    nested_path = script_file
+                else:
+                    write_output(f"  ERROR: File not found: {script_file}", output_file)
+                    continue
+            else:
+                write_output(f"  ERROR: Relative path not supported: {script_file}", output_file)
                 continue
 
             # Recursive call - passes same output_file and echo_input
@@ -571,6 +599,11 @@ def main(args_list=None):
     options = Options(config)
     if not options.generate_option_files():
         print("ERROR: Failed to load options files")
+        sys.exit(1)
+
+    # Ensure symbolic links exist before processing create files
+    if not create_symbolic_links(config, prompt=False):
+        print("ERROR: Failed to create symbolic links. Run `set_profile` to create them with Administrator privileges.")
         sys.exit(1)
 
     # Find the create file
