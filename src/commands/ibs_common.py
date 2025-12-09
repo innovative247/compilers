@@ -810,170 +810,6 @@ def replace_placeholders(text, config, remove_ampersands=False):
         
     return processed_text
 
-# =============================================================================
-# LEGACY COMPATIBILITY WRAPPERS (config dictionary-based)
-# =============================================================================
-# These wrappers maintain backward compatibility with existing commands that use
-# the config dictionary approach. New code should use the direct parameter functions above.
-
-def get_db_connection_legacy(config: dict, autocommit: bool = True):
-    """
-    Legacy wrapper: Establishes pyodbc connection from config dictionary.
-
-    This function maintains backward compatibility with existing commands that pass
-    a config dictionary. It extracts HOST, PORT, etc. from the config and calls
-    the new get_db_connection() function.
-
-    Args:
-        config: Configuration dictionary with HOST, PORT, USERNAME, PASSWORD, PLATFORM, DATABASE
-        autocommit: Enable autocommit mode (default: True)
-
-    Returns:
-        pyodbc connection object
-
-    Note:
-        New code should use get_db_connection() or get_db_connection_from_profile() directly.
-    """
-    # Extract connection parameters from config
-    host = config.get('HOST')
-    port = config.get('PORT')
-    username = config.get('USERNAME')
-    password = config.get('PASSWORD')
-    platform = config.get('PLATFORM', '').upper()
-    database = config.get('DATABASE')
-
-    # Fall back to DSQUERY if HOST/PORT not present (legacy profiles)
-    if not host or not port:
-        dsquery = config.get('DSQUERY')
-        if dsquery:
-            logging.warning(f"Profile uses legacy DSQUERY '{dsquery}'. Please update to HOST/PORT format.")
-            # For now, treat DSQUERY as HOST and use default ports
-            host = dsquery
-            port = 1433 if platform == "MSSQL" else 5000
-
-    if not all([host, port, username, password, platform]):
-        missing = []
-        if not host: missing.append("HOST")
-        if not port: missing.append("PORT")
-        if not username: missing.append("USERNAME")
-        if not password: missing.append("PASSWORD")
-        if not platform: missing.append("PLATFORM")
-        raise ValueError(f"Config missing required connection fields: {', '.join(missing)}")
-
-    # Call the new direct connection function
-    return get_db_connection(host, port, username, password, platform, database, autocommit)
-
-def execute_sql(config, sql_string, database=None, fetch_results=False):
-    """
-    Executes a SQL string against the database. Can handle multiple batches separated by 'GO'.
-
-    Args:
-        config: Configuration dictionary with connection details
-        sql_string: SQL commands to execute (can contain GO separators)
-        database: Optional database name to override config DATABASE
-        fetch_results: If True, return query results
-
-    Returns:
-        List of result rows if fetch_results=True, empty list otherwise
-    """
-    logging.debug(f"Executing SQL (fetch_results={fetch_results}, DB_override={database}):\n{sql_string[:200]}...")
-
-    results = []
-    conn_config = config.copy()
-    if database:
-        conn_config['DATABASE'] = database
-
-    connection = None
-    try:
-        # Use the new legacy wrapper which handles HOST/PORT or DSQUERY
-        connection = get_db_connection_legacy(conn_config)
-        cursor = connection.cursor()
-
-        batches = re.split(r'^\s*GO\s*$', sql_string, flags=re.MULTILINE | re.IGNORECASE)
-        batches = [batch.strip() for batch in batches if batch.strip()]
-
-        for batch in batches:
-            if not batch: continue
-            try:
-                cursor.execute(batch)
-                if fetch_results and cursor.description:
-                    results.extend(cursor.fetchall())
-            except pyodbc.ProgrammingError as e:
-                logging.error(f"SQL batch failed: {batch[:100]}... Error: {e}")
-                raise
-
-    except pyodbc.Error as ex:
-        sqlstate = ex.args[0] if ex.args else "Unknown"
-        logging.error(f"SQL execution failed. SQLSTATE: {sqlstate}. Error: {ex}")
-        sys.exit(1)
-    finally:
-        if connection:
-            connection.close()
-
-    return results
-
-def execute_sql_procedure(config, proc_name, params=None, database=None, fetch_results=False):
-    """Executes a stored procedure."""
-    logging.debug(f"Executing stored procedure '{proc_name}' with params={params} (DB_override={database})...")
-    sql = f"EXEC {proc_name}"
-    if params:
-        param_str = ", ".join([f"'{p.replace(chr(39), chr(39)+chr(39))}'" if isinstance(p, str) else str(p) for p in params])
-        sql = f"EXEC {proc_name} {param_str}"
-        
-    return execute_sql(config, sql, database=database, fetch_results=fetch_results)
-
-def execute_bcp_legacy(config: dict, table: str, direction: str, file_path: str) -> bool:
-    """
-    Legacy wrapper: Execute freebcp from config dictionary.
-
-    This function maintains backward compatibility with existing commands that pass
-    a config dictionary. It extracts HOST, PORT, etc. from the config and calls
-    the new execute_bcp() function.
-
-    Args:
-        config: Configuration dictionary with HOST, PORT, USERNAME, PASSWORD, PLATFORM
-        table: Table name (e.g., "sbnmaster..users")
-        direction: "in" or "out"
-        file_path: Path to data file
-
-    Returns:
-        True if successful, False otherwise
-
-    Note:
-        New code should use execute_bcp() directly.
-    """
-    # Extract connection parameters from config
-    host = config.get('HOST')
-    port = config.get('PORT')
-    username = config.get('USERNAME')
-    password = config.get('PASSWORD')
-    platform = config.get('PLATFORM', 'SYBASE')
-
-    # Fall back to DSQUERY if HOST/PORT not present (legacy profiles)
-    if not host or not port:
-        dsquery = config.get('DSQUERY')
-        if dsquery:
-            logging.warning(f"Profile uses legacy DSQUERY '{dsquery}'. Please update to HOST/PORT format.")
-            host = dsquery
-            port = 1433 if platform.upper() == "MSSQL" else 5000
-
-    if not all([host, port, username, password]):
-        missing = []
-        if not host: missing.append("HOST")
-        if not port: missing.append("PORT")
-        if not username: missing.append("USERNAME")
-        if not password: missing.append("PASSWORD")
-        logging.error(f"Config missing required connection fields: {', '.join(missing)}")
-        return False
-
-    # Call the new direct BCP function
-    success, message = execute_bcp(host, port, username, password, table, direction, file_path, platform)
-
-    if not success:
-        logging.error(f"BCP failed: {message}")
-
-    return success
-
 # --- File Utilities ---
 def convert_non_linked_paths(filename):
     """
@@ -2008,9 +1844,11 @@ class Options:
         if '&' not in result:
             return result
 
-        for placeholder, value in self._options.items():
-            if placeholder in result:
-                result = result.replace(placeholder, value)
+        # Use regex to find and replace only placeholders that exist in the text
+        # This is faster than iterating through all 500+ options
+        def replacer(match):
+            return self._options.get(match.group(0), match.group(0))
+        result = re.sub(r'&[^&]+&', replacer, result)
 
         return result
 
