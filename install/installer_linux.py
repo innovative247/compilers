@@ -272,9 +272,46 @@ def install_vim(force: bool = False) -> bool:
 # PYTHON PACKAGES
 # =============================================================================
 
+def ensure_pip_installed() -> bool:
+    """Ensure pip is installed, installing it via apt if missing."""
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "--version"],
+            capture_output=True,
+            text=True
+        )
+        if result.returncode == 0:
+            log.log(f"pip is available: {result.stdout.strip()}", "SUCCESS")
+            return True
+    except Exception:
+        pass
+
+    log.log("pip not found, installing via apt...", "STEP")
+    try:
+        run_command(["sudo", "apt", "install", "-y", "python3-pip"])
+        # Verify installation
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "--version"],
+            capture_output=True,
+            text=True
+        )
+        if result.returncode == 0:
+            log.log("pip installed successfully", "SUCCESS")
+            return True
+    except Exception as e:
+        log.log(f"Failed to install pip: {e}", "ERROR")
+
+    return False
+
+
 def install_python_packages() -> bool:
     """Install Python packages from src/."""
     log.section("Python Packages Installation")
+
+    # Ensure pip is available first
+    if not ensure_pip_installed():
+        log.log("Cannot proceed without pip", "ERROR")
+        return False
 
     if not SRC_DIR.exists():
         log.log(f"Source directory not found: {SRC_DIR}", "ERROR")
@@ -289,15 +326,15 @@ def install_python_packages() -> bool:
     log.subsection("Upgrading pip")
 
     try:
-        run_command([sys.executable, "-m", "pip", "install", "--upgrade", "pip"])
+        run_command([sys.executable, "-m", "pip", "install", "--upgrade", "pip", "--break-system-packages"])
     except Exception as e:
         log.log(f"pip upgrade failed (continuing anyway): {e}", "WARN")
 
     log.subsection("Installing IBS Compilers package")
 
     try:
-        # Install in editable mode
-        run_command([sys.executable, "-m", "pip", "install", "-e", str(SRC_DIR)])
+        # Install in editable mode (--break-system-packages for PEP 668 compliance on Ubuntu 23.04+)
+        run_command([sys.executable, "-m", "pip", "install", "-e", str(SRC_DIR), "--break-system-packages"])
         log.log("IBS Compilers package installed successfully", "SUCCESS")
 
         # Check if commands are available
@@ -371,8 +408,8 @@ def initialize_settings_json(force: bool = False) -> bool:
 # SHELL CONFIGURATION
 # =============================================================================
 
-def check_shell_config() -> bool:
-    """Check and suggest shell configuration updates."""
+def configure_shell_path() -> bool:
+    """Add PATH export to shell config if not present."""
     log.section("Shell Configuration")
 
     # Determine shell config file
@@ -385,16 +422,54 @@ def check_shell_config() -> bool:
     log.log(f"Shell: {shell}", "INFO")
     log.log(f"Config file: {config_file}", "INFO")
 
-    # Check if ~/.local/bin is in PATH
     user_bin = Path.home() / ".local" / "bin"
-    current_path = os.environ.get("PATH", "")
+    path_export = 'export PATH="$PATH:$HOME/.local/bin"'
+    marker = "# IBS Compilers PATH"
 
-    if str(user_bin) not in current_path:
-        log.log(f"~/.local/bin not in PATH", "WARN")
-        log.log(f"Add to {config_file}:", "INFO")
-        log.log('  export PATH="$PATH:$HOME/.local/bin"', "INFO")
+    # Check if already configured
+    if config_file.exists():
+        content = config_file.read_text()
+        if marker in content or str(user_bin) in content:
+            log.log("PATH already configured in shell config", "SUCCESS")
+            return True
 
-    return True
+    # Add PATH export to shell config
+    try:
+        with open(config_file, "a") as f:
+            f.write(f"\n{marker}\n{path_export}\n")
+        log.log(f"Added PATH export to {config_file}", "SUCCESS")
+        return True
+    except Exception as e:
+        log.log(f"Failed to update {config_file}: {e}", "ERROR")
+        return False
+
+
+def verify_installation() -> bool:
+    """Source shell config and verify set_profile is available."""
+    log.section("Verifying Installation")
+
+    shell = os.environ.get("SHELL", "/bin/bash")
+    if "zsh" in shell:
+        config_file = Path.home() / ".zshrc"
+    else:
+        config_file = Path.home() / ".bashrc"
+
+    # Source the config and check if set_profile exists
+    try:
+        result = subprocess.run(
+            [shell, "-c", f"source {config_file} && which set_profile"],
+            capture_output=True,
+            text=True
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            log.log(f"set_profile found at: {result.stdout.strip()}", "SUCCESS")
+            return True
+        else:
+            log.log("set_profile not found in PATH after sourcing config", "WARN")
+            return False
+    except Exception as e:
+        log.log(f"Verification failed: {e}", "ERROR")
+        return False
 
 
 # =============================================================================
@@ -534,8 +609,11 @@ def main():
     # Step 4: Initialize settings.json
     initialize_settings_json(args.force)
 
-    # Step 5: Shell configuration hints
-    check_shell_config()
+    # Step 5: Configure shell PATH
+    configure_shell_path()
+
+    # Step 6: Verify installation
+    verify_installation()
 
     # Show summary
     show_summary()

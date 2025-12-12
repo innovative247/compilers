@@ -1,41 +1,52 @@
 IBS Compilers Installer Log
-Platform: Windows 10
-Python: 3.11.9 (tags/v3.11.9:de54cf5, Apr  2 2024, 10:12:12) [MSC v.1938 64 bit (AMD64)]
+Platform: Linux (Linux x86_64)
 ============================================================
 
-[STEP] MSYS2 Installation
-[SUCCESS] MSYS2 already installed at C:\msys64
-[STEP] FreeTDS Installation
+Python: 3.12.3
+
+[SECTION] FreeTDS Installation
 [SUCCESS] FreeTDS already installed
 [INFO] Running: tsql -C
 [INFO] FreeTDS version info:
-[INFO]   Compile-time settings (established with the "configure" script)
-[INFO]                               Version: freetds v1.5.4
-[INFO]                freetds.conf directory: c:
-[INFO]        MS db-lib source compatibility: no
-[INFO]           Sybase binary compatibility: no
-[STEP] PATH Configuration
-[STEP] Configuring MSYS2 PATH
-[SUCCESS] PATH already contains ucrt64/bin (FreeTDS)
-[SUCCESS] PATH already contains usr/bin (tail, grep, etc.)
-[STEP] Python Packages Installation
-[STEP] Upgrading pip
-[INFO] Running: C:\Users\JakeWilliams\AppData\Local\Programs\Python\Python311\python.exe -m pip install --upgrade pip
-[STEP] Installing IBS Compilers package
-[INFO] Running: C:\Users\JakeWilliams\AppData\Local\Programs\Python\Python311\python.exe -m pip install -e C:\_innovative\_source\compilers\src
-[SUCCESS] IBS Compilers package installed to: C:\Users\JakeWilliams\AppData\Local\Programs\Python\Python311\Scripts
-[SUCCESS] Scripts directory already in PATH: C:\Users\JakeWilliams\AppData\Local\Programs\Python\Python311\Scripts
-[STEP] Settings Configuration
-[SUCCESS] Settings file exists: C:\_innovative\_source\compilers\settings.json
-[SUCCESS] Found 3 profile(s) in settings.json
-[STEP] VIM Installation
-[SUCCESS] vim already in PATH: C:\Program Files (x86)\Vim\vim90\vim.EXE
-[STEP] Installation Summary
-[SUCCESS] All components installed successfully!
-[SUCCESS] Bootstrap completed - installer.py succeeded
-[INFO] See C:\_innovative\_source\compilers\install\installer.log for full installation log
-[STEP] Refreshing PATH environment variable...
-[SUCCESS] PATH refreshed in current session
-[SUCCESS] vim is available: C:\Program Files (x86)\Vim\vim90\vim.exe
-[SUCCESS] tail is available: C:\msys64\usr\bin\tail.exe
-[SUCCESS] IBS compilers are available: C:\Users\JakeWilliams\AppData\Local\Programs\Python\Python311\Scripts
+Compile-time settings (established with the "configure" script)
+                            Version: freetds v1.3.17
+             freetds.conf directory: /etc/freetds
+     MS db-lib source compatibility: no
+        Sybase binary compatibility: yes
+                      Thread safety: yes
+                      iconv library: yes
+                        TDS version: auto
+                              iODBC: no
+                           unixodbc: yes
+              SSPI "trusted" logins: no
+                           Kerberos: yes
+                            OpenSSL: no
+                             GnuTLS: yes
+                               MARS: yes
+
+[SECTION] Vim Installation
+[SUCCESS] vim already installed: /usr/bin/vim
+[SECTION] Python Packages Installation
+[STEP] pip not found, installing via apt...
+[INFO] Running: sudo apt install -y python3-pip
+[SUCCESS] pip installed successfully
+[SUBSECTION] Upgrading pip
+[INFO] Running: /usr/bin/python3 -m pip install --upgrade pip
+[ERROR] Command failed with exit code 1
+[WARN] pip upgrade failed (continuing anyway): Command '['/usr/bin/python3', '-m', 'pip', 'install', '--upgrade', 'pip']' returned non-zero exit status 1.
+[SUBSECTION] Installing IBS Compilers package
+[INFO] Running: /usr/bin/python3 -m pip install -e /home/jake/compilers/src
+[ERROR] Command failed with exit code 1
+[ERROR] Package installation failed: Command '['/usr/bin/python3', '-m', 'pip', 'install', '-e', '/home/jake/compilers/src']' returned non-zero exit status 1.
+[WARN] Python package installation had issues
+[SECTION] Settings Configuration
+[SUCCESS] Settings file exists: /home/jake/compilers/settings.json
+[SUCCESS] Found 0 profile(s) in settings.json
+[SECTION] Shell Configuration
+[INFO] Shell: /bin/bash
+[INFO] Config file: /home/jake/.bashrc
+[SUCCESS] Added PATH export to /home/jake/.bashrc
+[SECTION] Verifying Installation
+[WARN] set_profile not found in PATH after sourcing config
+[SECTION] Installation Summary
+[WARN] Some components may need attention - see above

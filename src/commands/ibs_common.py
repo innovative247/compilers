@@ -927,6 +927,9 @@ def convert_non_linked_paths(filename):
 def _get_symbolic_links_config():
     """Returns the list of symbolic links to create: (link_path, target_directory)."""
     return [
+        # Lowercase aliases for top-level directories (Linux case-sensitivity)
+        ("css", "CSS"),
+        ("ibs", "IBS"),
         # CSS top-level links
         ("CSS/ss", "CSS/SQL_Sources"),
         ("CSS/upd", "CSS/Updates"),
@@ -1111,6 +1114,10 @@ def create_symbolic_links(config: dict, prompt: bool = True) -> bool:
             relative_target = os.path.relpath(target_path, link_parent)
         except ValueError:
             relative_target = str(target_path)
+
+        # Re-check if link now exists (may have been created by parent symlink)
+        if link_path.exists() or link_path.is_symlink():
+            continue
 
         # Create the symbolic link
         try:
