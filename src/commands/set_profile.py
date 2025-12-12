@@ -309,9 +309,15 @@ def check_and_create_symbolic_links(profile: dict) -> None:
     This is called when a profile is added or modified, so we always check
     (bypassing the IBS_SYMLINKS_CHECKED environment variable).
 
+    Also clears the IBS_CHANGELOG_STATUS cache so the next runsql call will
+    re-check changelog availability for the new/modified profile.
+
     Args:
         profile: Profile dictionary containing SQL_SOURCE
     """
+    # Clear changelog cache when profile is modified
+    os.environ.pop('IBS_CHANGELOG_STATUS', None)
+
     sql_source = profile.get('SQL_SOURCE')
     if not sql_source:
         return

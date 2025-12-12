@@ -33,6 +33,25 @@ def _handle_interrupt(sig, frame):
 signal.signal(signal.SIGINT, _handle_interrupt)
 
 # =============================================================================
+# PRE-COMPILED REGEX PATTERNS (Performance optimization)
+# =============================================================================
+# These patterns are compiled once at module load time instead of on every call
+
+# Pattern for &placeholder& replacement (matches valid names: letters, numbers, _, #, -)
+_PLACEHOLDER_PATTERN = re.compile(r'&[a-zA-Z_][a-zA-Z0-9_#-]*&')
+
+# Pattern for 'use <database>' statement detection
+_USE_DB_PATTERN = re.compile(r'^\s*use\s+(\w+)\s*$', re.MULTILINE | re.IGNORECASE)
+
+# =============================================================================
+# SETTINGS CACHE (Performance optimization)
+# =============================================================================
+# Cache settings.json at module level to avoid re-reading for every call
+
+_SETTINGS_CACHE = None
+_SETTINGS_MTIME = None
+
+# =============================================================================
 # CONFIGURATION MANAGEMENT
 # =============================================================================
 
@@ -54,7 +73,10 @@ def find_settings_file() -> Path:
 
 def load_settings() -> dict:
     """
-    Load settings.json and return as dict.
+    Load settings.json and return as dict (cached at module level).
+
+    The file is cached based on modification time to avoid re-reading
+    when called multiple times (e.g., runcreate calling runsql repeatedly).
 
     Returns:
         Dictionary containing settings data with 'Profiles' section
@@ -63,6 +85,8 @@ def load_settings() -> dict:
         FileNotFoundError: If settings.json cannot be found
         json.JSONDecodeError: If settings.json is invalid JSON
     """
+    global _SETTINGS_CACHE, _SETTINGS_MTIME
+
     settings_file = find_settings_file()
 
     if not settings_file.exists():
@@ -70,12 +94,22 @@ def load_settings() -> dict:
         return {"Profiles": {}}
 
     try:
+        # Check if cache is still valid (file hasn't changed)
+        current_mtime = os.path.getmtime(settings_file)
+        if _SETTINGS_CACHE is not None and _SETTINGS_MTIME == current_mtime:
+            return _SETTINGS_CACHE
+
+        # Cache miss or file changed - load fresh
         with open(settings_file, 'r', encoding='utf-8') as f:
             settings_data = json.load(f)
 
         if "Profiles" not in settings_data:
             logging.warning("settings.json missing 'Profiles' section. Adding empty Profiles.")
             settings_data["Profiles"] = {}
+
+        # Update cache
+        _SETTINGS_CACHE = settings_data
+        _SETTINGS_MTIME = current_mtime
 
         return settings_data
 
@@ -1509,21 +1543,28 @@ class Options:
 
         return result
 
-    def _load_option_file(self, filepath: str) -> list:
+    def _load_option_file_combined(self, filepath: str) -> tuple:
         """
-        Load and parse a single option file.
+        Load and parse a single option file in one pass (performance optimization).
+
+        Returns both v:/c: options AND raw '->' lines in a single file read.
+        The '->' lines are returned unparsed since they need v:/c: options to be
+        loaded first before they can be resolved.
 
         Args:
             filepath: Path to option file
 
         Returns:
-            List of (placeholder, value) tuples
+            Tuple of (options_list, table_lines_list) where:
+            - options_list: List of (placeholder, value) tuples for v:/c: options
+            - table_lines_list: List of raw '->' lines to be parsed later
         """
-        results = []
+        options = []
+        table_lines = []
 
         if not os.path.exists(filepath):
             logging.debug(f"Option file not found: {filepath}")
-            return results
+            return options, table_lines
 
         try:
             with open(filepath, 'r', encoding='utf-8') as f:
@@ -1545,7 +1586,7 @@ class Options:
                         # Static value - compile into SQL
                         placeholder, value = self._parse_v_option(line)
                         if placeholder:
-                            results.append((placeholder, value))
+                            options.append((placeholder, value))
 
                     elif prefix == 'V:':
                         # Dynamic value - NOT compiled, queried at runtime
@@ -1556,7 +1597,7 @@ class Options:
                     elif prefix == 'c:':
                         # Static on/off - compile as &if_/&endif_ blocks
                         items = self._parse_c_option(line)
-                        results.extend(items)
+                        options.extend(items)
 
                     elif prefix == 'C:':
                         # Dynamic on/off - NOT compiled, queried at runtime
@@ -1564,14 +1605,26 @@ class Options:
                         pass
 
                     elif line.startswith('->'):
-                        # Table options need existing options to resolve db vars
-                        # These are processed in a second pass
-                        pass
+                        # Table options - store raw line for later processing
+                        table_lines.append(line)
 
         except Exception as e:
             logging.error(f"Error reading option file {filepath}: {e}")
 
-        return results
+        return options, table_lines
+
+    def _load_option_file(self, filepath: str) -> list:
+        """
+        Load and parse a single option file (v:/c: options only).
+
+        Args:
+            filepath: Path to option file
+
+        Returns:
+            List of (placeholder, value) tuples
+        """
+        options, _ = self._load_option_file_combined(filepath)
+        return options
 
     def _load_table_options(self, filepath: str) -> list:
         """
@@ -1787,20 +1840,26 @@ class Options:
                 logging.debug(f"Optional server file not found (this is OK): {opt_server}")
 
         # Load options - LATER files override EARLIER files
+        # Performance optimization: single-pass loading collects both v:/c: options
+        # AND -> table lines, avoiding re-reading files
         self._options = {}
         self._option_sources = {}
+        collected_table_lines = []  # Store (filepath, line) tuples for later processing
 
         for filepath in option_files:
             logging.debug(f"Loading option file: {filepath}")
-            items = self._load_option_file(filepath)
+            items, table_lines = self._load_option_file_combined(filepath)
             for placeholder, value in items:
                 # Later values override earlier values
                 self._options[placeholder] = value
                 self._option_sources[placeholder] = filepath
                 logging.debug(f"Set option: {placeholder} = {value}")
+            # Collect -> lines for later processing (need v:/c: options to resolve db vars)
+            for line in table_lines:
+                collected_table_lines.append((filepath, line))
 
         # 4. table_locations - REQUIRED
-        # Second pass: load table options (need v:/c: options first to resolve db vars)
+        # Load table options (need v:/c: options first to resolve db vars)
         table_file = os.path.join(base_path, "table_locations")
         if not os.path.exists(table_file):
             logging.error(f"REQUIRED file not found: {table_file}")
@@ -1816,9 +1875,10 @@ class Options:
             self._options[placeholder] = value
             self._option_sources[placeholder] = table_file
 
-        # Also check for -> lines in option files (these override table_locations)
-        for filepath in option_files:
-            items = self._load_table_options(filepath)
+        # Now process -> lines from option files (these override table_locations)
+        # These were collected during single-pass loading above
+        for filepath, line in collected_table_lines:
+            items = self._parse_table_option(line)
             for placeholder, value in items:
                 self._options[placeholder] = value
                 self._option_sources[placeholder] = filepath
@@ -1870,14 +1930,14 @@ class Options:
         if '&' not in result:
             return result
 
-        # Use regex to find and replace only placeholders that exist in the text
+        # Use pre-compiled regex to find and replace only placeholders that exist in the text
         # This is faster than iterating through all 500+ options
         # Pattern matches valid placeholder names: letters, numbers, underscores, hyphens, hash signs
         # Examples: &users&, &db-ba_agent_activity&, &w#sys_globals&
         # This avoids matching literal & in SQL strings like '%[!,@,#,$,%,^,&,(,)]%'
         def replacer(match):
             return self._options.get(match.group(0), match.group(0))
-        result = re.sub(r'&[a-zA-Z_][a-zA-Z0-9_#-]*&', replacer, result)
+        result = _PLACEHOLDER_PATTERN.sub(replacer, result)
 
         return result
 
@@ -1971,34 +2031,47 @@ class Options:
 # CHANGE LOG FUNCTIONS
 # =============================================================================
 
-def is_changelog_enabled(config: dict) -> tuple:
+def is_changelog_enabled(config: dict, force_check: bool = False) -> tuple:
     """
-    Check if changelog is enabled by querying the database.
+    Check if changelog is enabled by querying the database (cached per session).
 
     Checks two things:
     1. gclog12 option act_flg = '+' in &options& table
     2. ba_gen_chg_log_new stored procedure exists in &dbpro&
+
+    The result is cached in the IBS_CHANGELOG_STATUS environment variable to avoid
+    repeated database queries. This is especially important when runcreate calls
+    runsql hundreds of times.
 
     Any error (table doesn't exist, database doesn't exist, connection error)
     silently returns (False, message) - no errors logged or shown to user.
 
     Args:
         config: Configuration dictionary with database connection info and SQL_SOURCE
+        force_check: If True, bypass cache and re-check the database
 
     Returns:
         Tuple of (enabled: bool, message: str)
         - (True, "Changelog enabled") if both checks pass
         - (False, reason) if either check fails or error occurs
     """
+    # Check session cache first (unless force_check is True)
+    if not force_check:
+        cached = os.environ.get('IBS_CHANGELOG_STATUS')
+        if cached is not None:
+            return cached == '1', "Cached result"
+
     try:
         # Need to resolve placeholders first
         options = Options(config)
         if not options.generate_option_files():
+            os.environ['IBS_CHANGELOG_STATUS'] = '0'
             return False, "Failed to load options files"
 
         # Resolve &dbpro& for the database to query
         dbpro = options.replace_options("&dbpro&")
         if dbpro == "&dbpro&":
+            os.environ['IBS_CHANGELOG_STATUS'] = '0'
             return False, "&dbpro& placeholder not resolved"
 
         # Check 1: Is gclog12 enabled?
@@ -2016,9 +2089,11 @@ def is_changelog_enabled(config: dict) -> tuple:
         )
 
         if not success:
+            os.environ['IBS_CHANGELOG_STATUS'] = '0'
             return False, "Could not query options table (may not exist)"
 
         if '+' not in output:
+            os.environ['IBS_CHANGELOG_STATUS'] = '0'
             return False, "gclog12 option is disabled (act_flg != '+')"
 
         # Check 2: Does ba_gen_chg_log_new exist?
@@ -2035,11 +2110,15 @@ def is_changelog_enabled(config: dict) -> tuple:
         )
 
         if not success or '1' not in output:
+            os.environ['IBS_CHANGELOG_STATUS'] = '0'
             return False, "ba_gen_chg_log_new stored procedure not found in " + dbpro
 
+        # Cache success and return
+        os.environ['IBS_CHANGELOG_STATUS'] = '1'
         return True, "Changelog enabled"
 
     except Exception as e:
+        os.environ['IBS_CHANGELOG_STATUS'] = '0'
         return False, f"Error checking changelog: {str(e)}"
 
 
@@ -4052,13 +4131,14 @@ def execute_sql_interleaved(host: str, port: int, username: str, password: str,
             cmd.extend(["-D", database])
 
         # Start tsql process with persistent connection
+        # Use cp1252 encoding - FreeTDS doesn't handle UTF-8 multi-byte sequences properly
         process = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            encoding='utf-8',
+            encoding='cp1252',
             errors='replace'
         )
 
@@ -4113,15 +4193,22 @@ def execute_sql_interleaved(host: str, port: int, username: str, password: str,
                     write_output(line)
             elif stream_name == 'stderr':
                 # Check for real errors (severity > 10)
+                # Severity 10 = informational, 11+ = actual errors
                 match = re.match(r'Msg \d+ \(severity (\d+)', line)
                 if match:
                     severity = int(match.group(1))
                     if severity > 10:
                         has_error = True
-                # Clean up error message formatting
-                line = line.strip().strip('\t').strip('"')
-                if line:
-                    write_output(line)
+                        # Output error messages
+                        line = line.strip().strip('\t').strip('"')
+                        if line:
+                            write_output(line)
+                    # else: severity <= 10, skip informational messages
+                else:
+                    # Non-Msg lines (error details, etc.) - output them
+                    line = line.strip().strip('\t').strip('"')
+                    if line:
+                        write_output(line)
 
         def drain_output_until_idle(max_wait_ms: int = 2000):
             """Drain output until queue is idle for a short period."""
@@ -4151,21 +4238,37 @@ def execute_sql_interleaved(host: str, port: int, username: str, password: str,
                     write_output(f"{i+1}> {line}")
 
             # Send this batch to tsql
-            process.stdin.write(batch_sql)
-            if not batch_sql.strip().lower().endswith('go'):
-                process.stdin.write('\ngo\n')
-            process.stdin.flush()
+            try:
+                process.stdin.write(batch_sql)
+                if not batch_sql.strip().lower().endswith('go'):
+                    process.stdin.write('\ngo\n')
+                process.stdin.flush()
+            except (OSError, BrokenPipeError) as e:
+                # Process may have crashed due to earlier error
+                write_output(f"ERROR: Connection to database lost: {e}")
+                break
 
             # Wait for tsql to process this batch and drain output
             drain_output_until_idle(max_wait_ms=5000)
 
-        # Send exit command
-        process.stdin.write('exit\n')
-        process.stdin.flush()
-        process.stdin.close()
+        # Send exit command (may fail if process already exited due to error)
+        try:
+            process.stdin.write('exit\n')
+            process.stdin.flush()
+        except (OSError, BrokenPipeError):
+            pass  # Process may have already exited
+
+        try:
+            process.stdin.close()
+        except (OSError, BrokenPipeError):
+            pass
 
         # Wait for process to complete and drain remaining output
-        process.wait(timeout=30)
+        try:
+            process.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            process.kill()
+
         drain_output_until_idle(max_wait_ms=2000)
 
         # Wait for threads

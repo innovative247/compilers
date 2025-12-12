@@ -44,7 +44,6 @@ CHG 241206 Changed changelog to ON by default, added --no-changelog flag
 import argparse
 import getpass
 import logging
-import re
 import sys
 import os
 from pathlib import Path
@@ -61,51 +60,6 @@ from .ibs_common import (
     Options,
     create_symbolic_links,
 )
-
-
-def split_sql_batches(sql_content: str) -> list:
-    """
-    Split SQL content into batches separated by 'go' statements.
-
-    Each batch ends with a 'go' statement. The 'go' is kept as part of the batch
-    for proper execution by tsql.
-
-    Args:
-        sql_content: Full SQL script content
-
-    Returns:
-        List of (batch_sql, start_line) tuples where start_line is 1-based
-    """
-    import re
-
-    lines = sql_content.splitlines(keepends=True)
-    batches = []
-    current_batch = []
-    batch_start_line = 1
-    line_num = 1
-
-    for line in lines:
-        current_batch.append(line)
-
-        # Check if this line is a 'go' statement (case insensitive, may have whitespace)
-        stripped = line.strip().lower()
-        if stripped == 'go' or stripped.startswith('go ') or stripped.startswith('go\t'):
-            # End of batch - save it
-            batch_sql = ''.join(current_batch)
-            if batch_sql.strip():  # Only add non-empty batches
-                batches.append((batch_sql, batch_start_line))
-            current_batch = []
-            batch_start_line = line_num + 1
-
-        line_num += 1
-
-    # Handle any remaining content after the last 'go'
-    if current_batch:
-        remaining = ''.join(current_batch)
-        if remaining.strip():
-            batches.append((remaining, batch_start_line))
-
-    return batches
 
 
 def main():
@@ -165,6 +119,8 @@ Notes:
                         help="Print processed SQL to console instead of executing")
     parser.add_argument("--no-changelog", action="store_true",
                         help="Disable changelog logging (default: changelog ON)")
+    parser.add_argument("--force-changelog-check", action="store_true",
+                        help="Force re-check of changelog status (bypasses session cache)")
     parser.add_argument("--test-connection", action="store_true",
                         help="Test connection before executing SQL")
     parser.add_argument("--debug", action="store_true", help="Enable debug output")
@@ -358,7 +314,7 @@ Notes:
                 # Inject change log (ON by default, use --no-changelog to disable)
                 if not args.no_changelog:
                     from .ibs_common import is_changelog_enabled, generate_changelog_sql
-                    enabled, msg = is_changelog_enabled(config)
+                    enabled, msg = is_changelog_enabled(config, force_check=args.force_changelog_check)
                     if enabled:
                         logging.info("Change logging enabled. Injecting audit trail SQL...")
                         username = config.get('USERNAME', os.environ.get('USERNAME', 'unknown'))
@@ -391,57 +347,18 @@ Notes:
                     print(sql_content)
                     print("--- END PREVIEW ---\n")
                 else:
-                    logging.info(f"Executing sequence {current_seq}...")
+                    # Print "Running..." message to match Unix output
+                    profile_display = config.get('PROFILE_NAME', profile_name or '')
+                    print(f"Running {script_path} on {profile_display} in {database}")
 
-                    # Split SQL into batches (separated by 'go' statements)
-                    batches = split_sql_batches(sql_content)
-
-                    # Track current database context for this file only.
-                    # Starts with command line arg, updated by 'use' statements within this file.
-                    # IMPORTANT: This is a local variable - each runsql invocation starts fresh.
-                    # When runcreate calls runsql for multiple files, each file gets its own
-                    # fresh database context starting from the command line argument.
-                    # This prevents 'use' statements from one file affecting another file.
-                    current_database = database
-
-                    for batch_sql, batch_start_line in batches:
-                        # Echo this batch with line numbers (reset to 1 per batch)
-                        if args.echo:
-                            batch_lines = batch_sql.splitlines()
-                            for i, line in enumerate(batch_lines):
-                                line_num = i + 1  # Reset to 1 for each batch
-                                numbered_line = f"{line_num}> {line}"
-                                if output_handle:
-                                    output_handle.write(numbered_line + '\n')
-                                else:
-                                    print(numbered_line)
-
-                            if output_handle:
-                                output_handle.flush()
-
-                        # Check for 'use <database>' statement in this batch to update context
-                        use_match = re.search(r'^\s*use\s+(\w+)\s*$', batch_sql, re.MULTILINE | re.IGNORECASE)
-                        if use_match:
-                            current_database = use_match.group(1)
-                            logging.debug(f"Database context changed to: {current_database}")
-
-                        # Execute this batch against current database
-                        success, output = execute_sql_native(
-                            host, port, username, password, current_database, platform,
-                            batch_sql,
-                            output_file=None,
-                            echo_input=False
-                        )
-
-                        # Write output/errors immediately after this batch
-                        if output and output.strip():
-                            if output_handle:
-                                output_handle.write(output + '\n')
-                                output_handle.flush()
-                            else:
-                                print(output)
-
-                        # Continue processing remaining batches even if this one failed
+                    # Execute SQL using interleaved mode (single tsql process, batch-by-batch)
+                    # This gives us correct error placement while avoiding subprocess spawn overhead
+                    success = execute_sql_interleaved(
+                        host, port, username, password, database, platform,
+                        sql_content,
+                        echo=args.echo,
+                        output_handle=output_handle
+                    )
 
                 current_seq += 1
 

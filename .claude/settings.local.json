@@ -61,7 +61,9 @@
       "Bash(python -m commands.runcreate:*)",
       "Bash(python -m commands.set_profile:*)",
       "Bash(python -m commands.set_options:*)",
-      "Bash(python -m commands.bcp_data:*)"
+      "Bash(python -m commands.bcp_data:*)",
+      "Bash(python -m py_compile:*)",
+      "Bash(time runsql:*)"
     ],
     "deny": [],
     "ask": []
