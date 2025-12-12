@@ -306,6 +306,9 @@ def check_and_create_symbolic_links(profile: dict) -> None:
     """
     Check if symbolic links exist for the profile's SQL_SOURCE and prompt to create them.
 
+    This is called when a profile is added or modified, so we always check
+    (bypassing the IBS_SYMLINKS_CHECKED environment variable).
+
     Args:
         profile: Profile dictionary containing SQL_SOURCE
     """
@@ -342,6 +345,10 @@ def check_and_create_symbolic_links(profile: dict) -> None:
     response = input("Would you like to create them now? [Y/n]: ").strip().lower()
 
     if response in ('', 'y', 'yes'):
+        # Clear the env var to force symbolic link creation check
+        # (profile add/modify should always check, regardless of session state)
+        os.environ.pop('IBS_SYMLINKS_CHECKED', None)
+
         if create_symbolic_links(config):
             print_success(f"Symbolic links created successfully.")
         else:

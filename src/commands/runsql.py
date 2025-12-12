@@ -59,6 +59,7 @@ from .ibs_common import (
     execute_sql_interleaved,
     find_file,
     Options,
+    create_symbolic_links,
 )
 
 
@@ -261,6 +262,9 @@ Notes:
             # Expand SQL_SOURCE - use current directory if not set
             if not config.get('SQL_SOURCE'):
                 config['SQL_SOURCE'] = os.getcwd()
+
+            # Ensure symbolic links exist (fast no-op if already checked this session)
+            create_symbolic_links(config, prompt=False)
 
         else:
             # No profile and no direct connection params

@@ -55,7 +55,13 @@
       "Bash(# Try sending one line at a time with echo\n(echo \"\"create table tmp_abc\"\"; echo \"\"(\"\"; echo \"\"version char(10)\"\"; echo \"\")\"\"; echo \"\"go\"\"))",
       "Bash({)",
       "Bash(})",
-      "Bash(mv:*)"
+      "Bash(mv:*)",
+      "Bash(python -m commands.runsql:*)",
+      "Bash(python -m commands.isqlline:*)",
+      "Bash(python -m commands.runcreate:*)",
+      "Bash(python -m commands.set_profile:*)",
+      "Bash(python -m commands.set_options:*)",
+      "Bash(python -m commands.bcp_data:*)"
     ],
     "deny": [],
     "ask": []

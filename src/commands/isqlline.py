@@ -36,6 +36,7 @@ Usage:
 import argparse
 import getpass
 import logging
+import os
 import sys
 
 # Import shared functions from ibs_common (relative import within commands package)
@@ -45,7 +46,8 @@ from .ibs_common import (
     test_connection,
     execute_sql_native,
     build_sql_script,
-    Options
+    Options,
+    create_symbolic_links,
 )
 
 
@@ -188,6 +190,13 @@ Notes:
             config['USERNAME'] = username
             config['PASSWORD'] = password
             config['DATABASE'] = database
+
+            # Expand SQL_SOURCE - use current directory if not set
+            if not config.get('SQL_SOURCE'):
+                config['SQL_SOURCE'] = os.getcwd()
+
+            # Ensure symbolic links exist (fast no-op if already checked this session)
+            create_symbolic_links(config, prompt=False)
 
         else:
             # No profile and no direct connection params

@@ -1006,8 +1006,9 @@ def create_symbolic_links(config: dict, prompt: bool = True) -> bool:
     On Windows, if symlink creation fails due to privileges, can prompt for
     Administrator elevation via UAC (controlled by prompt parameter).
 
-    This should be called at the start of runcreate to ensure all symbolic
-    links exist before processing create files that reference them.
+    Uses IBS_SYMLINKS_CHECKED environment variable to ensure this only runs
+    once per session, even when commands call other commands (e.g., runcreate
+    calling runsql). This keeps execution fast.
 
     Args:
         config: Configuration dictionary containing SQL_SOURCE
@@ -1017,6 +1018,13 @@ def create_symbolic_links(config: dict, prompt: bool = True) -> bool:
     Returns:
         True if all links created successfully (or already exist), False otherwise
     """
+    # Fast path: skip if already checked this session
+    if os.environ.get('IBS_SYMLINKS_CHECKED') == '1':
+        return True
+
+    # Mark as checked immediately to prevent re-entry
+    os.environ['IBS_SYMLINKS_CHECKED'] = '1'
+
     path_append = config.get('SQL_SOURCE')
 
     if not path_append:
@@ -1060,7 +1068,7 @@ def create_symbolic_links(config: dict, prompt: bool = True) -> bool:
         try:
             link_parent.mkdir(parents=True, exist_ok=True)
         except OSError as e:
-            logging.error(f"Failed to create parent directory {link_parent}: {e}")
+            print(f"[ERROR] Failed to create parent directory {link_parent}: {e}", file=sys.stderr)
             success = False
             continue
 
@@ -1085,16 +1093,16 @@ def create_symbolic_links(config: dict, prompt: bool = True) -> bool:
                         needs_elevation = True
                         break  # Stop and request elevation
                     else:
-                        logging.error(f"Failed to create symbolic link {link_path}: {result.stderr.strip()}")
+                        print(f"[ERROR] Failed to create symbolic link {link_path}: {result.stderr.strip()}", file=sys.stderr)
                         success = False
                 else:
-                    logging.info(f"Created symbolic link: {link_path} -> {relative_target}")
+                    print(f"[OK] Created symbolic link: {link_path} -> {relative_target}")
             else:
                 # Unix: use os.symlink directly
                 os.symlink(relative_target, link_path, target_is_directory=True)
-                logging.info(f"Created symbolic link: {link_path} -> {relative_target}")
+                print(f"[OK] Created symbolic link: {link_path} -> {relative_target}")
         except OSError as e:
-            logging.error(f"Failed to create symbolic link {link_path}: {e}")
+            print(f"[ERROR] Failed to create symbolic link {link_path}: {e}", file=sys.stderr)
             success = False
 
     # If we need elevation on Windows
@@ -1109,7 +1117,7 @@ def create_symbolic_links(config: dict, prompt: bool = True) -> bool:
                     print("After the command window closes, re-run your original command.")
                     return True
                 else:
-                    logging.error("Failed to launch elevated command")
+                    print("[ERROR] Failed to launch elevated command", file=sys.stderr)
                     return False
             else:
                 print("Skipping symbolic link creation. Some file paths may not resolve correctly.")
