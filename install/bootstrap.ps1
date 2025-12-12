@@ -4,12 +4,12 @@
 
 .DESCRIPTION
     Lightweight bootstrap script that ensures Python is installed,
-    then hands off to installer.py for cross-platform installation.
+    then hands off to installer_windows.py for platform-specific installation.
 
     This script only handles:
     - Python version verification
     - Python installation via winget (if needed)
-    - Launching installer.py
+    - Launching installer_windows.py
 
 .NOTES
     Run from PowerShell (Admin recommended for PATH modifications)
@@ -32,7 +32,7 @@ param(
 
 $Script:InstallDir = $PSScriptRoot
 $Script:ProjectRoot = Split-Path $Script:InstallDir -Parent
-$Script:InstallerScript = Join-Path $Script:InstallDir "installer.py"
+$Script:InstallerScript = Join-Path $Script:InstallDir "installer_windows.py"
 $Script:RequiredPythonVersion = [Version]"3.8"
 $Script:LogFile = Join-Path $Script:InstallDir "installer.log"
 
@@ -46,7 +46,7 @@ function Initialize-LogFile {
         Initialize the log file with header information.
     .DESCRIPTION
         Creates/overwrites installer.log with platform and Python version info.
-        Matches the format used by installer.py.
+        Matches the format used by installer_windows.py.
     #>
 
     # Get Windows version
@@ -82,7 +82,7 @@ function Write-Status {
         Write a status message to console and log file.
     .DESCRIPTION
         Displays a formatted message with color and prefix, and appends to installer.log.
-        Matches the logging format used by installer.py.
+        Matches the logging format used by installer_windows.py.
     #>
     param(
         [string]$Message,
@@ -230,7 +230,7 @@ function Show-Help {
     Write-Host "IBS Compilers Bootstrap Script" -ForegroundColor Cyan
     Write-Host "===============================" -ForegroundColor Cyan
     Write-Host ""
-    Write-Host "This script verifies Python is installed, then runs installer.py" -ForegroundColor White
+    Write-Host "This script verifies Python is installed, then runs installer_windows.py" -ForegroundColor White
     Write-Host "to complete the Windows installation." -ForegroundColor White
     Write-Host ""
     Write-Host "Usage: .\bootstrap.ps1 [options]" -ForegroundColor Yellow
@@ -239,7 +239,7 @@ function Show-Help {
     Write-Host "  -SkipPythonInstall  Don't attempt to install Python if missing"
     Write-Host "  -Help               Show this help message"
     Write-Host ""
-    Write-Host "The installer.py script supports additional options:" -ForegroundColor Yellow
+    Write-Host "The installer_windows.py script supports additional options:" -ForegroundColor Yellow
     Write-Host "  --skip-freetds      Skip FreeTDS installation"
     Write-Host "  --skip-packages     Skip Python package installation"
     Write-Host "  --force             Force reinstallation of components"
@@ -271,11 +271,11 @@ function Main {
     Write-Host "  Log file: $Script:LogFile" -ForegroundColor Gray
     Write-Host ""
 
-    # Check for installer.py
+    # Check for installer_windows.py
     if (-not (Test-Path $Script:InstallerScript)) {
-        Write-Status "installer.py not found at: $Script:InstallerScript" "Error"
+        Write-Status "installer_windows.py not found at: $Script:InstallerScript" "Error"
         Write-Host ""
-        Write-Host "  Please ensure installer.py exists in the project root." -ForegroundColor Yellow
+        Write-Host "  Please ensure installer_windows.py exists in the install directory." -ForegroundColor Yellow
         Write-Host ""
         return
     }
@@ -369,13 +369,13 @@ function Main {
 
     Write-Status "Python $($pythonInfo.Version) meets requirements" "Success"
 
-    # Step 2: Run installer.py
+    # Step 2: Run installer_windows.py
     Write-Host ""
     Write-Host "  --- Launching Windows Installer ---" -ForegroundColor White
     Write-Host ""
 
-    Write-Status "Launching installer.py with $($pythonInfo.Command)" "Step"
-    Write-Status "installer.py will append to the same log file" "Info"
+    Write-Status "Launching installer_windows.py with $($pythonInfo.Command)" "Step"
+    Write-Status "installer_windows.py will append to the same log file" "Info"
     Write-Host ""
 
     # Build the command
@@ -394,13 +394,13 @@ function Main {
         }
 
         if ($exitCode -ne 0) {
-            Write-Status "installer.py exited with code $exitCode" "Error"
+            Write-Status "installer_windows.py exited with code $exitCode" "Error"
             Write-Host ""
             Write-Host "  Check the log file for details: $Script:LogFile" -ForegroundColor Yellow
             Write-Host ""
             exit $exitCode
         } else {
-            Write-Status "Bootstrap completed - installer.py succeeded" "Success"
+            Write-Status "Bootstrap completed - installer_windows.py succeeded" "Success"
             Write-Status "See $Script:LogFile for full installation log" "Info"
 
             # Refresh PATH in current session
@@ -446,7 +446,7 @@ function Main {
             Write-Host ""
         }
     } catch {
-        Write-Status "installer.py failed with exception: $_" "Error"
+        Write-Status "installer_windows.py failed with exception: $_" "Error"
         Write-Status "See $Script:LogFile for details" "Error"
         exit 1
     }

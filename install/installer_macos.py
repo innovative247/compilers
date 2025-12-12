@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """
-IBS Compilers Linux/Ubuntu Installer
+IBS Compilers macOS Installer
 
-This script handles installation of all dependencies for the IBS Python Compilers on Linux:
-- FreeTDS (via apt)
+This script handles installation of all dependencies for the IBS Python Compilers on macOS:
+- Homebrew (if not installed)
+- FreeTDS (via brew)
 - Python packages
-- vim (via apt)
+- vim (via brew, if not installed)
 - Configuration files
 
 Usage:
-    python3 installer_linux.py [options]
+    python3 installer_macos.py [options]
 
 Options:
     --skip-freetds      Skip FreeTDS installation
@@ -93,7 +94,7 @@ class Logger:
         print(f"  --- {title} ---")
 
 
-# Initialize logger (will append to existing log from bootstrap.sh)
+# Initialize logger (will append to existing log from bootstrap script)
 log = Logger(LOG_FILE)
 
 # =============================================================================
@@ -103,8 +104,8 @@ log = Logger(LOG_FILE)
 def get_platform() -> str:
     """Get platform name."""
     system = platform.system().lower()
-    if system not in ("linux", "darwin"):
-        raise RuntimeError(f"This installer is for Linux/macOS. Current platform: {system}")
+    if system != "darwin":
+        raise RuntimeError(f"This installer is for macOS only. Current platform: {system}")
     return system
 
 
@@ -155,16 +156,73 @@ def prompt_yes_no(question: str, default: bool = True) -> bool:
         return default
 
 
-def has_sudo() -> bool:
-    """Check if user can run sudo."""
+# =============================================================================
+# HOMEBREW INSTALLATION
+# =============================================================================
+
+def check_homebrew_installed() -> bool:
+    """Check if Homebrew is installed."""
+    return command_exists("brew")
+
+
+def get_homebrew_prefix() -> str:
+    """Get Homebrew prefix path."""
     try:
         result = subprocess.run(
-            ["sudo", "-n", "true"],
+            ["brew", "--prefix"],
             capture_output=True,
-            check=False
+            text=True,
+            check=True
         )
-        return result.returncode == 0
+        return result.stdout.strip()
     except Exception:
+        # Default paths
+        if platform.machine() == "arm64":
+            return "/opt/homebrew"
+        return "/usr/local"
+
+
+def install_homebrew() -> bool:
+    """Install Homebrew."""
+    log.section("Homebrew Installation")
+
+    if check_homebrew_installed():
+        prefix = get_homebrew_prefix()
+        log.log(f"Homebrew already installed at {prefix}", "SUCCESS")
+        return True
+
+    log.log("Homebrew not found", "WARN")
+
+    if not prompt_yes_no("Install Homebrew? (Required for FreeTDS)", default=True):
+        log.log("Skipping Homebrew installation", "SKIP")
+        return False
+
+    log.log("Installing Homebrew...", "STEP")
+
+    try:
+        # Homebrew install script
+        install_cmd = '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
+        subprocess.run(install_cmd, shell=True, check=True)
+
+        # Add Homebrew to PATH for this session (Apple Silicon vs Intel)
+        if platform.machine() == "arm64":
+            brew_path = "/opt/homebrew/bin"
+        else:
+            brew_path = "/usr/local/bin"
+
+        if brew_path not in os.environ.get("PATH", ""):
+            os.environ["PATH"] = f"{brew_path}:{os.environ.get('PATH', '')}"
+
+        if check_homebrew_installed():
+            log.log("Homebrew installed successfully", "SUCCESS")
+            return True
+        else:
+            log.log("Homebrew installation completed but brew not found in PATH", "ERROR")
+            log.log("You may need to restart your terminal", "INFO")
+            return False
+
+    except Exception as e:
+        log.log(f"Homebrew installation failed: {e}", "ERROR")
         return False
 
 
@@ -192,7 +250,7 @@ def get_freetds_version() -> str:
 
 
 def install_freetds(force: bool = False) -> bool:
-    """Install FreeTDS via apt."""
+    """Install FreeTDS via Homebrew."""
     log.section("FreeTDS Installation")
 
     if not force and check_freetds_installed():
@@ -202,11 +260,14 @@ def install_freetds(force: bool = False) -> bool:
         log.log(f"FreeTDS version info:\n{version_info}", "INFO")
         return True
 
-    log.log("Installing FreeTDS via apt...", "STEP")
+    if not check_homebrew_installed():
+        log.log("Homebrew not installed - cannot install FreeTDS", "ERROR")
+        return False
+
+    log.log("Installing FreeTDS via Homebrew...", "STEP")
 
     try:
-        run_command(["sudo", "apt", "update"])
-        run_command(["sudo", "apt", "install", "-y", "freetds-bin", "freetds-dev", "freetds-common"])
+        run_command(["brew", "install", "freetds"])
 
         if check_freetds_installed():
             log.log("FreeTDS installed successfully", "SUCCESS")
@@ -237,7 +298,7 @@ def get_vim_path() -> str:
 
 
 def install_vim(force: bool = False) -> bool:
-    """Install vim via apt."""
+    """Install vim via Homebrew."""
     log.section("Vim Installation")
 
     if not force and check_vim_installed():
@@ -245,15 +306,18 @@ def install_vim(force: bool = False) -> bool:
         log.log(f"vim already installed: {vim_path}", "SUCCESS")
         return True
 
-    if not prompt_yes_no("vim not found. Install vim via apt?", default=True):
+    if not check_homebrew_installed():
+        log.log("Homebrew not installed - cannot install vim", "ERROR")
+        return False
+
+    if not prompt_yes_no("vim not found. Install vim via Homebrew?", default=True):
         log.log("Skipping vim installation", "INFO")
         return False
 
-    log.log("Installing vim via apt...", "STEP")
+    log.log("Installing vim via Homebrew...", "STEP")
 
     try:
-        run_command(["sudo", "apt", "update"])
-        run_command(["sudo", "apt", "install", "-y", "vim"])
+        run_command(["brew", "install", "vim"])
 
         if check_vim_installed():
             vim_path = get_vim_path()
@@ -312,6 +376,7 @@ def install_python_packages() -> bool:
                 # Check if in PATH
                 if str(user_scripts) not in os.environ.get("PATH", ""):
                     log.log(f"Add to PATH: export PATH=\"$PATH:{user_scripts}\"", "WARN")
+                    log.log("Add this line to ~/.zshrc or ~/.bash_profile", "WARN")
 
         return True
 
@@ -376,11 +441,11 @@ def check_shell_config() -> bool:
     log.section("Shell Configuration")
 
     # Determine shell config file
-    shell = os.environ.get("SHELL", "/bin/bash")
+    shell = os.environ.get("SHELL", "/bin/zsh")
     if "zsh" in shell:
         config_file = Path.home() / ".zshrc"
     else:
-        config_file = Path.home() / ".bashrc"
+        config_file = Path.home() / ".bash_profile"
 
     log.log(f"Shell: {shell}", "INFO")
     log.log(f"Config file: {config_file}", "INFO")
@@ -393,6 +458,14 @@ def check_shell_config() -> bool:
         log.log(f"~/.local/bin not in PATH", "WARN")
         log.log(f"Add to {config_file}:", "INFO")
         log.log('  export PATH="$PATH:$HOME/.local/bin"', "INFO")
+
+    # Check Homebrew path for Apple Silicon
+    if platform.machine() == "arm64":
+        brew_path = "/opt/homebrew/bin"
+        if brew_path not in current_path:
+            log.log(f"Homebrew path not in PATH (Apple Silicon)", "WARN")
+            log.log(f"Add to {config_file}:", "INFO")
+            log.log('  eval "$(/opt/homebrew/bin/brew shellenv)"', "INFO")
 
     return True
 
@@ -408,6 +481,13 @@ def show_summary():
     print()
     print(f"  {'Component':<15} {'Status':<20} {'Path':<40}")
     print(f"  {'-'*15} {'-'*20} {'-'*40}")
+
+    # Homebrew
+    if check_homebrew_installed():
+        brew_path = shutil.which("brew") or "N/A"
+        print(f"  {'Homebrew':<15} {'Installed':<20} {brew_path:<40}")
+    else:
+        print(f"  {'Homebrew':<15} {'Not Installed':<20} {'':<40}")
 
     # FreeTDS
     if check_freetds_installed():
@@ -448,6 +528,7 @@ def show_summary():
 
     # Overall status
     all_good = (
+        check_homebrew_installed() and
         check_freetds_installed() and
         check_vim_installed() and
         shutil.which("runsql") is not None
@@ -465,7 +546,7 @@ def show_summary():
 
 def main():
     parser = argparse.ArgumentParser(
-        description="IBS Compilers Linux/Ubuntu Installer",
+        description="IBS Compilers macOS Installer",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__
     )
@@ -492,15 +573,26 @@ def main():
 
     args = parser.parse_args()
 
+    # Verify platform
+    try:
+        get_platform()
+    except RuntimeError as e:
+        print(f"Error: {e}")
+        print("This installer is for macOS only.")
+        print("For Linux, use: ./bootstrap_linux.sh")
+        print("For Windows, use: .\\bootstrap.ps1")
+        return 1
+
     # Header
     print()
     print("=" * 60)
-    print("  IBS Compilers - Linux/Ubuntu Installer")
+    print("  IBS Compilers - macOS Installer")
     print("=" * 60)
     print()
     print(f"  Platform: {platform.system()} {platform.release()}")
+    print(f"  Architecture: {platform.machine()}")
     print(f"  Python: {sys.version.split()[0]}")
-    print(f"  Project: {SCRIPT_DIR}")
+    print(f"  Project: {PROJECT_ROOT}")
     print(f"  Log file: {LOG_FILE}")
     print()
 
@@ -508,7 +600,13 @@ def main():
         log.log("User cancelled installation", "INFO")
         return 1
 
-    # Step 1: FreeTDS
+    # Step 1: Homebrew
+    if not install_homebrew():
+        if not prompt_yes_no("Homebrew installation had issues. Continue anyway?"):
+            show_summary()
+            return 1
+
+    # Step 2: FreeTDS
     if not args.skip_freetds:
         if not install_freetds(args.force):
             if not prompt_yes_no("FreeTDS installation had issues. Continue anyway?"):
@@ -517,24 +615,24 @@ def main():
     else:
         log.log("Skipping FreeTDS installation (user flag)", "SKIP")
 
-    # Step 2: vim
+    # Step 3: vim
     if not args.skip_vim:
         if not install_vim(args.force):
             log.log("vim installation skipped or failed", "WARN")
     else:
         log.log("Skipping vim installation (user flag)", "SKIP")
 
-    # Step 3: Python packages
+    # Step 4: Python packages
     if not args.skip_packages:
         if not install_python_packages():
             log.log("Python package installation had issues", "WARN")
     else:
         log.log("Skipping Python package installation (user flag)", "SKIP")
 
-    # Step 4: Initialize settings.json
+    # Step 5: Initialize settings.json
     initialize_settings_json(args.force)
 
-    # Step 5: Shell configuration hints
+    # Step 6: Shell configuration hints
     check_shell_config()
 
     # Show summary

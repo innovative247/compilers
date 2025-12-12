@@ -54,7 +54,8 @@
       "Bash(printf:*)",
       "Bash(# Try sending one line at a time with echo\n(echo \"\"create table tmp_abc\"\"; echo \"\"(\"\"; echo \"\"version char(10)\"\"; echo \"\")\"\"; echo \"\"go\"\"))",
       "Bash({)",
-      "Bash(})"
+      "Bash(})",
+      "Bash(mv:*)"
     ],
     "deny": [],
     "ask": []
