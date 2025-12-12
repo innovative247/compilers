@@ -13,6 +13,19 @@ Key features:
 
 Note: isqlline does NOT log to changelog. Use runsql for audit-logged operations.
 
+OPTIONS FILE HANDLING:
+    When a profile is used, isqlline loads options from {SQL_SOURCE}/CSS/Setup/:
+    - options.def (required)
+    - options.{company} (required)
+    - options.{company}.{profile} (optional)
+    - table_locations (required)
+
+    The merged options are cached in {SQL_SOURCE}/CSS/Setup/temp/{profile}.options.tmp
+    and reused for 24 hours. All option resolution is handled by the Options class
+    in ibs_common.py.
+
+    When -e (echo) is used, the options cache file path is logged.
+
 Usage:
     isqlline 'select @@version' sbnmaster SBNA
     isqlline 'select * from users' sbnmaster SBNA -O output.txt
@@ -203,29 +216,46 @@ Notes:
             host=host
         )
 
-        # Apply Options-based placeholder resolution (e.g., &users& -> sbnmaster..users)
-        # Only if we have a profile with the necessary config (COMPANY, PROFILE_NAME)
-        # PROFILE_NAME is already set by load_profile (resolves aliases)
+        # ==========================================================================
+        # OPTIONS FILE HANDLING
+        # ==========================================================================
+        # Load/create options file ONCE per isqlline execution.
+        # Options are cached in {SQL_SOURCE}/CSS/Setup/temp/{profile}.options.tmp
+        # and reused for 24 hours. All processing is done by Options class in ibs_common.py.
+        #
+        # When -e (echo) is used, the options file path is logged.
+        # ==========================================================================
+        options = None
+        options_log_line = None
         if profile_name and config.get('COMPANY'):
             options = Options(config)
             if options.generate_option_files():
+                # Log options file path when echo is enabled
+                if args.echo:
+                    cache_file = options.get_cache_filepath()
+                    options_log_line = f"-- Options: {cache_file}"
+                    if not args.output:
+                        # Print to console only if not writing to file
+                        print(options_log_line)
+                # Apply placeholder resolution
                 sql_script = options.replace_options(sql_script)
 
         # Collect output parts
         output_parts = []
 
+        # Add options file path to output if -O and -e are both used
+        if args.output and options_log_line:
+            output_parts.append(options_log_line)
+
         # Echo input if requested (print resolved SQL before execution)
         if args.echo:
-            echo_header = "-- Executing SQL:"
             echo_footer = "--"
             if args.output:
                 # Write to output file only (no console output)
-                output_parts.append(echo_header)
                 output_parts.append(sql_script)
                 output_parts.append(echo_footer)
             else:
                 # Print to console only
-                print(echo_header)
                 print(sql_script)
                 print(echo_footer)
 

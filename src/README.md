@@ -970,9 +970,11 @@ python-scripts/
 │   └── commands/
 │       ├── runsql.py            # Main SQL compiler
 │       ├── isqlline.py          # Single query executor
-│       ├── eopt.py              # Options editor
-│       ├── eloc.py              # Table locations editor
-│       ├── eact.py              # Actions editor
+│       ├── set_options.py       # Options editor (eopt, import_options)
+│       ├── set_table_locations.py # Table locations (eloc, create_tbl_locations)
+│       ├── set_actions.py       # Actions editor (eact, compile_actions)
+│       ├── set_messages.py      # Messages (compile_msg, install_msg)
+│       ├── set_required_fields.py # Required fields (ereq, install_required_fields)
 │       ├── bcp_data.py          # Bulk copy utility
 │       └── [other commands...]
 ├── GETTING_STARTED.md           # Complete installation guide

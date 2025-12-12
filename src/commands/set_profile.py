@@ -517,7 +517,16 @@ def test_connection(profile):
 
 
 def test_options(profile, profile_name):
-    """Test options loading for a profile. Returns True on success, False on failure."""
+    """
+    Test options loading for a profile. Returns True on success, False on failure.
+
+    This function checks for an existing options cache file:
+    - If cache exists and is valid: prompts user to use it or rebuild
+    - If cache doesn't exist or is expired: builds it
+
+    The full path of the options file is ALWAYS printed, ensuring there is no
+    ambiguity about which file is being used by runsql, isqlline, runcreate, etc.
+    """
     print("\nTesting options loading...")
 
     # Import Options class
@@ -531,8 +540,37 @@ def test_options(profile, profile_name):
         # Create Options instance
         options = Options(config)
 
+        # Get cache file path FIRST - always show this
+        cache_file = options.get_cache_filepath()
+        print(f"\n  Options file: {cache_file}")
+
+        # Check if cache exists and is valid
+        force_rebuild = False
+        if options._is_cache_valid():
+            # Cache exists and is valid - prompt user
+            import datetime
+            mtime = os.path.getmtime(cache_file)
+            age_minutes = (datetime.datetime.now().timestamp() - mtime) / 60
+            age_hours = age_minutes / 60
+
+            print(f"  Status: EXISTS (age: {age_hours:.1f} hours)")
+            print()
+            choice = input("  Use existing options file or rebuild? [U]se / [R]ebuild: ").strip().lower()
+            if choice in ('r', 'rebuild'):
+                force_rebuild = True
+                print("  Rebuilding options file...")
+            else:
+                print("  Using existing options file...")
+        else:
+            # Cache doesn't exist or is expired
+            if os.path.exists(cache_file):
+                print("  Status: EXPIRED (will rebuild)")
+            else:
+                print("  Status: NOT FOUND (will create)")
+            force_rebuild = True
+
         # Generate/load option files
-        success = options.generate_option_files(force_rebuild=True)
+        success = options.generate_option_files(force_rebuild=force_rebuild)
 
         if success:
             print_success("Options loaded successfully!")
@@ -541,17 +579,19 @@ def test_options(profile, profile_name):
             setup_dir = options.get_setup_directory()
             loaded_files = options.get_loaded_files()
 
-            print(f"\n  Setup directory: {setup_dir}")
-            print(f"  Files loaded ({len(loaded_files)}):")
-            for filepath in loaded_files:
-                print(f"    - {Path(filepath).name}")
+            if options.was_rebuilt():
+                print(f"\n  Setup directory: {setup_dir}")
+                print(f"  Files loaded ({len(loaded_files)}):")
+                for filepath in loaded_files:
+                    print(f"    - {Path(filepath).name}")
 
-            print(f"\n  Cache file: {options.get_cache_filepath()}")
+            # Always show the cache file path prominently
+            print(f"\n  >>> Options file: {cache_file}")
 
             # Test a common placeholder
             test_value = options.replace_options("&users&")
             if test_value != "&users&":
-                print(f"  Resolution: &users& -> {test_value}")
+                print(f"  Resolution test: &users& -> {test_value}")
         else:
             print_error("Failed to load options files.")
 

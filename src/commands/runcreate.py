@@ -21,7 +21,6 @@ CREATE FILE FORMAT:
 
 OPTIONS:
     -O output.log   Creates/overwrites file at start, then appends all output
-    -e              Echo input (verbose mode - maps to tsql -v)
 
 OUTPUT FILE BEHAVIOR:
     When -O is specified:
@@ -30,21 +29,38 @@ OUTPUT FILE BEHAVIOR:
     - Nested runcreate calls also append to the same file
     - Console output is suppressed (goes to file only)
 
+OPTIONS FILE HANDLING:
+    runcreate loads options ONCE at startup from {SQL_SOURCE}/CSS/Setup/:
+    - options.def (required)
+    - options.{company} (required)
+    - options.{company}.{profile} (optional)
+    - table_locations (required)
+
+    The merged options are cached in {SQL_SOURCE}/CSS/Setup/temp/{profile}.options.tmp
+    and reused for 24 hours. All option resolution is handled by the Options class
+    in ibs_common.py.
+
+    IMPORTANT: The options cache file path is ALWAYS logged when runcreate starts.
+    Nested calls (child runcreate, runsql, isqlline) reuse the existing cache and
+    do NOT rebuild options. This ensures consistent option resolution throughout
+    the entire build process.
+
 USAGE:
-    runcreate create_file PROFILE
+    runcreate create_file profile [output_file]
     runcreate create_all GONZO
+    runcreate create_all GONZO build.log
     runcreate create_all GONZO -O build.log
-    runcreate create_all GONZO -e
-    runcreate css/ss/ba/create_pro GONZO
 
 CHG 241208 Rewritten to match C# runcreate functionality
-CHG 241208 Added -O output file and -e echo flag support
+CHG 241208 Added -O output file support
+CHG 241210 Added OPTIONS FILE HANDLING documentation, ALWAYS log options file path
 """
 
 import argparse
 import sys
 import re
 import os
+import time
 
 from .ibs_common import (
     get_config,
@@ -53,7 +69,19 @@ from .ibs_common import (
     Options,
     convert_non_linked_paths,
     create_symbolic_links,
+    compile_table_locations,
+    compile_actions,
+    compile_required_fields,
+    compile_messages,
+    compile_options,
+    export_messages,
 )
+from . import i_run_upgrade
+
+
+def is_gonzo_profile(profile_name: str) -> bool:
+    """Check if the profile is GONZO (canonical message source)."""
+    return profile_name.upper() in ('GONZO', 'G')
 
 
 def write_output(message: str, output_handle=None):
@@ -69,6 +97,13 @@ def write_output(message: str, output_handle=None):
         output_handle.flush()
     else:
         print(message)
+
+
+def format_elapsed_time(seconds: float) -> str:
+    """Format elapsed seconds as HH:MM:SS."""
+    hours, remainder = divmod(int(seconds), 3600)
+    minutes, secs = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
 
 
 def convert_ir_path(line: str, sql_source: str) -> str:
@@ -330,7 +365,7 @@ def execute_runsql(config: dict, options: Options, script_file: str, database: s
         write_output(f"  ERROR: Relative path not supported: {script_file}", output_handle)
         return False
 
-    # Read script content once
+    # Read script content (UTF-8 default, works cross-platform)
     with open(script_path, 'r', encoding='utf-8', errors='replace') as f:
         raw_sql = f.read()
 
@@ -352,7 +387,7 @@ def execute_runsql(config: dict, options: Options, script_file: str, database: s
             write_output(sql_content, output_handle)
             write_output("--", output_handle)
 
-        # Execute
+        # Execute SQL
         success, output = execute_sql_native(
             host=config.get('HOST'),
             port=config.get('PORT'),
@@ -399,6 +434,7 @@ def execute_isqlline(config: dict, options: Options, sql: str, database: str,
         write_output(sql, output_handle)
         write_output("--", output_handle)
 
+    # Execute SQL
     success, output = execute_sql_native(
         host=config.get('HOST'),
         port=config.get('PORT'),
@@ -433,11 +469,13 @@ def run_create_file(config: dict, options: Options, create_file_path: str,
         output_handle: Open file handle for output, or None for stdout
         echo_input: If True, echo SQL input (maps to tsql -v)
     """
+    start_time = time.time()
     sql_source = config.get('SQL_SOURCE', os.getcwd())
     server = config.get('PROFILE_NAME', '')
 
     write_output(f"RUNCREATE {create_file_path} on {server}...", output_handle)
 
+    # Read create file (UTF-8 default, works cross-platform)
     with open(create_file_path, 'r', encoding='utf-8', errors='replace') as f:
         lines = f.readlines()
 
@@ -487,10 +525,35 @@ def run_create_file(config: dict, options: Options, create_file_path: str,
             run_create_file(config, options, nested_path, output_handle, echo_input)
 
         elif command == 'i_run_upgrade':
-            # i_run_upgrade format: i_run_upgrade ... sct_xx.yy.zzzzz...
-            # The upgrade_no and script are parsed from the line
-            write_output(f"  i_run_upgrade (line {line_num}): {parsed['raw_line'][:60]}...", output_handle)
-            # For now, just note it - full implementation would call i_run_upgrade
+            # i_run_upgrade format: i_run_upgrade &dbsta& &sv& upgrade_no script_file
+            # Parse the resolved line for database, upgrade_no, and script
+            parts = clean_line.split()
+            if len(parts) >= 4:
+                # parts[0] = 'i_run_upgrade', parts[1] = database, parts[2] = server (ignored, use profile)
+                # parts[3] = upgrade_no, parts[4] = script_file
+                db = parts[1]
+                upgrade_no = parts[3] if len(parts) > 3 else ''
+                script_file = parts[4] if len(parts) > 4 else parts[3]
+
+                # Resolve script path
+                script_path = convert_ir_path(script_file, sql_source)
+                script_path = convert_non_linked_paths(script_path)
+
+                # Find the script file
+                found_script = find_file(script_path, config)
+                if found_script:
+                    write_output(f"  i_run_upgrade: {upgrade_no} {os.path.basename(found_script)}", output_handle)
+                    # Build args for i_run_upgrade.main()
+                    upgrade_args = [db, server, upgrade_no, found_script]
+                    if output_handle:
+                        upgrade_args.extend(['-O', output_handle.name])
+                    if echo_input:
+                        upgrade_args.append('-e')
+                    i_run_upgrade.main(upgrade_args)
+                else:
+                    write_output(f"  i_run_upgrade: Script not found: {script_file}", output_handle)
+            else:
+                write_output(f"  i_run_upgrade: Invalid format: {clean_line}", output_handle)
 
         elif command == 'isqlline':
             # isqlline has inline SQL in quotes
@@ -504,28 +567,68 @@ def run_create_file(config: dict, options: Options, create_file_path: str,
                     execute_isqlline(config, options, sql, db, output_handle, echo_input)
 
         elif command == 'install_msg':
-            write_output(f"  install_msg (line {line_num})", output_handle)
-            # Would call compile_msg
+            # For GONZO profile: export messages first to capture any new messages
+            # added directly to the database, then import
+            profile_name = config.get('PROFILE_NAME', '')
+            if is_gonzo_profile(profile_name):
+                write_output(f"  install_msg: GONZO detected - exporting messages first...", output_handle)
+                exp_success, exp_message = export_messages(config, options, output_handle)
+                if not exp_success:
+                    write_output(f"  install_msg: Export failed - {exp_message}", output_handle)
+                    # Continue with import anyway since translated messages are preserved
+                else:
+                    write_output(f"  install_msg: Export complete - {exp_message}", output_handle)
+
+            write_output(f"  install_msg: Compiling messages...", output_handle)
+            success, message, count = compile_messages(config, options, output_handle)
+            if success:
+                write_output(f"  install_msg: {message} ({count} rows)", output_handle)
+            else:
+                write_output(f"  install_msg: ERROR - {message}", output_handle)
 
         elif command == 'install_required_fields':
-            write_output(f"  install_required_fields (line {line_num})", output_handle)
-            # Would call compile_required_fields
+            write_output(f"  install_required_fields: Compiling required fields...", output_handle)
+            success, message, count = compile_required_fields(config, options, output_handle)
+            if success:
+                write_output(f"  install_required_fields: {message} ({count} rows)", output_handle)
+            else:
+                write_output(f"  install_required_fields: ERROR - {message}", output_handle)
 
         elif command == 'import_options':
-            write_output(f"  import_options (line {line_num})", output_handle)
-            # Would call eopt
+            write_output(f"  import_options: Compiling options to database...", output_handle)
+            success, message, count = compile_options(config, options, output_handle)
+            if success:
+                write_output(f"  import_options: {message} ({count} rows)", output_handle)
+            else:
+                write_output(f"  import_options: ERROR - {message}", output_handle)
 
         elif command == 'create_tbl_locations':
-            write_output(f"  create_tbl_locations (line {line_num})", output_handle)
-            # Would call eloc
+            write_output(f"  create_tbl_locations: Compiling table locations...", output_handle)
+            success, message, count = compile_table_locations(config, options, output_handle)
+            if success:
+                write_output(f"  create_tbl_locations: {message} ({count} rows)", output_handle)
+            else:
+                write_output(f"  create_tbl_locations: ERROR - {message}", output_handle)
 
         elif command == 'compile_actions':
-            write_output(f"  compile_actions (line {line_num})", output_handle)
-            # Would call eact
+            write_output(f"  compile_actions: Compiling actions...", output_handle)
+            success, message, count = compile_actions(config, options, output_handle)
+            if success:
+                write_output(f"  compile_actions: {message} ({count} rows)", output_handle)
+            else:
+                write_output(f"  compile_actions: ERROR - {message}", output_handle)
 
         else:
             # Unknown command - skip
             pass
+
+    # Log completion time
+    elapsed = time.time() - start_time
+    elapsed_str = format_elapsed_time(elapsed)
+    write_output("=" * 60, output_handle)
+    write_output(f"runcreate {create_file_path}", output_handle)
+    write_output(f"Completed in {elapsed_str}", output_handle)
+    write_output("=" * 60, output_handle)
 
 
 def main(args_list=None):
@@ -536,23 +639,22 @@ def main(args_list=None):
     # Handle help
     if len(args_list) == 0 or '-h' in args_list or '--help' in args_list:
         print("Usage:")
-        print("  runcreate create_file profile [-O output_file] [-e]")
+        print("  runcreate create_file profile [output_file]")
+        print("  runcreate create_file profile [-O output_file]")
         print()
         print("Options:")
-        print("  -O, --output   Output file (creates/overwrites at start, then appends)")
-        print("  -e, --echo     Echo input commands (maps to tsql -v)")
+        print("  output_file    Output file (positional, 3rd argument)")
+        print("  -O, --output   Output file (alternative flag syntax)")
         print()
         print("Examples:")
         print("  runcreate create_all GONZO")
+        print("  runcreate create_all GONZO build.log")
         print("  runcreate create_all GONZO -O build.log")
-        print("  runcreate create_all GONZO -e")
-        print("  runcreate css/ss/ba/create_pro GONZO")
-        print("  runcreate create_tbl GONZO -O output.txt")
         sys.exit(0)
 
-    # Parse arguments manually to support -O and -e flags
+    # Parse arguments manually to support -O flag
     output_file = None
-    echo_input = False
+    echo_input = False  # Echo is not user-configurable for runcreate
     positional_args = []
     i = 0
     while i < len(args_list):
@@ -568,21 +670,22 @@ def main(args_list=None):
             # Handle -Ofilename (no space)
             output_file = arg[2:]
             i += 1
-        elif arg in ('-e', '--echo'):
-            echo_input = True
-            i += 1
         else:
             positional_args.append(arg)
             i += 1
 
     if len(positional_args) < 2:
-        print("ERROR: Expected 2 arguments: create_file profile")
+        print("ERROR: Expected 2 arguments: create_file profile [output_file]")
         sys.exit(1)
 
     create_file = positional_args[0]
     profile = positional_args[1]
 
-    # Open output file handle if -O specified (kept open for entire run)
+    # Third positional arg is output file (alternative to -O flag)
+    if len(positional_args) >= 3 and not output_file:
+        output_file = positional_args[2]
+
+    # Open output file handle if specified (kept open for entire run)
     output_handle = None
     if output_file:
         if os.path.exists(output_file):
@@ -597,11 +700,26 @@ def main(args_list=None):
         sys.exit(1)
     # PROFILE_NAME is already set by get_config (resolves aliases to real profile name)
 
-    # Initialize options
+    # ==========================================================================
+    # OPTIONS FILE HANDLING
+    # ==========================================================================
+    # Load/create options file ONCE per runcreate execution.
+    # Options are cached in {SQL_SOURCE}/CSS/Setup/temp/{profile}.options.tmp
+    # and reused for 24 hours. All processing is done by Options class in ibs_common.py.
+    #
+    # IMPORTANT: Options file path is ALWAYS logged when runcreate starts.
+    # Nested calls (child runcreate, runsql, isqlline) reuse the existing cache
+    # and do NOT rebuild options - they will find the valid cache file.
+    # ==========================================================================
     options = Options(config)
     if not options.generate_option_files():
         print("ERROR: Failed to load options files")
         sys.exit(1)
+
+    # ALWAYS log the options file path for runcreate
+    cache_file = options.get_cache_filepath()
+    log_msg = f"-- Options: {cache_file}"
+    write_output(log_msg, output_handle)
 
     # Ensure symbolic links exist before processing create files
     if not create_symbolic_links(config, prompt=False):
@@ -616,8 +734,6 @@ def main(args_list=None):
 
     # Run the create file
     run_create_file(config, options, create_path, output_handle, echo_input)
-
-    write_output("runcreate DONE.", output_handle)
 
     # Close output file if open
     if output_handle:

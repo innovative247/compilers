@@ -1,5 +1,5 @@
 """
-eloc.py: Edit and compile table_locations.
+set_table_locations.py: Edit and compile table_locations. (Also available as: eloc, create_tbl_locations)
 
 This command allows editing and importing the table_locations mapping file into the
 database. The table_locations table maps logical table names to physical database

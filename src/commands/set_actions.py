@@ -1,5 +1,5 @@
 """
-eact.py: Edit and compile actions.
+set_actions.py: Edit and compile actions. (Also available as: eact, compile_actions)
 
 This command allows editing and importing the actions definition files into the
 database. Actions define menu items, buttons, and permissions throughout the

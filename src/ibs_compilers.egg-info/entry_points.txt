@@ -1,12 +1,21 @@
 [console_scripts]
-compile_msg = commands.compile_msg:main
-eact = commands.eact:main
-eloc = commands.eloc:main
-eopt = commands.eopt:main
-ereq = commands.ereq:main
+compile_actions = commands.set_actions:main
+compile_msg = commands.set_messages:main
+create_tbl_locations = commands.set_table_locations:main
+eact = commands.set_actions:main
+eloc = commands.set_table_locations:main
+eopt = commands.set_options:main
+ereq = commands.set_required_fields:main
 i_run_upgrade = commands.i_run_upgrade:main
+import_options = commands.set_options:main
+install_msg = commands.set_messages:main
+install_required_fields = commands.set_required_fields:main
 isqlline = commands.isqlline:main
 runcreate = commands.runcreate:main
 runsql = commands.runsql:main
+set_actions = commands.set_actions:main
+set_messages = commands.set_messages:main
+set_options = commands.set_options:main
 set_profile = commands.set_profile:main
-tail = commands.tail:main
+set_required_fields = commands.set_required_fields:main
+set_table_locations = commands.set_table_locations:main

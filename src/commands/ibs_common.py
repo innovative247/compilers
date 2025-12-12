@@ -38,13 +38,19 @@ signal.signal(signal.SIGINT, _handle_interrupt)
 
 def find_settings_file() -> Path:
     """
-    Find settings.json in the same directory as this script (src/commands/).
+    Find settings.json in the project root directory.
+
+    The project structure is:
+        compilers/                  <- project root (settings.json goes here)
+        compilers/src/
+        compilers/src/commands/     <- this script's directory
 
     Returns:
-        Path to settings.json (src/commands/settings.json)
+        Path to settings.json (compilers/settings.json)
     """
-    script_dir = Path(__file__).parent.resolve()
-    return script_dir / "settings.json"
+    script_dir = Path(__file__).parent.resolve()  # src/commands/
+    project_root = script_dir.parent.parent        # compilers/
+    return project_root / "settings.json"
 
 def load_settings() -> dict:
     """
@@ -1618,7 +1624,7 @@ class Options:
 
     def _is_cache_valid(self) -> bool:
         """
-        Check if cache file exists and is not expired (60 minute TTL).
+        Check if cache file exists and is not expired (24 hour TTL).
 
         Returns:
             True if cache is valid, False otherwise
@@ -1812,6 +1818,18 @@ class Options:
         # Track all loaded files (option files + table_locations)
         self._loaded_files = option_files + [table_file]
 
+        # Add profile-based placeholders (these come from settings.json, not option files)
+        # &lang& = DEFAULT_LANGUAGE (or IBSLANG for backwards compatibility)
+        # &cmpy& = COMPANY
+        lang_value = self.config.get('DEFAULT_LANGUAGE') or self.config.get('IBSLANG') or ''
+        cmpy_value = self.config.get('COMPANY') or ''
+        if lang_value:
+            self._options['&lang&'] = str(lang_value)
+            self._option_sources['&lang&'] = 'settings.json'
+        if cmpy_value:
+            self._options['&cmpy&'] = str(cmpy_value)
+            self._option_sources['&cmpy&'] = 'settings.json'
+
         logging.info(f"Loaded {len(self._options)} options from {len(self._loaded_files)} files")
 
         # Save to cache
@@ -1846,9 +1864,12 @@ class Options:
 
         # Use regex to find and replace only placeholders that exist in the text
         # This is faster than iterating through all 500+ options
+        # Pattern matches valid placeholder names: letters, numbers, underscores, hyphens, hash signs
+        # Examples: &users&, &db-ba_agent_activity&, &w#sys_globals&
+        # This avoids matching literal & in SQL strings like '%[!,@,#,$,%,^,&,(,)]%'
         def replacer(match):
             return self._options.get(match.group(0), match.group(0))
-        result = re.sub(r'&[^&]+&', replacer, result)
+        result = re.sub(r'&[a-zA-Z_][a-zA-Z0-9_#-]*&', replacer, result)
 
         return result
 
@@ -2172,7 +2193,7 @@ def parse_table_locations(source_path: str, options: 'Options') -> list:
     return rows
 
 
-def compile_table_locations(config: dict, options: 'Options' = None) -> tuple:
+def compile_table_locations(config: dict, options: 'Options' = None, output_handle=None) -> tuple:
     """
     Compile table_locations source file into the database.
 
@@ -2210,6 +2231,7 @@ def compile_table_locations(config: dict, options: 'Options' = None) -> tuple:
                 PASSWORD, SQL_SOURCE, PLATFORM)
         options: Optional Options instance for resolving placeholders. If not provided,
                  a new Options instance will be created from the config.
+        output_handle: Optional file handle for output. If None, prints to console.
 
     Returns:
         Tuple of (success: bool, message: str, row_count: int)
@@ -2217,6 +2239,12 @@ def compile_table_locations(config: dict, options: 'Options' = None) -> tuple:
         - message: Status message or error description
         - row_count: Number of rows inserted (0 on failure)
     """
+    def log(msg):
+        if output_handle:
+            output_handle.write(msg + '\n')
+            output_handle.flush()
+        else:
+            print(msg)
 
     # Create options if not provided
     if options is None:
@@ -2271,7 +2299,7 @@ def compile_table_locations(config: dict, options: 'Options' = None) -> tuple:
         full_name = full_name.replace("'", "''")
         sql_lines.append(f"insert {target_table} (table_name, logical_db, physical_db, db_table) values ('{table_name}', '{opt_name}', '{db_name}', '{full_name}')")
 
-    print(f"Inserting {len(sql_lines)} rows into {target_table}...")
+    log(f"Inserting {len(sql_lines)} rows into {target_table}...")
 
     # Execute in batches of 1000
     batch_size = 1000
@@ -2279,7 +2307,7 @@ def compile_table_locations(config: dict, options: 'Options' = None) -> tuple:
     for i in range(0, total, batch_size):
         batch = sql_lines[i:i + batch_size]
         end_idx = min(i + batch_size, total)
-        print(f"  Inserting {i + 1}-{end_idx}")
+        log(f"  Inserting {i + 1}-{end_idx}")
         sql_content = "\n".join(batch)
         success, output = execute_sql_native(
             host=config.get('HOST'),
@@ -2328,7 +2356,7 @@ def get_actions_dtl_path(config: dict) -> str:
     return os.path.join(sql_source, 'CSS', 'Setup', 'actions_dtl')
 
 
-def compile_actions(config: dict, options: 'Options' = None) -> tuple:
+def compile_actions(config: dict, options: 'Options' = None, output_handle=None) -> tuple:
     """
     Compile actions source files into the database.
 
@@ -2362,26 +2390,33 @@ def compile_actions(config: dict, options: 'Options' = None) -> tuple:
     Args:
         config: Configuration dictionary with connection info
         options: Optional Options instance for resolving placeholders
+        output_handle: Optional file handle for output. If None, prints to console.
 
     Returns:
-        Tuple of (success: bool, message: str)
+        Tuple of (success: bool, message: str, count: int)
     """
+    def log(msg):
+        if output_handle:
+            output_handle.write(msg + '\n')
+            output_handle.flush()
+        else:
+            print(msg)
 
     # Create options if not provided
     if options is None:
         options = Options(config)
         if not options.generate_option_files():
-            return False, "Failed to load options files"
+            return False, "Failed to load options files", 0
 
     # Get source file paths
     actions_file = get_actions_path(config)
     actions_dtl_file = get_actions_dtl_path(config)
 
     if not os.path.exists(actions_file):
-        return False, f"actions file not found: {actions_file}"
+        return False, f"actions file not found: {actions_file}", 0
 
     if not os.path.exists(actions_dtl_file):
-        return False, f"actions_dtl file not found: {actions_dtl_file}"
+        return False, f"actions_dtl file not found: {actions_dtl_file}", 0
 
     # Resolve work table names
     w_actions = options.replace_options("&w#actions&")
@@ -2389,9 +2424,9 @@ def compile_actions(config: dict, options: 'Options' = None) -> tuple:
     dbpro = options.replace_options("&dbpro&")
 
     if w_actions == "&w#actions&":
-        return False, "Could not resolve &w#actions& placeholder"
+        return False, "Could not resolve &w#actions& placeholder", 0
     if w_actions_dtl == "&w#actions_dtl&":
-        return False, "Could not resolve &w#actions_dtl& placeholder"
+        return False, "Could not resolve &w#actions_dtl& placeholder", 0
 
     # Extract database from work table
     work_db = w_actions.split('..')[0] if '..' in w_actions else None
@@ -2445,10 +2480,10 @@ def compile_actions(config: dict, options: 'Options' = None) -> tuple:
                         # Line too short, skip
                         continue
 
-    print(f"Parsed {len(header_rows)} action headers and {len(detail_rows)} action details")
+    log(f"Parsed {len(header_rows)} action headers and {len(detail_rows)} action details")
 
     # Truncate work tables
-    print(f"Truncating {w_actions}...")
+    log(f"Truncating {w_actions}...")
     success, output = execute_sql_native(
         host=config.get('HOST'),
         port=config.get('PORT'),
@@ -2459,9 +2494,9 @@ def compile_actions(config: dict, options: 'Options' = None) -> tuple:
         sql_content=f"truncate table {w_actions}"
     )
     if not success:
-        return False, f"Failed to truncate {w_actions}: {output}"
+        return False, f"Failed to truncate {w_actions}: {output}", 0
 
-    print(f"Truncating {w_actions_dtl}...")
+    log(f"Truncating {w_actions_dtl}...")
     success, output = execute_sql_native(
         host=config.get('HOST'),
         port=config.get('PORT'),
@@ -2472,11 +2507,11 @@ def compile_actions(config: dict, options: 'Options' = None) -> tuple:
         sql_content=f"truncate table {w_actions_dtl}"
     )
     if not success:
-        return False, f"Failed to truncate {w_actions_dtl}: {output}"
+        return False, f"Failed to truncate {w_actions_dtl}: {output}", 0
 
     # Insert action headers
     if header_rows:
-        print(f"Inserting {len(header_rows)} rows into {w_actions}...")
+        log(f"Inserting {len(header_rows)} rows into {w_actions}...")
         sql_lines = []
         for row_num, line in header_rows:
             escaped_line = line.replace("'", "''")
@@ -2488,7 +2523,7 @@ def compile_actions(config: dict, options: 'Options' = None) -> tuple:
         for i in range(0, total, batch_size):
             batch = sql_lines[i:i + batch_size]
             end_idx = min(i + batch_size, total)
-            print(f"  Inserting {i + 1}-{end_idx}")
+            log(f"  Inserting {i + 1}-{end_idx}")
             sql_content = "\n".join(batch)
             success, output = execute_sql_native(
                 host=config.get('HOST'),
@@ -2500,11 +2535,11 @@ def compile_actions(config: dict, options: 'Options' = None) -> tuple:
                 sql_content=sql_content
             )
             if not success:
-                return False, f"Failed to insert action headers: {output}"
+                return False, f"Failed to insert action headers: {output}", 0
 
     # Insert action details
     if detail_rows:
-        print(f"Inserting {len(detail_rows)} rows into {w_actions_dtl}...")
+        log(f"Inserting {len(detail_rows)} rows into {w_actions_dtl}...")
         sql_lines = []
         for col1, col2, col3, col4, col5, col6 in detail_rows:
             # Escape single quotes
@@ -2522,7 +2557,7 @@ def compile_actions(config: dict, options: 'Options' = None) -> tuple:
         for i in range(0, total, batch_size):
             batch = sql_lines[i:i + batch_size]
             end_idx = min(i + batch_size, total)
-            print(f"  Inserting {i + 1}-{end_idx}")
+            log(f"  Inserting {i + 1}-{end_idx}")
             sql_content = "\n".join(batch)
             success, output = execute_sql_native(
                 host=config.get('HOST'),
@@ -2534,10 +2569,10 @@ def compile_actions(config: dict, options: 'Options' = None) -> tuple:
                 sql_content=sql_content
             )
             if not success:
-                return False, f"Failed to insert action details: {output}"
+                return False, f"Failed to insert action details: {output}", 0
 
     # Execute ba_compile_actions stored procedure
-    print(f"Executing {dbpro}..ba_compile_actions...")
+    log(f"Executing {dbpro}..ba_compile_actions...")
     success, output = execute_sql_native(
         host=config.get('HOST'),
         port=config.get('PORT'),
@@ -2548,10 +2583,11 @@ def compile_actions(config: dict, options: 'Options' = None) -> tuple:
         sql_content=f"exec {dbpro}..ba_compile_actions"
     )
 
+    total_rows = len(header_rows) + len(detail_rows)
     if success:
-        return True, f"Compiled {len(header_rows)} headers and {len(detail_rows)} details"
+        return True, f"Compiled {len(header_rows)} headers and {len(detail_rows)} details", total_rows
     else:
-        return False, f"ba_compile_actions failed: {output}"
+        return False, f"ba_compile_actions failed: {output}", 0
 
 
 # =============================================================================
@@ -2586,7 +2622,7 @@ def get_required_fields_dtl_path(config: dict) -> str:
     return os.path.join(sql_source, 'CSS', 'Setup', 'css.required_fields_dtl')
 
 
-def compile_required_fields(config: dict, options: 'Options' = None) -> tuple:
+def compile_required_fields(config: dict, options: 'Options' = None, output_handle=None) -> tuple:
     """
     Compile required_fields source files into the database.
 
@@ -2617,26 +2653,33 @@ def compile_required_fields(config: dict, options: 'Options' = None) -> tuple:
     Args:
         config: Configuration dictionary with connection info
         options: Optional Options instance for resolving placeholders
+        output_handle: Optional file handle for output. If None, prints to console.
 
     Returns:
-        Tuple of (success: bool, message: str)
+        Tuple of (success: bool, message: str, count: int)
     """
+    def log(msg):
+        if output_handle:
+            output_handle.write(msg + '\n')
+            output_handle.flush()
+        else:
+            print(msg)
 
     # Create options if not provided
     if options is None:
         options = Options(config)
         if not options.generate_option_files():
-            return False, "Failed to load options files"
+            return False, "Failed to load options files", 0
 
     # Get source file paths
     rf_file = get_required_fields_path(config)
     rf_dtl_file = get_required_fields_dtl_path(config)
 
     if not os.path.exists(rf_file):
-        return False, f"Required Fields import file is missing ({rf_file})"
+        return False, f"Required Fields import file is missing ({rf_file})", 0
 
     if not os.path.exists(rf_dtl_file):
-        return False, f"Required Fields Detail import file is missing ({rf_dtl_file})"
+        return False, f"Required Fields Detail import file is missing ({rf_dtl_file})", 0
 
     # Resolve work table names
     w_rf = options.replace_options("&w#i_required_fields&")
@@ -2644,9 +2687,9 @@ def compile_required_fields(config: dict, options: 'Options' = None) -> tuple:
     dbpro = options.replace_options("&dbpro&")
 
     if w_rf == "&w#i_required_fields&":
-        return False, "Could not resolve &w#i_required_fields& placeholder"
+        return False, "Could not resolve &w#i_required_fields& placeholder", 0
     if w_rf_dtl == "&w#i_required_fields_dtl&":
-        return False, "Could not resolve &w#i_required_fields_dtl& placeholder"
+        return False, "Could not resolve &w#i_required_fields_dtl& placeholder", 0
 
     # Extract database from work table
     work_db = w_rf.split('..')[0] if '..' in w_rf else None
@@ -2674,10 +2717,10 @@ def compile_required_fields(config: dict, options: 'Options' = None) -> tuple:
             parts = line.split('\t')
             detail_rows.append(parts)
 
-    print(f"Parsed {len(header_rows)} required field headers and {len(detail_rows)} required field details")
+    log(f"Parsed {len(header_rows)} required field headers and {len(detail_rows)} required field details")
 
     # Delete from work tables (C# used DELETE, not TRUNCATE)
-    print(f"Clearing {w_rf}...")
+    log(f"Clearing {w_rf}...")
     success, output = execute_sql_native(
         host=config.get('HOST'),
         port=config.get('PORT'),
@@ -2688,9 +2731,9 @@ def compile_required_fields(config: dict, options: 'Options' = None) -> tuple:
         sql_content=f"delete {w_rf}"
     )
     if not success:
-        return False, f"Failed to clear {w_rf}: {output}"
+        return False, f"Failed to clear {w_rf}: {output}", 0
 
-    print(f"Clearing {w_rf_dtl}...")
+    log(f"Clearing {w_rf_dtl}...")
     success, output = execute_sql_native(
         host=config.get('HOST'),
         port=config.get('PORT'),
@@ -2701,13 +2744,13 @@ def compile_required_fields(config: dict, options: 'Options' = None) -> tuple:
         sql_content=f"delete {w_rf_dtl}"
     )
     if not success:
-        return False, f"Failed to clear {w_rf_dtl}: {output}"
+        return False, f"Failed to clear {w_rf_dtl}: {output}", 0
 
     # Insert required field headers
     # Columns: s#rf (int), name (varchar), title (varchar), helptxt (varchar), inact_flg (char), s#sk (int)
     # Numeric columns: 0, 5
     if header_rows:
-        print(f"Inserting {len(header_rows)} rows into {w_rf}...")
+        log(f"Inserting {len(header_rows)} rows into {w_rf}...")
         sql_lines = []
         for row in header_rows:
             # Escape single quotes in string fields
@@ -2725,7 +2768,7 @@ def compile_required_fields(config: dict, options: 'Options' = None) -> tuple:
         for i in range(0, total, batch_size):
             batch = sql_lines[i:i + batch_size]
             end_idx = min(i + batch_size, total)
-            print(f"  Inserting {i + 1}-{end_idx}")
+            log(f"  Inserting {i + 1}-{end_idx}")
             sql_content = "\n".join(batch)
             success, output = execute_sql_native(
                 host=config.get('HOST'),
@@ -2737,14 +2780,14 @@ def compile_required_fields(config: dict, options: 'Options' = None) -> tuple:
                 sql_content=sql_content
             )
             if not success:
-                return False, f"Failed to insert required field headers: {output}"
+                return False, f"Failed to insert required field headers: {output}", 0
 
     # Insert required field details
     # 34 columns - numeric columns identified by data pattern (-1, 0, 1045, etc.)
     # Numeric column indices: 0, 1, 2, 4, 11, 12, 13, 14, 19, 21, 23, 25, 28, 30, 33
     numeric_cols = {0, 1, 2, 4, 11, 12, 13, 14, 19, 21, 23, 25, 28, 30, 33}
     if detail_rows:
-        print(f"Inserting {len(detail_rows)} rows into {w_rf_dtl}...")
+        log(f"Inserting {len(detail_rows)} rows into {w_rf_dtl}...")
         sql_lines = []
         for row in detail_rows:
             values = []
@@ -2765,7 +2808,7 @@ def compile_required_fields(config: dict, options: 'Options' = None) -> tuple:
         for i in range(0, total, batch_size):
             batch = sql_lines[i:i + batch_size]
             end_idx = min(i + batch_size, total)
-            print(f"  Inserting {i + 1}-{end_idx}")
+            log(f"  Inserting {i + 1}-{end_idx}")
             sql_content = "\n".join(batch)
             success, output = execute_sql_native(
                 host=config.get('HOST'),
@@ -2777,10 +2820,10 @@ def compile_required_fields(config: dict, options: 'Options' = None) -> tuple:
                 sql_content=sql_content
             )
             if not success:
-                return False, f"Failed to insert required field details: {output}"
+                return False, f"Failed to insert required field details: {output}", 0
 
     # Execute i_required_fields_install stored procedure
-    print(f"Executing {dbpro}..i_required_fields_install...")
+    log(f"Executing {dbpro}..i_required_fields_install...")
     success, output = execute_sql_native(
         host=config.get('HOST'),
         port=config.get('PORT'),
@@ -2791,10 +2834,11 @@ def compile_required_fields(config: dict, options: 'Options' = None) -> tuple:
         sql_content=f"exec {dbpro}..i_required_fields_install"
     )
 
+    total_rows = len(header_rows) + len(detail_rows)
     if success:
-        return True, f"Compiled {len(header_rows)} headers and {len(detail_rows)} details"
+        return True, f"Compiled {len(header_rows)} headers and {len(detail_rows)} details", total_rows
     else:
-        return False, f"i_required_fields_install failed: {output}"
+        return False, f"i_required_fields_install failed: {output}", 0
 
 
 # =============================================================================
@@ -2816,7 +2860,7 @@ def get_messages_path(config: dict, file_ext: str) -> str:
     return os.path.join(sql_source, 'CSS', 'Setup', f'css{file_ext}')
 
 
-def compile_messages(config: dict, options: 'Options' = None) -> tuple:
+def compile_messages(config: dict, options: 'Options' = None, output_handle=None) -> tuple:
     """
     Compile message source files into the database (Import mode).
 
@@ -2852,16 +2896,23 @@ def compile_messages(config: dict, options: 'Options' = None) -> tuple:
     Args:
         config: Configuration dictionary with connection info
         options: Optional Options instance for resolving placeholders
+        output_handle: Optional file handle for output. If None, prints to console.
 
     Returns:
-        Tuple of (success: bool, message: str)
+        Tuple of (success: bool, message: str, count: int)
     """
+    def log(msg):
+        if output_handle:
+            output_handle.write(msg + '\n')
+            output_handle.flush()
+        else:
+            print(msg)
 
     # Create options if not provided
     if options is None:
         options = Options(config)
         if not options.generate_option_files():
-            return False, "Failed to load options files"
+            return False, "Failed to load options files", 0
 
     # Message types and their file extensions
     message_types = [
@@ -2873,15 +2924,15 @@ def compile_messages(config: dict, options: 'Options' = None) -> tuple:
     ]
 
     # Check all source files exist
-    print("Validating source files...")
+    log("Validating source files...")
     for msg_type, msg_ext, grp_ext in message_types:
         msg_file = get_messages_path(config, msg_ext)
         grp_file = get_messages_path(config, grp_ext)
 
         if not os.path.exists(msg_file):
-            return False, f"{msg_type.upper()} Messages file is missing ({msg_file})"
+            return False, f"{msg_type.upper()} Messages file is missing ({msg_file})", 0
         if not os.path.exists(grp_file):
-            return False, f"{msg_type.upper()} Message Group file is missing ({grp_file})"
+            return False, f"{msg_type.upper()} Message Group file is missing ({grp_file})", 0
 
     # Resolve database name
     dbpro = options.replace_options("&dbpro&")
@@ -2889,7 +2940,7 @@ def compile_messages(config: dict, options: 'Options' = None) -> tuple:
 
     # Step 1: Preserve translated messages via stored procedure
     # This copies user translations from gui_messages to gui_messages_save
-    print("Preserving translated messages into table gui_messages_save...")
+    log("Preserving translated messages into table gui_messages_save...")
     ba_compile_gui_messages_save = options.replace_options("&dbpro&..ba_compile_gui_messages_save")
     success, output = execute_sql_native(
         host=config.get('HOST'),
@@ -2901,7 +2952,7 @@ def compile_messages(config: dict, options: 'Options' = None) -> tuple:
         sql_content=f"exec {ba_compile_gui_messages_save}"
     )
     if not success:
-        return False, f"ba_compile_gui_messages_save failed: {output}"
+        return False, f"ba_compile_gui_messages_save failed: {output}", 0
 
     # Step 2: Truncate work tables and insert from flat files
     total_msg_rows = 0
@@ -2916,7 +2967,7 @@ def compile_messages(config: dict, options: 'Options' = None) -> tuple:
         w_grp = options.replace_options(f"&w#{msg_type}_message_groups&")
 
         # Truncate work tables
-        print(f"Truncating {w_msg}...")
+        log(f"Truncating {w_msg}...")
         success, output = execute_sql_native(
             host=config.get('HOST'),
             port=config.get('PORT'),
@@ -2929,7 +2980,7 @@ def compile_messages(config: dict, options: 'Options' = None) -> tuple:
         if not success:
             return False, f"Failed to truncate {w_msg}: {output}"
 
-        print(f"Truncating {w_grp}...")
+        log(f"Truncating {w_grp}...")
         success, output = execute_sql_native(
             host=config.get('HOST'),
             port=config.get('PORT'),
@@ -2944,7 +2995,7 @@ def compile_messages(config: dict, options: 'Options' = None) -> tuple:
 
         # Parse and insert message file (7 columns)
         # Columns: s#msgno (int), lang (int), cmpy (int), grp (varchar), upd_flg (char), chg_tm (int), message (varchar)
-        print(f"Importing {msg_type.upper()} Messages...")
+        log(f"Importing {msg_type.upper()} Messages...")
         msg_rows = []
         with open(msg_file, 'r', encoding='utf-8', errors='replace') as f:
             for line in f:
@@ -2956,7 +3007,7 @@ def compile_messages(config: dict, options: 'Options' = None) -> tuple:
                     msg_rows.append(parts[:7])
 
         if msg_rows:
-            print(f"  Inserting {len(msg_rows)} rows into {w_msg}...")
+            log(f"  Inserting {len(msg_rows)} rows into {w_msg}...")
             # Build SQL statements
             sql_lines = []
             for row in msg_rows:
@@ -2977,7 +3028,7 @@ def compile_messages(config: dict, options: 'Options' = None) -> tuple:
             for i in range(0, total, batch_size):
                 batch = sql_lines[i:i + batch_size]
                 end_idx = min(i + batch_size, total)
-                print(f"    Inserting {i + 1}-{end_idx}")
+                log(f"    Inserting {i + 1}-{end_idx}")
                 sql_content = "\n".join(batch)
                 success, output = execute_sql_native(
                     host=config.get('HOST'),
@@ -3005,7 +3056,7 @@ def compile_messages(config: dict, options: 'Options' = None) -> tuple:
                     grp_rows.append(parts[:3])
 
         if grp_rows:
-            print(f"  Inserting {len(grp_rows)} rows into {w_grp}...")
+            log(f"  Inserting {len(grp_rows)} rows into {w_grp}...")
             # Build SQL statements
             sql_lines = []
             for row in grp_rows:
@@ -3021,7 +3072,7 @@ def compile_messages(config: dict, options: 'Options' = None) -> tuple:
             for i in range(0, total, batch_size):
                 batch = sql_lines[i:i + batch_size]
                 end_idx = min(i + batch_size, total)
-                print(f"    Inserting {i + 1}-{end_idx}")
+                log(f"    Inserting {i + 1}-{end_idx}")
                 sql_content = "\n".join(batch)
                 success, output = execute_sql_native(
                     host=config.get('HOST'),
@@ -3039,7 +3090,7 @@ def compile_messages(config: dict, options: 'Options' = None) -> tuple:
     # Step 3: Execute compile stored procedures
     # i_compile_messages moves work tables to final tables and calls i_compile_gui_messages
     # i_compile_gui_messages restores translations from gui_messages_save
-    print(f"Running i_compile_messages...")
+    log(f"Running i_compile_messages...")
     success, output = execute_sql_native(
         host=config.get('HOST'),
         port=config.get('PORT'),
@@ -3050,9 +3101,9 @@ def compile_messages(config: dict, options: 'Options' = None) -> tuple:
         sql_content=f"exec {dbpro}..i_compile_messages"
     )
     if not success:
-        return False, f"i_compile_messages failed: {output}"
+        return False, f"i_compile_messages failed: {output}", 0
 
-    print(f"Running i_compile_jam_messages...")
+    log(f"Running i_compile_jam_messages...")
     success, output = execute_sql_native(
         host=config.get('HOST'),
         port=config.get('PORT'),
@@ -3063,9 +3114,9 @@ def compile_messages(config: dict, options: 'Options' = None) -> tuple:
         sql_content=f"exec {dbpro}..i_compile_jam_messages"
     )
     if not success:
-        return False, f"i_compile_jam_messages failed: {output}"
+        return False, f"i_compile_jam_messages failed: {output}", 0
 
-    print(f"Running i_compile_jrw_messages...")
+    log(f"Running i_compile_jrw_messages...")
     success, output = execute_sql_native(
         host=config.get('HOST'),
         port=config.get('PORT'),
@@ -3076,12 +3127,13 @@ def compile_messages(config: dict, options: 'Options' = None) -> tuple:
         sql_content=f"exec {dbpro}..i_compile_jrw_messages"
     )
     if not success:
-        return False, f"i_compile_jrw_messages failed: {output}"
+        return False, f"i_compile_jrw_messages failed: {output}", 0
 
-    return True, f"Compiled {total_msg_rows} messages and {total_grp_rows} message groups"
+    total_rows = total_msg_rows + total_grp_rows
+    return True, f"Compiled {total_msg_rows} messages and {total_grp_rows} message groups", total_rows
 
 
-def export_messages(config: dict, options: 'Options' = None) -> tuple:
+def export_messages(config: dict, options: 'Options' = None, output_handle=None) -> tuple:
     """
     Export messages from the database to flat files.
 
@@ -3109,10 +3161,17 @@ def export_messages(config: dict, options: 'Options' = None) -> tuple:
     Args:
         config: Configuration dictionary with connection info
         options: Optional Options instance for resolving placeholders
+        output_handle: Optional file handle for output. If None, prints to console.
 
     Returns:
         Tuple of (success: bool, message: str)
     """
+    def log(msg):
+        if output_handle:
+            output_handle.write(msg + '\n')
+            output_handle.flush()
+        else:
+            print(msg)
 
     # Create options if not provided
     if options is None:
@@ -3154,7 +3213,7 @@ def export_messages(config: dict, options: 'Options' = None) -> tuple:
 
         # Export messages table
         # Columns: s#msgno, lang, cmpy, grp, upd_flg, chg_tm, message
-        print(f"Exporting {msg_table} to {msg_file}...")
+        log(f"Exporting {msg_table} to {msg_file}...")
         sql = f"select * from {msg_table}"
         success, output = execute_sql_native(
             host=host,
@@ -3173,13 +3232,13 @@ def export_messages(config: dict, options: 'Options' = None) -> tuple:
             with open(msg_file, 'w', encoding='utf-8') as f:
                 for row in rows:
                     f.write('\t'.join(str(col) for col in row) + '\n')
-            print(f"  Exported {len(rows)} rows")
+            log(f"  Exported {len(rows)} rows")
             total_exports += 1
             total_rows += len(rows)
 
         # Export message groups table
         # Columns: grp, s#minmsg, description
-        print(f"Exporting {grp_table} to {grp_file}...")
+        log(f"Exporting {grp_table} to {grp_file}...")
         sql = f"select * from {grp_table}"
         success, output = execute_sql_native(
             host=host,
@@ -3198,7 +3257,7 @@ def export_messages(config: dict, options: 'Options' = None) -> tuple:
             with open(grp_file, 'w', encoding='utf-8') as f:
                 for row in rows:
                     f.write('\t'.join(str(col) for col in row) + '\n')
-            print(f"  Exported {len(rows)} rows")
+            log(f"  Exported {len(rows)} rows")
             total_exports += 1
             total_rows += len(rows)
 
@@ -3450,7 +3509,7 @@ def combine_option_files(company_options: list, profile_options: list) -> list:
     return list(options_dict.values())
 
 
-def compile_options(config: dict, options: 'Options' = None) -> tuple:
+def compile_options(config: dict, options: 'Options' = None, output_handle=None) -> tuple:
     """
     Compile options source files into the database.
 
@@ -3493,12 +3552,20 @@ def compile_options(config: dict, options: 'Options' = None) -> tuple:
                 PASSWORD, SQL_SOURCE, COMPANY, PROFILE_NAME, PLATFORM)
         options: Optional Options instance for resolving placeholders. If not provided,
                  a new Options instance will be created from the config.
+        output_handle: Optional file handle for output. If None, prints to console.
 
     Returns:
         Tuple of (success: bool, message: str)
         - success: True if options were imported successfully
         - message: Status message including count of options imported
     """
+    def log(msg):
+        if output_handle:
+            output_handle.write(msg + '\n')
+            output_handle.flush()
+        else:
+            print(msg)
+
     # Create options if not provided
     if options is None:
         options = Options(config)
@@ -3513,13 +3580,13 @@ def compile_options(config: dict, options: 'Options' = None) -> tuple:
         return False, f"Company options file not found: {company_file}"
 
     if not os.path.exists(profile_file):
-        print(f"Warning: Profile options file not found: {profile_file}")
+        log(f"Warning: Profile options file not found: {profile_file}")
 
     # Parse and convert to :> format
-    print(f"Processing company options: {company_file}")
+    log(f"Processing company options: {company_file}")
     company_options = generate_import_option_file(company_file)
 
-    print(f"Processing profile options: {profile_file}")
+    log(f"Processing profile options: {profile_file}")
     profile_options = generate_import_option_file(profile_file)
 
     # Combine options (profile overrides company for same option name)
@@ -3528,7 +3595,7 @@ def compile_options(config: dict, options: 'Options' = None) -> tuple:
     if not combined_options:
         return False, "No options found to import"
 
-    print(f"Combined {len(combined_options)} options")
+    log(f"Combined {len(combined_options)} options")
 
     # Resolve work table
     work_table = options.replace_options("&w#options&")
@@ -3539,7 +3606,7 @@ def compile_options(config: dict, options: 'Options' = None) -> tuple:
     work_db = work_table.split('..')[0] if '..' in work_table else None
 
     # Delete from work table
-    print(f"Clearing {work_table}...")
+    log(f"Clearing {work_table}...")
     success, output = execute_sql_native(
         host=config.get('HOST'),
         port=config.get('PORT'),
@@ -3551,13 +3618,13 @@ def compile_options(config: dict, options: 'Options' = None) -> tuple:
     )
 
     if not success:
-        return False, f"Failed to clear work table: {output}"
+        return False, f"Failed to clear work table: {output}", 0
 
     # Filter out empty lines
     filtered_options = [opt for opt in combined_options if opt and opt.strip()]
 
     # Insert options using SQL INSERT statements (BCP has 255 char limit)
-    print(f"Inserting {len(filtered_options)} options into {work_table}...")
+    log(f"Inserting {len(filtered_options)} options into {work_table}...")
 
     # Build SQL with all INSERT statements
     sql_lines = []
@@ -3572,7 +3639,7 @@ def compile_options(config: dict, options: 'Options' = None) -> tuple:
     for i in range(0, total, batch_size):
         batch = sql_lines[i:i + batch_size]
         end_idx = min(i + batch_size, total)
-        print(f"  Inserting {i + 1}-{end_idx}")
+        log(f"  Inserting {i + 1}-{end_idx}")
         sql_content = "\n".join(batch)
         success, output = execute_sql_native(
             host=config.get('HOST'),
@@ -3584,12 +3651,12 @@ def compile_options(config: dict, options: 'Options' = None) -> tuple:
             sql_content=sql_content
         )
         if not success:
-            return False, f"Failed to insert options: {output}"
+            return False, f"Failed to insert options: {output}", 0
 
     # Execute i_import_options stored procedure
     dbpro = options.replace_options("&dbpro&")
     proc_call = f"exec {dbpro}..i_import_options"
-    print(f"Executing: {proc_call}")
+    log(f"Executing: {proc_call}")
 
     success, output = execute_sql_native(
         host=config.get('HOST'),
@@ -3602,26 +3669,26 @@ def compile_options(config: dict, options: 'Options' = None) -> tuple:
     )
 
     if not success:
-        return False, f"Failed to execute i_import_options: {output}"
+        return False, f"Failed to execute i_import_options: {output}", 0
 
     # Delete the options cache file so it gets rebuilt next time
     cache_file = options.get_cache_filepath()
     try:
         if os.path.exists(cache_file):
             os.remove(cache_file)
-            print(f"Deleted options cache: {cache_file}")
+            log(f"Deleted options cache: {cache_file}")
     except Exception:
         pass
 
     # Also compile table_locations (options may have changed database mappings)
-    print("\nCompiling table_locations...")
-    tbl_success, tbl_message, tbl_count = compile_table_locations(config, options)
+    log("\nCompiling table_locations...")
+    tbl_success, tbl_message, tbl_count = compile_table_locations(config, options, output_handle)
     if tbl_success:
-        print(f"Inserted {tbl_count} rows into table_locations")
+        log(f"Inserted {tbl_count} rows into table_locations")
     else:
-        print(f"Warning: table_locations compile failed: {tbl_message}")
+        log(f"Warning: table_locations compile failed: {tbl_message}")
 
-    return True, f"Imported {len(filtered_options)} options"
+    return True, f"Imported {len(filtered_options)} options", len(filtered_options)
 
 
 # =============================================================================
@@ -3718,6 +3785,11 @@ def execute_sql_native(host: str, port: int, username: str, password: str,
     tsql works for both Sybase ASE and MSSQL. This pipes SQL through stdin
     to tsql, which provides better compatibility with the original C# implementation.
 
+    Note: Always uses cp1252 encoding for tsql communication. FreeTDS tsql doesn't
+    handle UTF-8 multi-byte sequences properly (e.g., UTF-8 Æ = C3 86 confuses it).
+    Files should be read with their proper encoding, then Python will transcode
+    to cp1252 when sending to tsql.
+
     Args:
         host: Database host
         port: Database port
@@ -3782,16 +3854,18 @@ def execute_sql_native(host: str, port: int, username: str, password: str,
 
         logging.debug(f"Executing: {compiler} -H {host} -p {port} -U {username} ... (credentials hidden)")
 
-        # Execute the compiler, piping SQL via stdin
-        # Use UTF-8 encoding to handle Unicode characters in SQL content
+        # Execute tsql, piping SQL via stdin
+        # Always use cp1252 for tsql communication - FreeTDS doesn't handle UTF-8 multi-byte
+        # sequences properly in its line parser (e.g., UTF-8 Æ = C3 86 confuses it).
+        # The Python string from script_content will be transcoded to cp1252 here.
         result = subprocess.run(
             cmd,
             input=script_content,
             capture_output=True,
             text=True,
-            encoding='utf-8',
-            errors='replace',  # Replace unencodable chars rather than failing
-            timeout=300  # 5 minute timeout
+            encoding='cp1252',
+            errors='replace',
+            timeout=300
         )
 
         # Process output - filter out tsql noise
@@ -3872,7 +3946,7 @@ def execute_sql_native(host: str, port: int, username: str, password: str,
 
         # Check result
         if result.returncode == 0:
-            return True, clean_output if clean_output else "(No rows returned)"
+            return True, clean_output if clean_output else "(return status = 0)"
         else:
             error_msg = stderr if stderr else stdout
             if not error_msg:
@@ -3885,3 +3959,214 @@ def execute_sql_native(host: str, port: int, username: str, password: str,
     except Exception as e:
         logging.error(f"Failed to execute SQL command: {e}")
         return False, str(e)
+
+
+def execute_sql_interleaved(host: str, port: int, username: str, password: str,
+                            database: str, platform: str, sql_content: str,
+                            echo: bool = False, output_handle=None) -> bool:
+    """
+    Execute SQL with interleaved echo and output, maintaining a single connection.
+
+    This function:
+    1. Splits SQL into batches (separated by 'go')
+    2. For each batch: echoes with line numbers (resetting per batch), then shows tsql output
+    3. Uses a single persistent tsql connection throughout
+
+    This matches Unix isql behavior where 'use' statements affect subsequent batches.
+
+    Args:
+        host: Database host
+        port: Database port
+        username: Database username
+        password: Database password
+        database: Initial database name
+        platform: Database platform (SYBASE or MSSQL)
+        sql_content: Full SQL content (may contain multiple batches separated by 'go')
+        echo: If True, echo each batch with line numbers before execution
+        output_handle: File handle for output, or None for stdout
+
+    Returns:
+        True if all batches succeeded, False if any had errors
+    """
+    import threading
+    import queue
+
+    def write_output(msg: str):
+        """Write to output_handle or stdout."""
+        if output_handle:
+            output_handle.write(msg + '\n')
+            output_handle.flush()
+        else:
+            print(msg)
+
+    def split_batches(content: str) -> list:
+        """Split SQL into batches ending with 'go'."""
+        lines = content.splitlines(keepends=True)
+        batches = []
+        current_batch = []
+
+        for line in lines:
+            current_batch.append(line)
+            stripped = line.strip().lower()
+            if stripped == 'go' or stripped.startswith('go ') or stripped.startswith('go\t'):
+                batch_sql = ''.join(current_batch)
+                if batch_sql.strip():
+                    batches.append(batch_sql)
+                current_batch = []
+
+        # Handle remaining content after last 'go'
+        if current_batch:
+            remaining = ''.join(current_batch)
+            if remaining.strip():
+                batches.append(remaining)
+
+        return batches
+
+    compiler = "tsql"
+    if not shutil.which(compiler):
+        write_output(f"ERROR: {compiler} command not found. Install FreeTDS.")
+        return False
+
+    # Split into batches for echo purposes
+    batches = split_batches(sql_content)
+
+    try:
+        # Build tsql command
+        cmd = [
+            compiler,
+            "-H", host,
+            "-p", str(port),
+            "-U", username,
+            "-P", password,
+            "-o", "q"  # Quiet mode
+        ]
+        if database:
+            cmd.extend(["-D", database])
+
+        # Start tsql process with persistent connection
+        process = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding='utf-8',
+            errors='replace'
+        )
+
+        # Queue for collecting output from threads
+        output_queue = queue.Queue()
+        has_error = False
+
+        def read_stream(stream, stream_name):
+            """Read from stream and put lines in queue."""
+            try:
+                for line in stream:
+                    output_queue.put((stream_name, line))
+            except:
+                pass
+            finally:
+                output_queue.put((stream_name, None))
+
+        # Start reader threads
+        stdout_thread = threading.Thread(target=read_stream, args=(process.stdout, 'stdout'))
+        stderr_thread = threading.Thread(target=read_stream, args=(process.stderr, 'stderr'))
+        stdout_thread.daemon = True
+        stderr_thread.daemon = True
+        stdout_thread.start()
+        stderr_thread.start()
+
+        def process_output_line(stream_name: str, line: str):
+            """Process a single output line."""
+            nonlocal has_error
+            line = line.rstrip('\r\n')
+
+            # Skip tsql noise
+            if line.startswith("locale is"):
+                return
+            if line.startswith("locale charset is"):
+                return
+            if line.startswith("using default charset"):
+                return
+            if line.startswith("using TDS version"):
+                return
+            if line.startswith("Setting ") and "as default database" in line:
+                return
+            # Skip character set change messages
+            if "Changed client character set" in line:
+                return
+            if line.strip() == '"':
+                return
+
+            if stream_name == 'stdout':
+                # Remove prompt prefixes
+                line = re.sub(r'^\s*\d+>\s?', '', line)
+                if line.strip():
+                    write_output(line)
+            elif stream_name == 'stderr':
+                # Check for real errors (severity > 10)
+                match = re.match(r'Msg \d+ \(severity (\d+)', line)
+                if match:
+                    severity = int(match.group(1))
+                    if severity > 10:
+                        has_error = True
+                # Clean up error message formatting
+                line = line.strip().strip('\t').strip('"')
+                if line:
+                    write_output(line)
+
+        def drain_output_until_idle(max_wait_ms: int = 2000):
+            """Drain output until queue is idle for a short period."""
+            import time
+            idle_threshold_ms = 50  # Consider idle after 50ms of no output
+            last_output_time = time.time()
+            deadline = time.time() + (max_wait_ms / 1000.0)
+
+            while time.time() < deadline:
+                try:
+                    stream_name, line = output_queue.get(timeout=0.01)
+                    if line is None:
+                        continue
+                    process_output_line(stream_name, line)
+                    last_output_time = time.time()
+                except queue.Empty:
+                    # Check if we've been idle long enough
+                    if (time.time() - last_output_time) > (idle_threshold_ms / 1000.0):
+                        break
+
+        # Process each batch: echo then execute
+        for batch_sql in batches:
+            # Echo this batch with line numbers (reset to 1 per batch)
+            if echo:
+                batch_lines = batch_sql.splitlines()
+                for i, line in enumerate(batch_lines):
+                    write_output(f"{i+1}> {line}")
+
+            # Send this batch to tsql
+            process.stdin.write(batch_sql)
+            if not batch_sql.strip().lower().endswith('go'):
+                process.stdin.write('\ngo\n')
+            process.stdin.flush()
+
+            # Wait for tsql to process this batch and drain output
+            drain_output_until_idle(max_wait_ms=5000)
+
+        # Send exit command
+        process.stdin.write('exit\n')
+        process.stdin.flush()
+        process.stdin.close()
+
+        # Wait for process to complete and drain remaining output
+        process.wait(timeout=30)
+        drain_output_until_idle(max_wait_ms=2000)
+
+        # Wait for threads
+        stdout_thread.join(timeout=2)
+        stderr_thread.join(timeout=2)
+
+        return not has_error
+
+    except Exception as e:
+        logging.error(f"Interleaved execution failed: {e}")
+        write_output(f"ERROR: {e}")
+        return False

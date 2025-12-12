@@ -1,5 +1,5 @@
 """
-eopt.py: Edit and compile options.
+set_options.py: Edit and compile options. (Also available as: eopt, import_options)
 
 This command allows editing and importing options configuration files into the database.
 Options control runtime behavior of the IBS/SBN system, including database mappings,
@@ -1191,7 +1191,7 @@ def main(args_list=None):
     # Compile: parse options files and insert into database
     # This also updates table_locations since options may affect database mappings
     output("Compiling options...")
-    success, message = compile_options(config)
+    success, message, count = compile_options(config)
 
     if success:
         output(f"SUCCESS: {message}")

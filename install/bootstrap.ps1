@@ -402,6 +402,48 @@ function Main {
         } else {
             Write-Status "Bootstrap completed - installer.py succeeded" "Success"
             Write-Status "See $Script:LogFile for full installation log" "Info"
+
+            # Refresh PATH in current session
+            Write-Host ""
+            Write-Host "  --- Refreshing PATH ---" -ForegroundColor White
+            Write-Host ""
+            Write-Status "Refreshing PATH environment variable..." "Step"
+            $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
+            Write-Status "PATH refreshed in current session" "Success"
+
+            # Verify commands are available
+            $vimPath = Get-Command vim -ErrorAction SilentlyContinue
+            $runsqlPath = Get-Command runsql -ErrorAction SilentlyContinue
+            $tailPath = Get-Command tail -ErrorAction SilentlyContinue
+
+            if ($vimPath) {
+                Write-Status "vim is available: $($vimPath.Source)" "Success"
+            } else {
+                Write-Status "vim not found in PATH - you may need to restart your terminal" "Warn"
+            }
+
+            if ($tailPath) {
+                Write-Status "tail is available: $($tailPath.Source)" "Success"
+            } else {
+                Write-Status "tail not found in PATH - you may need to restart your terminal" "Warn"
+            }
+
+            if ($runsqlPath) {
+                # Get the Scripts directory (parent of runsql.exe)
+                $scriptsDir = Split-Path $runsqlPath.Source -Parent
+                Write-Status "IBS compilers are available: $scriptsDir" "Success"
+            } else {
+                Write-Status "IBS compilers not found in PATH - you may need to restart your terminal" "Warn"
+            }
+
+            # Final message
+            Write-Host ""
+            Write-Host ""
+            Write-Host "  ============================================================" -ForegroundColor Cyan
+            Write-Host "    Setup complete! Run ``set_profile`` to get started." -ForegroundColor Cyan
+            Write-Host "  ============================================================" -ForegroundColor Cyan
+            Write-Host ""
+            Write-Host ""
         }
     } catch {
         Write-Status "installer.py failed with exception: $_" "Error"

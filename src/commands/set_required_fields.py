@@ -1,5 +1,5 @@
 """
-ereq.py: Edit and compile required field definitions.
+set_required_fields.py: Edit and compile required field definitions. (Also available as: ereq, install_required_fields)
 
 This command compiles the required_fields and required_fields_dtl source files
 into the database work tables, then executes a stored procedure to finalize.
@@ -91,7 +91,7 @@ def main(args_list=None):
 
     # Compile: parse source files and insert into database
     print("Compiling required fields...")
-    success, message = compile_required_fields(config)
+    success, message, count = compile_required_fields(config)
 
     if success:
         print(message)

@@ -4,15 +4,186 @@
 
 Python replacement for the C# IBS Compilers (`Ibs.Compilers`). Tools compile and deploy SQL objects to Sybase ASE and MSSQL databases.
 
-**Current Focus: Windows complete, now testing Ubuntu/Linux.**
+**Current Focus: Final Windows testing complete. Next step: Install on WSL instance for Linux testing.**
 
 ---
 
-## Phase 15: Ubuntu/Linux Testing
+## Phase 15: Runcreate Commands Analysis
 
-### Status: In Progress
+### Status: Core fixed, stub commands pending
 
-Windows implementation is complete. Now testing on Ubuntu to validate cross-platform compatibility.
+**Options Regex Bug - FIXED:**
+- Root cause: Regex `r'&[^&]+&'` matched literal `&` in SQL strings (e.g., `'%[&,(,)]%'`)
+- Fixed regex: `r'&[a-zA-Z_][a-zA-Z0-9_#-]*&'` - only matches valid placeholder names (letters, numbers, underscores, hyphens, hash signs)
+- Location: `src/commands/ibs_common.py` line 1854
+
+### Commands Analysis from create_all
+
+Analyzed `CSS/SQL_Sources/Basics/create_all` and all nested create scripts.
+
+| Command | Occurrences | Location | Status |
+|---------|-------------|----------|--------|
+| `runsql` | 1,184+ | Throughout | ✅ Fully implemented |
+| `runcreate` | 41+ | Throughout | ✅ Fully implemented |
+| `isqlline` | 8+ | Various create_* files | ✅ Fully implemented |
+| `import_options` | 1 | create_ini:65 | ✅ Wired to compile_options() |
+| `create_tbl_locations` | 1 | create_ini:68 | ✅ Wired to compile_table_locations() |
+| `install_msg` | 1 | create_pro:259 | ✅ Wired to compile_messages() |
+| `install_required_fields` | 1 | create_pro:261 | ✅ Wired to compile_required_fields() |
+| `compile_actions` | 1 | create_pro:310 | ✅ Wired to compile_actions() |
+| `i_run_upgrade` | 329 | CSS/Updates/*/create_* | ✅ Wired to i_run_upgrade.main() |
+
+### All Commands Now Implemented
+
+All commands found in create files are now wired up in runcreate.py:
+
+| Command | Calls | Purpose |
+|---------|-------|---------|
+| `import_options` | `compile_options()` | Import options to database |
+| `create_tbl_locations` | `compile_table_locations()` | Create table location mappings |
+| `install_msg` | `compile_messages()` | Install messages |
+| `install_required_fields` | `compile_required_fields()` | Install required field definitions |
+| `compile_actions` | `compile_actions()` | Compile action definitions |
+| `i_run_upgrade` | `i_run_upgrade.main()` | Run versioned upgrade scripts |
+
+### Next Steps
+
+1. Test full create_all build with all commands functional
+2. Test Ubuntu installer on Linux system
+
+---
+
+## Phase 17: FreeTDS Encoding Fix
+
+### Status: COMPLETE
+
+**Problem:** FreeTDS tsql couldn't parse SQL files with non-ASCII characters (Danish: æ, ø, å, Æ / Spanish: ñ, á, é). UTF-8 multi-byte sequences confused tsql's line parser.
+
+**Solution:**
+- File reading: UTF-8 (cross-platform standard)
+- tsql communication: Hardcoded to CP1252 (FreeTDS limitation)
+- Python transcodes automatically between the two
+
+**Files Changed:**
+- `ibs_common.py`: `execute_sql_native()` uses `encoding='cp1252'` for subprocess
+- `runsql.py`: File reading uses `encoding='utf-8'`
+- `runcreate.py`: File reading uses `encoding='utf-8'`
+
+---
+
+## Phase 16: Output Routing & Return Value Fixes
+
+### Status: COMPLETE
+
+### Problem 1: Print Output Going to Console Instead of Log File
+
+When running `runcreate create_test GONZO test.log`, the compile functions were printing directly to console instead of the output file. All `print()` statements needed to route through the output handle.
+
+**Root Cause:** Compile functions used `print()` directly instead of writing to the passed `output_handle`.
+
+**Fix Pattern Applied to ALL 6 Functions:**
+1. Add `output_handle=None` parameter to function signature
+2. Add `log()` helper function inside each function:
+   ```python
+   def log(msg):
+       if output_handle:
+           output_handle.write(msg + '\n')
+           output_handle.flush()
+       else:
+           print(msg)
+   ```
+3. Replace all `print()` calls with `log()`
+4. Update runcreate.py to pass `output_handle` to each function
+
+**Functions Fixed (ibs_common.py):**
+
+| Function | Line | Print Statements Fixed |
+|----------|------|----------------------|
+| `compile_table_locations()` | 2184 | 2 prints |
+| `compile_actions()` | 2347 | 8 prints |
+| `compile_required_fields()` | 2613 | 8 prints |
+| `compile_messages()` | 2850 | 12 prints |
+| `compile_options()` | 3491 | 12 prints |
+| `export_messages()` | 3124 | 4 prints |
+
+**Runcreate.py Updates (passing output_handle):**
+
+| Line | Function Call |
+|------|--------------|
+| 564 | `export_messages(config, options, output_handle)` |
+| 572 | `compile_messages(config, options, output_handle)` |
+| 580 | `compile_required_fields(config, options, output_handle)` |
+| 588 | `compile_options(config, options, output_handle)` |
+| 596 | `compile_table_locations(config, options, output_handle)` |
+| 604 | `compile_actions(config, options, output_handle)` |
+
+### Problem 2: Return Value Mismatch (ValueError: not enough values to unpack)
+
+All compile functions must return 3 values `(success, message, count)` but some only returned 2.
+
+**Fix Applied to ALL Compile Functions:**
+- Updated docstrings: `Returns: Tuple of (success: bool, message: str, count: int)`
+- Added `, 0` to all error return statements
+- Added row count to success return statements
+
+**compile_options() - 4 returns fixed:**
+- Lines 3563, 3596, 3614: Added `, 0`
+- Line 3633: Added `, len(filtered_options)`
+
+**compile_messages() - 8 returns fixed:**
+- Lines 2873, 2891, 2893, 2913, 3062, 3075, 3088: Added `, 0`
+- Line 3091: Added `, total_rows`
+
+**compile_actions() - 11 returns fixed:**
+- Lines 2397, 2404, 2407, 2415, 2417, 2485, 2498, 2526, 2560: Added `, 0`
+- Lines 2574-2578: Added `total_rows = len(header_rows) + len(detail_rows)`, success returns `total_rows`
+
+**compile_required_fields() - 10 returns fixed:**
+- Lines 2660, 2667, 2670, 2678, 2680, 2722, 2735, 2771, 2811: Added `, 0`
+- Line 2827: Added `, total_rows`
+
+**Caller Updates (expecting 3 values):**
+
+| File | Line | Call |
+|------|------|------|
+| set_options.py | 1194 | `success, message, count = compile_options(config)` |
+| set_messages.py | 214 | `success, message, count = compile_messages(config)` |
+| set_required_fields.py | 94 | `success, message, count = compile_required_fields(config)` |
+
+### Problem 3: Use MSYS2 tail instead of custom tail.py
+
+Removed custom `tail.py` - the installer now adds `C:\msys64\usr\bin` to PATH, which provides `tail.exe`.
+
+**Files Changed:**
+- Deleted: `src/commands/tail.py`
+- Updated: `src/pyproject.toml` - removed `tail = "commands.tail:main"` entry
+- Updated: `install/installer.py` - adds `C:\msys64\usr\bin` to PATH
+- Updated: `install/bootstrap.ps1` - verifies `tail` is available
+
+**Usage:**
+```bash
+tail -f test.log
+```
+
+### Files Modified This Session
+
+| File | Changes |
+|------|---------|
+| `src/commands/ibs_common.py` | Output routing + return values for 6 functions |
+| `src/commands/runcreate.py` | Pass output_handle to all compile functions |
+| `src/commands/set_options.py` | Expect 3 return values |
+| `src/commands/set_messages.py` | Expect 3 return values |
+| `src/commands/set_required_fields.py` | Expect 3 return values |
+| `src/commands/tail.py` | DELETED |
+| `src/pyproject.toml` | Removed tail entry |
+
+---
+
+## Phase 14.5: Ubuntu/Linux Testing (Paused)
+
+### Status: Paused
+
+Ubuntu testing paused to address Windows runcreate issues first.
 
 ### Known Areas Requiring Attention
 
@@ -22,9 +193,10 @@ Windows implementation is complete. Now testing on Ubuntu to validate cross-plat
 | Python installation | Python.org installer | `apt install python3 python3-pip` | System package |
 | Path separators | `\` | `/` | Code uses `os.sep` - should work |
 | Symbolic links | Requires Admin | Native support | `create_symbolic_links()` in ibs_common.py |
-| settings.json location | `src/commands/` | Same | Verify path resolution |
+| settings.json location | `compilers/` (project root) | Same | Keeps users out of src/commands |
 | Line endings | CRLF | LF | SQL files, options files |
 | Editor detection | notepad, code | vim, nano, code | `launch_editor()` in ibs_common.py |
+| vim installation | winget (via installer) | apt install vim | Installer handles both |
 
 ### Ubuntu Installation Steps (To Be Tested)
 
@@ -66,7 +238,6 @@ runcreate --help
 **`ibs_common.py`** is the shared library containing ALL reusable logic:
 - SQL execution via tsql (`execute_sql_native()`)
 - Connection testing via tsql (`test_connection()`)
-- Database connections via pyodbc (`get_db_connection()`)
 - BCP operations via freebcp (`execute_bcp()`)
 - Profile management (`load_profile()`, `save_profile()`, `list_profiles()`)
 - File utilities (`find_file()`, `convert_non_linked_paths()`)
@@ -225,17 +396,18 @@ All files are in `{SQL_SOURCE}/CSS/Setup/`.
 | `src/commands/isqlline.py` | Execute single SQL command |
 | `src/commands/runsql.py` | Execute SQL scripts with sequences |
 | `src/commands/bcp_data.py` | Bulk copy data in/out |
-| `src/commands/tail.py` | Tail log files |
-| `src/commands/eloc.py` | Edit and compile table locations |
-| `src/commands/eact.py` | Edit and compile actions |
-| `src/commands/eopt.py` | Edit and compile options |
-| `src/commands/compile_msg.py` | Compile messages |
-| `src/commands/compile_required_fields.py` | Compile required fields |
+| `src/commands/set_table_locations.py` | Edit and compile table locations (eloc, create_tbl_locations) |
+| `src/commands/set_actions.py` | Edit and compile actions (eact, compile_actions) |
+| `src/commands/set_options.py` | Edit and compile options (eopt, import_options) |
+| `src/commands/set_messages.py` | Compile messages (compile_msg, install_msg) |
+| `src/commands/set_required_fields.py` | Edit required fields (ereq, install_required_fields) |
 | `src/commands/i_run_upgrade.py` | Run upgrade scripts |
 | `src/commands/runcreate.py` | Orchestrate master build scripts |
-| `src/commands/settings.json` | All connection and compile settings |
-| `install/bootstrap.ps1` | Windows setup script |
-| `install/installer.py` | Windows installer |
+| `settings.json` | All connection and compile settings (project root) |
+| `install/bootstrap.ps1` | Windows setup script (refreshes PATH on completion) |
+| `install/installer.py` | Windows installer (MSYS2, FreeTDS, vim, packages) |
+| `install/bootstrap.sh` | Ubuntu/Linux setup script |
+| `install/installer_linux.py` | Ubuntu installer (FreeTDS, vim, packages) |
 
 ### C# Reference Implementation
 
@@ -287,7 +459,7 @@ Tasks are ordered by implementation priority.
 ### Phase 5: tail
 | Status | Task |
 |--------|------|
-| Done | `tail.py` - Tail log files |
+| Done | Use MSYS2 `tail` from `C:\msys64\usr\bin` (added to PATH by installer) |
 
 ### Phase 6: change_log
 | Status | Task |
@@ -304,13 +476,13 @@ Tasks are ordered by implementation priority.
 ### Phase 8: table_locations / eloc
 | Status | Task |
 |--------|------|
-| Done | `eloc.py` - Edit and compile table locations |
+| Done | `set_table_locations.py` - Edit and compile table locations |
 | Done | `compile_table_locations()` - Insert via SQL INSERT (BCP has 255 char limit) |
 
 ### Phase 9: actions / eact
 | Status | Task |
 |--------|------|
-| Done | `eact.py` - Edit actions |
+| Done | `set_actions.py` - Edit actions |
 | Done | `compile_actions()` - Fixed-width parsing and SQL INSERT |
 
 ### Phase 10: options / eopt
@@ -320,7 +492,7 @@ Tasks are ordered by implementation priority.
 | Done | `_parse_v_option()`, `_parse_c_option()`, `_parse_table_option()` |
 | Done | `generate_option_files()` with caching (24-hour expiry) |
 | Done | `replace_options()` with @sequence@ support |
-| Done | `eopt.py` - Edit options (add, edit, merge modes) |
+| Done | `set_options.py` - Edit options (add, edit, merge modes) |
 | Done | `compile_options()` - Insert options into database via SQL INSERT |
 | Done | `compile_table_locations()` - Insert table_locations via SQL INSERT |
 | Done | Interactive option creation wizard with MOD # tracking |
@@ -329,14 +501,14 @@ Tasks are ordered by implementation priority.
 ### Phase 11: messages / compile_msg
 | Status | Task |
 |--------|------|
-| Done | `compile_msg.py` - Compile messages (import mode) |
+| Done | `set_messages.py` - Compile messages (import mode) |
 | Done | `export_messages()` - Export messages from database to flat files |
 | Note | CRLF/LF normalization - may need testing |
 
 ### Phase 12: required_fields / ereq
 | Status | Task |
 |--------|------|
-| Done | `ereq.py` - Edit and compile required fields via SQL INSERT |
+| Done | `set_required_fields.py` - Edit and compile required fields via SQL INSERT |
 
 ### Phase 13: upgrade / i_run_upgrade
 | Status | Task |
@@ -377,6 +549,7 @@ Tasks are ordered by implementation priority.
 - Soft-compiler Options class (v:, c:, -> placeholders) with 24-hour caching
 - Non-linked path conversion (convert_non_linked_paths)
 - Database connectivity (Sybase ASE and MSSQL via FreeTDS tsql)
+- Code cleanup: Removed legacy pyodbc functions, optimized `replace_options()` with regex
 
 ---
 
@@ -585,8 +758,8 @@ ereq TEST
 # Compile messages
 compile_msg TEST
 
-# Tail log file
-tail /path/to/logfile
+# Tail log file (use MSYS2 or PowerShell)
+tail -f /path/to/logfile                    # MSYS2
+Get-Content /path/to/logfile -Tail 50 -Wait  # PowerShell
 ```
 - [ ] Messages import correctly
-- [ ] Tail follows file updates

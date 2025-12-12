@@ -16,18 +16,26 @@ Python: 3.11.9 (tags/v3.11.9:de54cf5, Apr  2 2024, 10:12:12) [MSC v.1938 64 bit 
 [INFO]           Sybase binary compatibility: no
 [STEP] PATH Configuration
 [STEP] Configuring MSYS2 PATH
-[SUCCESS] PATH already contains MSYS2 bin directory
+[SUCCESS] PATH already contains ucrt64/bin (FreeTDS)
+[SUCCESS] PATH already contains usr/bin (tail, grep, etc.)
 [STEP] Python Packages Installation
 [STEP] Upgrading pip
 [INFO] Running: C:\Users\JakeWilliams\AppData\Local\Programs\Python\Python311\python.exe -m pip install --upgrade pip
 [STEP] Installing IBS Compilers package
-[INFO] Running: C:\Users\JakeWilliams\AppData\Local\Programs\Python\Python311\python.exe -m pip install -e C:\Users\JakeWilliams\Projects\compilers\src
+[INFO] Running: C:\Users\JakeWilliams\AppData\Local\Programs\Python\Python311\python.exe -m pip install -e C:\_innovative\_source\compilers\src
 [SUCCESS] IBS Compilers package installed to: C:\Users\JakeWilliams\AppData\Local\Programs\Python\Python311\Scripts
 [SUCCESS] Scripts directory already in PATH: C:\Users\JakeWilliams\AppData\Local\Programs\Python\Python311\Scripts
 [STEP] Settings Configuration
-[SUCCESS] Settings file exists: C:\Users\JakeWilliams\Projects\compilers\src\settings.json
+[SUCCESS] Settings file exists: C:\_innovative\_source\compilers\settings.json
 [SUCCESS] Found 3 profile(s) in settings.json
+[STEP] VIM Installation
+[SUCCESS] vim already in PATH: C:\Program Files (x86)\Vim\vim90\vim.EXE
 [STEP] Installation Summary
 [SUCCESS] All components installed successfully!
 [SUCCESS] Bootstrap completed - installer.py succeeded
-[INFO] See C:\Users\JakeWilliams\Projects\compilers\install\installer.log for full installation log
+[INFO] See C:\_innovative\_source\compilers\install\installer.log for full installation log
+[STEP] Refreshing PATH environment variable...
+[SUCCESS] PATH refreshed in current session
+[SUCCESS] vim is available: C:\Program Files (x86)\Vim\vim90\vim.exe
+[SUCCESS] tail is available: C:\msys64\usr\bin\tail.exe
+[SUCCESS] IBS compilers are available: C:\Users\JakeWilliams\AppData\Local\Programs\Python\Python311\Scripts

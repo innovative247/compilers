@@ -17,6 +17,19 @@ Changelog Behavior:
 - Use --no-changelog to disable (e.g., when called by runcreate)
 - isqlline never logs to changelog
 
+OPTIONS FILE HANDLING:
+    When a profile is used, runsql loads options from {SQL_SOURCE}/CSS/Setup/:
+    - options.def (required)
+    - options.{company} (required)
+    - options.{company}.{profile} (optional)
+    - table_locations (required)
+
+    The merged options are cached in {SQL_SOURCE}/CSS/Setup/temp/{profile}.options.tmp
+    and reused for 24 hours. All option resolution is handled by the Options class
+    in ibs_common.py.
+
+    When -e (echo) is used, the options cache file path is logged.
+
 Usage:
     runsql script.sql sbnmaster SBNA
     runsql script.sql sbnmaster -S SBNA
@@ -31,6 +44,7 @@ CHG 241206 Changed changelog to ON by default, added --no-changelog flag
 import argparse
 import getpass
 import logging
+import re
 import sys
 import os
 from pathlib import Path
@@ -42,10 +56,55 @@ from .ibs_common import (
     replace_placeholders,
     test_connection,
     execute_sql_native,
+    execute_sql_interleaved,
     find_file,
     Options,
 )
 
+
+def split_sql_batches(sql_content: str) -> list:
+    """
+    Split SQL content into batches separated by 'go' statements.
+
+    Each batch ends with a 'go' statement. The 'go' is kept as part of the batch
+    for proper execution by tsql.
+
+    Args:
+        sql_content: Full SQL script content
+
+    Returns:
+        List of (batch_sql, start_line) tuples where start_line is 1-based
+    """
+    import re
+
+    lines = sql_content.splitlines(keepends=True)
+    batches = []
+    current_batch = []
+    batch_start_line = 1
+    line_num = 1
+
+    for line in lines:
+        current_batch.append(line)
+
+        # Check if this line is a 'go' statement (case insensitive, may have whitespace)
+        stripped = line.strip().lower()
+        if stripped == 'go' or stripped.startswith('go ') or stripped.startswith('go\t'):
+            # End of batch - save it
+            batch_sql = ''.join(current_batch)
+            if batch_sql.strip():  # Only add non-empty batches
+                batches.append((batch_sql, batch_start_line))
+            current_batch = []
+            batch_start_line = line_num + 1
+
+        line_num += 1
+
+    # Handle any remaining content after the last 'go'
+    if current_batch:
+        remaining = ''.join(current_batch)
+        if remaining.strip():
+            batches.append((remaining, batch_start_line))
+
+    return batches
 
 
 def main():
@@ -229,7 +288,7 @@ Notes:
 
         logging.debug(f"Found script file: {script_path}")
 
-        # Read the script content
+        # Read the script content (UTF-8 default, works cross-platform)
         try:
             with open(script_path, 'r', encoding='utf-8') as f:
                 script_content = f.read()
@@ -237,13 +296,28 @@ Notes:
             print(f"ERROR: Could not read script file '{script_path}': {e}", file=sys.stderr)
             return 1
 
-        # Apply Options-based placeholder resolution (e.g., &users& -> sbnmaster..users)
-        # Only if we have a profile with the necessary config (COMPANY, PROFILE_NAME)
+        # ==========================================================================
+        # OPTIONS FILE HANDLING
+        # ==========================================================================
+        # Load/create options file ONCE per runsql execution.
+        # Options are cached in {SQL_SOURCE}/CSS/Setup/temp/{profile}.options.tmp
+        # and reused for 24 hours. All processing is done by Options class in ibs_common.py.
+        #
+        # When -e (echo) is used, the options file path is logged.
+        # ==========================================================================
+        options = None
+        options_log_line = None  # Will be added to output later if -O is used
         if profile_name and config.get('COMPANY'):
             options = Options(config)
             if options.generate_option_files():
-                # Options loaded successfully - we'll use them for placeholder resolution
+                # Options loaded successfully - log path if echo is enabled
                 logging.debug("Options loaded successfully for placeholder resolution")
+                if args.echo:
+                    cache_file = options.get_cache_filepath()
+                    options_log_line = f"-- Options: {cache_file}"
+                    if not args.output:
+                        # Print to console only if not writing to file
+                        print(options_log_line)
             else:
                 # Options failed to load - continue without them
                 logging.warning("Failed to generate option files. Continuing without soft-compiler.")
@@ -254,112 +328,129 @@ Notes:
 
         # Loop through the sequence
         current_seq = args.first_sequence
-        all_output = []
+        all_output = []  # Used for console output (no -O flag)
+        output_handle = None  # File handle for streaming output
 
-        while current_seq <= args.last_sequence:
-            logging.info(f"Processing sequence {current_seq} of {args.last_sequence}...")
+        # Open output file for streaming if specified
+        if args.output:
+            try:
+                output_handle = open(args.output, 'w', encoding='utf-8')
+                # Write options file path first if echo is enabled
+                if options_log_line:
+                    output_handle.write(options_log_line + '\n')
+                    output_handle.flush()
+            except IOError as e:
+                print(f"ERROR: Failed to open output file: {e}", file=sys.stderr)
+                return 1
 
-            # Build the SQL content for this sequence
-            # Start with the original file content
-            sql_content = script_content
+        try:
+            while current_seq <= args.last_sequence:
+                logging.info(f"Processing sequence {current_seq} of {args.last_sequence}...")
 
-            # Inject change log (ON by default, use --no-changelog to disable)
-            if not args.no_changelog:
-                from .ibs_common import is_changelog_enabled, generate_changelog_sql
-                enabled, msg = is_changelog_enabled(config)
-                if enabled:
-                    logging.info("Change logging enabled. Injecting audit trail SQL...")
-                    username = config.get('USERNAME', os.environ.get('USERNAME', 'unknown'))
-                    changelog_lines = generate_changelog_sql(
-                        sql_command=args.script_file,
-                        database=database,
-                        server=config.get('PROFILE_NAME', host),
-                        company=str(config.get('COMPANY', '')),
-                        username=username,
-                        changelog_enabled=True
-                    )
-                    changelog_sql = '\n'.join(changelog_lines)
-                    sql_content = changelog_sql + '\n' + sql_content
+                # Build the SQL content for this sequence
+                # Start with the original file content
+                sql_content = script_content
+
+                # Inject change log (ON by default, use --no-changelog to disable)
+                if not args.no_changelog:
+                    from .ibs_common import is_changelog_enabled, generate_changelog_sql
+                    enabled, msg = is_changelog_enabled(config)
+                    if enabled:
+                        logging.info("Change logging enabled. Injecting audit trail SQL...")
+                        username = config.get('USERNAME', os.environ.get('USERNAME', 'unknown'))
+                        changelog_lines = generate_changelog_sql(
+                            sql_command=args.script_file,
+                            database=database,
+                            server=config.get('PROFILE_NAME', host),
+                            company=str(config.get('COMPANY', '')),
+                            username=username,
+                            changelog_enabled=True
+                        )
+                        changelog_sql = '\n'.join(changelog_lines)
+                        sql_content = changelog_sql + '\n' + sql_content
+                    else:
+                        logging.debug(f"Changelog not available: {msg}")
+
+                # Apply placeholder resolution
+                if options:
+                    # Use Options class for full soft-compiler support (handles &placeholders& and @sequence@)
+                    sql_content = options.replace_options(sql_content, sequence=current_seq)
                 else:
-                    logging.debug(f"Changelog not available: {msg}")
+                    # Fall back to simple placeholder replacement
+                    sql_content = replace_placeholders(sql_content, config, remove_ampersands=False)
+                    # Replace @sequence@ manually
+                    sql_content = sql_content.replace('@sequence@', str(current_seq))
+                    sql_content = sql_content.replace('@SEQUENCE@', str(current_seq))
 
-            # Apply placeholder resolution
-            if options:
-                # Use Options class for full soft-compiler support (handles &placeholders& and @sequence@)
-                sql_content = options.replace_options(sql_content, sequence=current_seq)
-            else:
-                # Fall back to simple placeholder replacement
-                sql_content = replace_placeholders(sql_content, config, remove_ampersands=False)
-                # Replace @sequence@ manually
-                sql_content = sql_content.replace('@sequence@', str(current_seq))
-                sql_content = sql_content.replace('@SEQUENCE@', str(current_seq))
-
-            # Echo input if requested (print resolved SQL before execution)
-            if args.echo:
-                echo_header = f"-- Executing SQL (sequence {current_seq}):"
-                echo_footer = "--"
-                if args.output:
-                    # Write to output file only (no console output)
-                    all_output.append(echo_header)
-                    all_output.append(sql_content)
-                    all_output.append(echo_footer)
-                else:
-                    # Print to console only
-                    print(echo_header)
+                if args.preview:
+                    print(f"--- PREVIEW: Sequence {current_seq} ---")
                     print(sql_content)
-                    print(echo_footer)
-
-            if args.preview:
-                print(f"--- PREVIEW: Sequence {current_seq} ---")
-                print(sql_content)
-                print("--- END PREVIEW ---\n")
-            else:
-                logging.info(f"Executing sequence {current_seq}...")
-
-                # Execute the SQL via native compiler (tsql)
-                success, output = execute_sql_native(
-                    host, port, username, password, database, platform,
-                    sql_content,
-                    output_file=None,  # We'll handle output aggregation ourselves
-                    echo_input=False  # We handle echo ourselves above to show resolved SQL
-                )
-
-                if success:
-                    if output and output.strip():
-                        all_output.append(output)
+                    print("--- END PREVIEW ---\n")
                 else:
-                    # Append error to output
-                    all_output.append(f"ERROR at sequence {current_seq}: {output}")
+                    logging.info(f"Executing sequence {current_seq}...")
 
-                    # Write to file or stderr before returning
-                    if not args.preview:
-                        combined_output = "\n".join(all_output)
-                        if args.output:
-                            try:
-                                with open(args.output, 'w', encoding='utf-8') as f:
-                                    f.write(combined_output + "\n")
-                            except IOError as e:
-                                print(f"ERROR: Failed to write output file: {e}", file=sys.stderr)
-                        else:
-                            print(f"ERROR at sequence {current_seq}: {output}", file=sys.stderr)
-                    return 1
+                    # Split SQL into batches (separated by 'go' statements)
+                    batches = split_sql_batches(sql_content)
 
-            current_seq += 1
+                    # Track current database context for this file only.
+                    # Starts with command line arg, updated by 'use' statements within this file.
+                    # IMPORTANT: This is a local variable - each runsql invocation starts fresh.
+                    # When runcreate calls runsql for multiple files, each file gets its own
+                    # fresh database context starting from the command line argument.
+                    # This prevents 'use' statements from one file affecting another file.
+                    current_database = database
 
-        # Handle output
-        if not args.preview:
-            combined_output = "\n".join(all_output)
+                    for batch_sql, batch_start_line in batches:
+                        # Echo this batch with line numbers (reset to 1 per batch)
+                        if args.echo:
+                            batch_lines = batch_sql.splitlines()
+                            for i, line in enumerate(batch_lines):
+                                line_num = i + 1  # Reset to 1 for each batch
+                                numbered_line = f"{line_num}> {line}"
+                                if output_handle:
+                                    output_handle.write(numbered_line + '\n')
+                                else:
+                                    print(numbered_line)
 
-            if args.output:
-                try:
-                    with open(args.output, 'w', encoding='utf-8') as f:
-                        f.write(combined_output + "\n")
-                except IOError as e:
-                    print(f"ERROR: Failed to write output file: {e}", file=sys.stderr)
-                    return 1
-            else:
+                            if output_handle:
+                                output_handle.flush()
+
+                        # Check for 'use <database>' statement in this batch to update context
+                        use_match = re.search(r'^\s*use\s+(\w+)\s*$', batch_sql, re.MULTILINE | re.IGNORECASE)
+                        if use_match:
+                            current_database = use_match.group(1)
+                            logging.debug(f"Database context changed to: {current_database}")
+
+                        # Execute this batch against current database
+                        success, output = execute_sql_native(
+                            host, port, username, password, current_database, platform,
+                            batch_sql,
+                            output_file=None,
+                            echo_input=False
+                        )
+
+                        # Write output/errors immediately after this batch
+                        if output and output.strip():
+                            if output_handle:
+                                output_handle.write(output + '\n')
+                                output_handle.flush()
+                            else:
+                                print(output)
+
+                        # Continue processing remaining batches even if this one failed
+
+                current_seq += 1
+
+            # Handle console output (when no -O flag)
+            if not args.preview and not output_handle:
+                combined_output = "\n".join(all_output)
                 if combined_output.strip():
                     print(combined_output)
+
+        finally:
+            # Always close output file if open
+            if output_handle:
+                output_handle.close()
 
         logging.info("runsql completed successfully.")
         return 0

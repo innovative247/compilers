@@ -38,6 +38,7 @@ LOG_FILE = SCRIPT_DIR / "installer.log"
 # Windows-specific paths
 WINDOWS_MSYS2_PATH = Path("C:/msys64")
 WINDOWS_MSYS2_BIN = WINDOWS_MSYS2_PATH / "ucrt64/bin"
+WINDOWS_MSYS2_USR_BIN = WINDOWS_MSYS2_PATH / "usr/bin"  # For tail, grep, etc.
 
 # =============================================================================
 # LOGGING
@@ -342,52 +343,61 @@ def install_freetds(force: bool = False) -> bool:
 # =============================================================================
 
 def configure_path_windows() -> bool:
-    """Add MSYS2 bin directory to Windows PATH."""
+    """Add MSYS2 bin directories to Windows PATH."""
     log.subsection("Configuring MSYS2 PATH")
 
-    msys2_bin = str(WINDOWS_MSYS2_BIN)
+    # Both directories to add: ucrt64/bin (FreeTDS) and usr/bin (tail, grep, etc.)
+    paths_to_add = [
+        (WINDOWS_MSYS2_BIN, "ucrt64/bin (FreeTDS)"),
+        (WINDOWS_MSYS2_USR_BIN, "usr/bin (tail, grep, etc.)"),
+    ]
 
-    if not WINDOWS_MSYS2_BIN.exists():
-        log.log(f"MSYS2 bin path does not exist: {msys2_bin}", "ERROR")
-        return False
-
-    # Check current PATH
     current_path = os.environ.get("PATH", "")
-    if msys2_bin.lower() in current_path.lower():
-        log.log("PATH already contains MSYS2 bin directory", "SUCCESS")
-        return True
+    success = True
 
-    # Add to current session
-    os.environ["PATH"] = f"{msys2_bin};{current_path}"
-    log.log(f"Added to current session PATH: {msys2_bin}", "SUCCESS")
+    for path_obj, description in paths_to_add:
+        path_str = str(path_obj)
 
-    # Add to user PATH permanently (Windows)
-    try:
-        import winreg
+        if not path_obj.exists():
+            log.log(f"MSYS2 path does not exist: {path_str}", "WARN")
+            continue
 
-        with winreg.OpenKey(
-            winreg.HKEY_CURRENT_USER,
-            r"Environment",
-            0,
-            winreg.KEY_READ | winreg.KEY_WRITE
-        ) as key:
-            try:
-                user_path, _ = winreg.QueryValueEx(key, "Path")
-            except FileNotFoundError:
-                user_path = ""
+        # Check if already in current PATH
+        if path_str.lower() in current_path.lower():
+            log.log(f"PATH already contains {description}", "SUCCESS")
+            continue
 
-            if msys2_bin.lower() not in user_path.lower():
-                new_path = f"{user_path};{msys2_bin}" if user_path else msys2_bin
-                winreg.SetValueEx(key, "Path", 0, winreg.REG_EXPAND_SZ, new_path)
-                log.log(f"Added to User PATH (permanent): {msys2_bin}", "SUCCESS")
-            else:
-                log.log("User PATH already contains MSYS2 bin directory", "SUCCESS")
+        # Add to current session
+        os.environ["PATH"] = f"{path_str};{os.environ.get('PATH', '')}"
+        log.log(f"Added to current session PATH: {path_str}", "SUCCESS")
 
-    except Exception as e:
-        log.log(f"Could not modify user PATH: {e}", "WARN")
-        log.log("You may need to add to PATH manually", "WARN")
+        # Add to user PATH permanently (Windows)
+        try:
+            import winreg
 
-    return True
+            with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"Environment",
+                0,
+                winreg.KEY_READ | winreg.KEY_WRITE
+            ) as key:
+                try:
+                    user_path, _ = winreg.QueryValueEx(key, "Path")
+                except FileNotFoundError:
+                    user_path = ""
+
+                if path_str.lower() not in user_path.lower():
+                    new_path = f"{user_path};{path_str}" if user_path else path_str
+                    winreg.SetValueEx(key, "Path", 0, winreg.REG_EXPAND_SZ, new_path)
+                    log.log(f"Added to User PATH (permanent): {path_str}", "SUCCESS")
+                else:
+                    log.log(f"User PATH already contains {description}", "SUCCESS")
+
+        except Exception as e:
+            log.log(f"Could not modify user PATH for {description}: {e}", "WARN")
+            success = False
+
+    return success
 
 
 def configure_path() -> bool:
@@ -453,6 +463,157 @@ def add_scripts_to_path(scripts_dir: Path) -> bool:
     except Exception as e:
         log.log(f"Could not modify user PATH: {e}", "WARN")
         log.log(f"Please manually add to PATH: {scripts_str}", "WARN")
+        return False
+
+
+def install_vim_via_winget() -> bool:
+    """Install vim using winget package manager."""
+    log.log("Checking for winget package manager", "INFO")
+
+    winget_path = shutil.which("winget")
+    if not winget_path:
+        log.log("winget not found - cannot auto-install vim", "ERROR")
+        log.log("Install manually from: https://www.vim.org/download.php", "INFO")
+        return False
+
+    log.log(f"winget found at: {winget_path}", "SUCCESS")
+    log.log("Installing vim via winget...", "STEP")
+
+    try:
+        result = subprocess.run(
+            ["winget", "install", "-e", "--id", "vim.vim",
+             "--accept-source-agreements", "--accept-package-agreements"],
+            capture_output=True,
+            text=True
+        )
+
+        if result.returncode == 0:
+            log.log("vim installation completed", "SUCCESS")
+            return True
+        else:
+            log.log(f"vim installation failed: {result.stderr}", "ERROR")
+            return False
+
+    except Exception as e:
+        log.log(f"vim installation failed: {e}", "ERROR")
+        return False
+
+
+def configure_vim_path() -> bool:
+    """
+    Ensure vim.exe is available in PATH on Windows.
+
+    Checks common installation locations and adds to PATH if found but not already accessible.
+    """
+    log.section("VIM Installation")
+
+    # Check if vim is already in PATH
+    vim_path = shutil.which("vim")
+    if vim_path:
+        log.log(f"vim already in PATH: {vim_path}", "SUCCESS")
+        return True
+
+    # Common vim installation locations on Windows
+    vim_locations = [
+        # Standard Vim installations (check multiple versions)
+        Path("C:/Program Files/Vim/vim91"),
+        Path("C:/Program Files/Vim/vim90"),
+        Path("C:/Program Files/Vim/vim82"),
+        Path("C:/Program Files/Vim/vim81"),
+        Path("C:/Program Files (x86)/Vim/vim91"),
+        Path("C:/Program Files (x86)/Vim/vim90"),
+        Path("C:/Program Files (x86)/Vim/vim82"),
+        Path("C:/Program Files (x86)/Vim/vim81"),
+        # Git for Windows includes vim
+        Path("C:/Program Files/Git/usr/bin"),
+        Path("C:/Program Files (x86)/Git/usr/bin"),
+        # MSYS2 vim
+        Path("C:/msys64/usr/bin"),
+        # User-local installations
+        Path(os.environ.get("LOCALAPPDATA", ""), "Programs/Git/usr/bin"),
+    ]
+
+    # Find vim.exe in known locations
+    vim_dir = None
+    for location in vim_locations:
+        if not location.exists():
+            continue
+        vim_exe = location / "vim.exe"
+        if vim_exe.exists():
+            vim_dir = location
+            log.log(f"Found vim at: {vim_exe}", "SUCCESS")
+            break
+
+    if not vim_dir:
+        log.log("vim.exe not found in common locations", "WARN")
+
+        # Offer to install via winget
+        if prompt_yes_no("vim not found. Install vim via winget?", default=False):
+            if install_vim_via_winget():
+                # Re-search after installation
+                for location in vim_locations:
+                    if not location.exists():
+                        continue
+                    vim_exe = location / "vim.exe"
+                    if vim_exe.exists():
+                        vim_dir = location
+                        log.log(f"Found vim at: {vim_exe}", "SUCCESS")
+                        break
+
+                if not vim_dir:
+                    log.log("vim installed but not found in expected locations", "WARN")
+                    log.log("You may need to restart your terminal", "INFO")
+                    return False
+            else:
+                return False
+        else:
+            log.log("Skipping vim installation", "INFO")
+            return False
+
+    vim_dir_str = str(vim_dir)
+
+    # Check if this directory is already in PATH
+    current_path = os.environ.get("PATH", "")
+    if vim_dir_str.lower() in current_path.lower():
+        log.log(f"vim directory already in PATH: {vim_dir_str}", "SUCCESS")
+        return True
+
+    # Prompt user before modifying PATH
+    if not prompt_yes_no(f"Add vim directory to PATH?\n   {vim_dir_str}"):
+        log.log("User declined to add vim to PATH", "INFO")
+        return False
+
+    # Add to current session PATH
+    os.environ["PATH"] = f"{vim_dir_str};{current_path}"
+    log.log(f"Added to current session PATH: {vim_dir_str}", "SUCCESS")
+
+    # Add to user PATH permanently
+    try:
+        import winreg
+
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Environment",
+            0,
+            winreg.KEY_READ | winreg.KEY_WRITE
+        ) as key:
+            try:
+                user_path, _ = winreg.QueryValueEx(key, "Path")
+            except FileNotFoundError:
+                user_path = ""
+
+            if vim_dir_str.lower() not in user_path.lower():
+                new_path = f"{user_path};{vim_dir_str}" if user_path else vim_dir_str
+                winreg.SetValueEx(key, "Path", 0, winreg.REG_EXPAND_SZ, new_path)
+                log.log(f"Added to User PATH (permanent): {vim_dir_str}", "SUCCESS")
+            else:
+                log.log("vim directory already in User PATH", "SUCCESS")
+
+        return True
+
+    except Exception as e:
+        log.log(f"Could not modify user PATH: {e}", "WARN")
+        log.log(f"Please manually add to PATH: {vim_dir_str}", "WARN")
         return False
 
 
@@ -541,7 +702,7 @@ def initialize_settings_json(force: bool = False) -> bool:
     """Initialize or validate settings.json file."""
     log.section("Settings Configuration")
 
-    settings_file = SRC_DIR / "settings.json"
+    settings_file = PROJECT_ROOT / "settings.json"
 
     if settings_file.exists() and not force:
         log.log(f"Settings file exists: {settings_file}", "SUCCESS")
@@ -654,13 +815,23 @@ def show_summary():
     # Check Python
     results.append(("Python", f"Installed ({platform.python_version()})", sys.executable))
 
+    # Check VIM
+    vim_path = shutil.which("vim")
+    vim_status = "Installed" if vim_path else "Not Found"
+    results.append(("VIM", vim_status, vim_path or "Not in PATH"))
+
+    # Check tail (from MSYS2 usr/bin)
+    tail_path = shutil.which("tail")
+    tail_status = "Available" if tail_path else "Not Found"
+    results.append(("tail", tail_status, tail_path or "Not in PATH"))
+
     # Check IBS Commands (pip-installed .exe wrappers)
     runsql_path = shutil.which("runsql")
     runsql_status = "Available" if runsql_path else "Not Found"
     results.append(("IBS Commands", runsql_status, runsql_path or "N/A"))
 
     # Check settings.json
-    settings_file = SRC_DIR / "settings.json"
+    settings_file = PROJECT_ROOT / "settings.json"
     settings_status = "Exists" if settings_file.exists() else "Not Found"
     results.append(("settings.json", settings_status, str(settings_file)))
 
@@ -677,13 +848,17 @@ def show_summary():
     print()
 
     # Overall status
-    settings_file = SRC_DIR / "settings.json"
+    settings_file = PROJECT_ROOT / "settings.json"
     runsql_available = shutil.which("runsql") is not None
+    vim_available = shutil.which("vim") is not None
+    tail_available = shutil.which("tail") is not None
     all_good = (
         check_msys2_installed() and
         check_freetds_installed() and
         runsql_available and
-        settings_file.exists()
+        settings_file.exists() and
+        vim_available and
+        tail_available
     )
 
     if all_good:
@@ -700,6 +875,10 @@ def show_summary():
             print("  Missing: FreeTDS - Ensure tsql and freebcp are in PATH")
         if not runsql_available:
             print("  Missing: IBS Commands - pip install may have failed or Scripts directory not in PATH")
+        if not vim_available:
+            print("  Missing: VIM - Install vim or add its directory to PATH")
+        if not tail_available:
+            print("  Missing: tail - Ensure C:\\msys64\\usr\\bin is in PATH")
 
 
 # =============================================================================
@@ -776,28 +955,12 @@ def main():
     # Step 5: Initialize settings.json
     initialize_settings_json(args.force)
 
+    # Step 6: Configure vim PATH (Windows only)
+    if platform.system() == "Windows":
+        configure_vim_path()
+
     # Show summary
     show_summary()
-
-    # Optional connection testing
-    print()
-    if prompt_yes_no("Would you like to test a database connection?", default=False):
-        try:
-            log.log("Launching test_connection...", "INFO")
-            # Run as a module from the src directory to handle relative imports
-            subprocess.run(
-                [sys.executable, "-m", "commands.test_connection"],
-                cwd=str(PROJECT_ROOT / "src"),
-                check=False
-            )
-        except Exception as e:
-            log.log(f"Failed to launch test_connection: {e}", "ERROR")
-
-    print()
-    print("=" * 60)
-    print("  Setup complete! See src/README.md for usage instructions.")
-    print("=" * 60)
-    print()
 
     return 0
 

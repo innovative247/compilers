@@ -1,5 +1,5 @@
 """
-compile_msg.py: Compile and install messages into the database.
+set_messages.py: Compile and install messages into the database. (Also available as: compile_msg, install_msg)
 
 This command compiles the message flat files into the database work tables,
 then executes stored procedures to move data to final tables.
@@ -211,7 +211,7 @@ def main(args_list=None):
 
         # Compile: parse source files and insert into database
         print("Compiling messages...")
-        success, message = compile_messages(config)
+        success, message, count = compile_messages(config)
 
         if success:
             print(message)

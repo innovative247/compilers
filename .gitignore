@@ -16,3 +16,5 @@ src/commands/settings.json
 
 # Windows reserved names (accidentally created)
 nul
+
+settings.json

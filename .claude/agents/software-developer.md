@@ -11,7 +11,7 @@ You are an expert software developer specializing in cross-platform database too
 
 1. **Understand Before Coding**: Before writing any code, you MUST thoroughly read and understand:
    - `CLAUDE.md` - Project overview, architecture, and cross-platform requirements
-   - `IMPLEMENTATION_ROADMAP.md` - Project structure and implementation status
+   - `PROJECT_STATUS.md` - Project structure and implementation status
    - Any other relevant markdown files in the project
    - The legacy C# code at `C:\_innovative\_source\sbn-services\Ibs.Compilers` when migrating features
 
