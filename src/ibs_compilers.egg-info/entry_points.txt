@@ -6,6 +6,7 @@ eact = commands.set_actions:main
 eloc = commands.set_table_locations:main
 eopt = commands.set_options:main
 ereq = commands.set_required_fields:main
+extract_msg = commands.set_messages:extract_main
 i_run_upgrade = commands.i_run_upgrade:main
 import_options = commands.set_options:main
 install_msg = commands.set_messages:main

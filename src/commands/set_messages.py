@@ -221,5 +221,48 @@ def main(args_list=None):
             sys.exit(1)
 
 
+def extract_main(args_list=None):
+    """
+    Entry point for extract_msg command.
+
+    Bypasses prompts and runs Export then Import automatically.
+    This is useful for scripted/automated message extraction and compilation.
+
+    Args:
+        args_list: Command line arguments (defaults to sys.argv[1:])
+    """
+    if args_list is None:
+        args_list = sys.argv[1:]
+
+    parser = argparse.ArgumentParser(
+        description="Extract and compile messages (export then import, no prompts).",
+        usage="extract_msg PROFILE"
+    )
+    parser.add_argument("profile", help="Configuration profile (required)")
+
+    args = parser.parse_args(args_list)
+
+    # Load config from profile
+    config = get_config(profile_name=args.profile)
+
+    # Step 1: Export messages from database to files
+    print("Step 1: Exporting messages from database...")
+    success, message = export_messages(config)
+    if not success:
+        print(f"ERROR: Export failed: {message}")
+        sys.exit(1)
+    print(message)
+    print()
+
+    # Step 2: Import messages from files into database
+    print("Step 2: Compiling messages...")
+    success, message, count = compile_messages(config)
+    if not success:
+        print(f"ERROR: Import failed: {message}")
+        sys.exit(1)
+    print(message)
+    print("extract_msg DONE.")
+
+
 if __name__ == "__main__":
     main()

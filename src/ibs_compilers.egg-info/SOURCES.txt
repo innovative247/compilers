@@ -1,4 +1,3 @@
-README.md
 pyproject.toml
 commands/__init__.py
 commands/i_run_upgrade.py
@@ -18,8 +17,3 @@ ibs_compilers.egg-info/dependency_links.txt
 ibs_compilers.egg-info/entry_points.txt
 ibs_compilers.egg-info/requires.txt
 ibs_compilers.egg-info/top_level.txt
-tests/test_convert_non_linked_paths.py
-tests/test_find_file.py
-tests/test_options_parsing.py
-tests/test_profile_management.py
-tests/test_tail.py
