@@ -447,6 +447,8 @@ def display_single_profile(name, profile):
     path_append = profile.get("SQL_SOURCE", "unknown")
     aliases = profile.get("ALIASES", [])
 
+    raw_mode = profile.get("RAW_MODE", False)
+
     # Format profile name with aliases if present
     if aliases:
         aliases_str = ", ".join(aliases)
@@ -457,6 +459,8 @@ def display_single_profile(name, profile):
     print(f"  Platform: {platform}")
     print(f"  Server: {host}:{port}")
     print(f"  SQL Source: {path_append}")
+    if raw_mode:
+        print(f"  Raw Mode: Yes")
 
 
 def list_profiles(settings):
@@ -930,17 +934,27 @@ def test_profile_menu(settings):
         print_error(f"Profile '{input_name}' not found.")
         return
 
+    raw_mode = profile.get('RAW_MODE', False)
+
     while True:
         print(f"\nTesting profile: {profile_name}")
-        print("  1. Test SQL Source path")
-        print("  2. Test connection")
-        print("  3. Test options")
-        print("  4. Test changelog")
-        print("  5. Test table locations")
-        print("  6. Test symbolic links")
-        print("  7. Return to main menu")
+        if raw_mode:
+            print("  (RAW MODE - preprocessing tests not available)")
+            print("  1. Test SQL Source path")
+            print("  2. Test connection")
+            print("  3. Return to main menu")
+            max_choice = 3
+        else:
+            print("  1. Test SQL Source path")
+            print("  2. Test connection")
+            print("  3. Test options")
+            print("  4. Test changelog")
+            print("  5. Test table locations")
+            print("  6. Test symbolic links")
+            print("  7. Return to main menu")
+            max_choice = 7
 
-        choice = input("\nChoose [1-7]: ").strip()
+        choice = input(f"\nChoose [1-{max_choice}]: ").strip()
 
         if choice == "1":
             # Test SQL Source path
@@ -957,24 +971,27 @@ def test_profile_menu(settings):
         elif choice == "2":
             test_connection(profile)
 
-        elif choice == "3":
+        elif choice == "3" and raw_mode:
+            return
+
+        elif choice == "3" and not raw_mode:
             test_option_value(profile, profile_name)
 
-        elif choice == "4":
+        elif choice == "4" and not raw_mode:
             test_changelog(profile, profile_name)
 
-        elif choice == "5":
+        elif choice == "5" and not raw_mode:
             test_table_locations(profile, profile_name)
 
-        elif choice == "6":
+        elif choice == "6" and not raw_mode:
             # Test symbolic links
             test_symbolic_links(profile)
 
-        elif choice == "7":
+        elif choice == "7" and not raw_mode:
             return
 
         else:
-            print("Invalid choice. Please enter 1-7.")
+            print(f"Invalid choice. Please enter 1-{max_choice}.")
 
 
 def edit_profile_inline(profile, current_name=None):
@@ -1054,13 +1071,12 @@ def create_profile():
     if aliases:
         profile["ALIASES"] = aliases
 
-    # Company (required)
-    while True:
-        cmpy_input = input("\nEnter company number (COMPANY): ").strip()
-        if cmpy_input:
-            profile["COMPANY"] = int(cmpy_input) if cmpy_input.isdigit() else cmpy_input
-            break
-        print("Company is required.")
+    # Company (required, default 101)
+    cmpy_input = input("\nEnter company number (COMPANY) [101]: ").strip()
+    if cmpy_input:
+        profile["COMPANY"] = int(cmpy_input) if cmpy_input.isdigit() else cmpy_input
+    else:
+        profile["COMPANY"] = 101
 
     # Platform (required)
     print("\nWhat database platform does this server use?")
@@ -1141,6 +1157,13 @@ def create_profile():
             if use_anyway == 'y':
                 profile["SQL_SOURCE"] = choice
                 break
+
+    # Raw mode (optional, defaults to No)
+    print("\nRaw mode skips SBN-specific preprocessing (options files, symlinks, changelog).")
+    print("Use this for projects that don't have the css/setup/ directory structure.")
+    raw_choice = input("Enable raw mode? [y/N]: ").strip().lower()
+    if raw_choice == 'y':
+        profile["RAW_MODE"] = True
 
     # Language (set default - user can change via edit if needed)
     profile["DEFAULT_LANGUAGE"] = 1

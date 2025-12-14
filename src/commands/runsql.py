@@ -59,6 +59,7 @@ from .ibs_common import (
     find_file,
     Options,
     create_symbolic_links,
+    is_raw_mode,
 )
 
 
@@ -267,7 +268,7 @@ Notes:
         # ==========================================================================
         options = None
         options_log_line = None  # Will be added to output later if -O is used
-        if profile_name and config.get('COMPANY'):
+        if not is_raw_mode(config) and profile_name and config.get('COMPANY'):
             options = Options(config)
             if options.generate_option_files():
                 # Options loaded successfully - log path if echo is enabled

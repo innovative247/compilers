@@ -75,6 +75,7 @@ from .ibs_common import (
     compile_messages,
     compile_options,
     export_messages,
+    is_raw_mode,
 )
 from . import i_run_upgrade
 
@@ -711,15 +712,20 @@ def main(args_list=None):
     # Nested calls (child runcreate, runsql, isqlline) reuse the existing cache
     # and do NOT rebuild options - they will find the valid cache file.
     # ==========================================================================
-    options = Options(config)
-    if not options.generate_option_files():
-        print("ERROR: Failed to load options files")
-        sys.exit(1)
+    if is_raw_mode(config):
+        # Raw mode - create Options with empty dict, no file loading
+        options = Options(config)
+        options._options = {}
+    else:
+        options = Options(config)
+        if not options.generate_option_files():
+            print("ERROR: Failed to load options files")
+            sys.exit(1)
 
-    # ALWAYS log the options file path for runcreate
-    cache_file = options.get_cache_filepath()
-    log_msg = f"-- Options: {cache_file}"
-    write_output(log_msg, output_handle)
+        # Log the options file path for runcreate (skip in raw mode)
+        cache_file = options.get_cache_filepath()
+        log_msg = f"-- Options: {cache_file}"
+        write_output(log_msg, output_handle)
 
     # Ensure symbolic links exist before processing create files
     if not create_symbolic_links(config, prompt=False):

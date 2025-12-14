@@ -48,6 +48,7 @@ from .ibs_common import (
     build_sql_script,
     Options,
     create_symbolic_links,
+    is_raw_mode,
 )
 
 
@@ -236,7 +237,7 @@ Notes:
         # ==========================================================================
         options = None
         options_log_line = None
-        if profile_name and config.get('COMPANY'):
+        if not is_raw_mode(config) and profile_name and config.get('COMPANY'):
             options = Options(config)
             if options.generate_option_files():
                 # Log options file path when echo is enabled

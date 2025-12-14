@@ -55,6 +55,10 @@ _SETTINGS_MTIME = None
 # CONFIGURATION MANAGEMENT
 # =============================================================================
 
+def is_raw_mode(config: dict) -> bool:
+    """Check if raw mode is enabled - skips options, symlinks, changelog."""
+    return bool(config.get('RAW_MODE', False))
+
 def find_settings_file() -> Path:
     """
     Find settings.json in the project root directory.
@@ -1057,6 +1061,10 @@ def create_symbolic_links(config: dict, prompt: bool = True) -> bool:
     """
     # Fast path: skip if already checked this session
     if os.environ.get('IBS_SYMLINKS_CHECKED') == '1':
+        return True
+
+    # Skip in raw mode
+    if is_raw_mode(config):
         return True
 
     # Mark as checked immediately to prevent re-entry
@@ -2062,6 +2070,11 @@ def is_changelog_enabled(config: dict, force_check: bool = False) -> tuple:
         - (True, "Changelog enabled") if both checks pass
         - (False, reason) if either check fails or error occurs
     """
+    # Always disabled in raw mode
+    if is_raw_mode(config):
+        os.environ['IBS_CHANGELOG_STATUS'] = '0'
+        return False, "Raw mode - changelog disabled"
+
     # Check session cache first (unless force_check is True)
     if not force_check:
         cached = os.environ.get('IBS_CHANGELOG_STATUS')
