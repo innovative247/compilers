@@ -1,24 +1,91 @@
-# Task: Fix installer to ensure pip and PATH are configured
+# Task: SQL_SOURCE Path Validation in runsql
 
-## Plan
-- [x] In installer_linux.py, add check for pip and install if missing before running pip install
-- [x] Add function to auto-add PATH export to .bashrc if not present
-- [x] Add verification step that sources .bashrc and tests set_profile exists
+## Status: Complete
 
-## Root Cause
-- Python was pre-installed but python3-pip was not
-- Installer only installs python3-pip when Python itself is missing
-- PATH was never automatically added to .bashrc (only warned)
+## Goal
+Prevent compiling files that are outside the profile's SQL_SOURCE directory.
 
-## Review
-Changes made to `install/installer_linux.py`:
+## Use Case
+- Profile GONZO points to `C:\_innovative\_source\current.sql`
+- User is editing a file in `C:\_innovative\_source\94.sql`
+- runsql should error instead of compiling with mismatched options
 
-1. **Added `ensure_pip_installed()`** - Checks if pip is available, installs via `apt install python3-pip` if missing
-2. **Replaced `check_shell_config()` with `configure_shell_path()`** - Actually adds PATH export to .bashrc instead of just warning
-3. **Added `verify_installation()`** - Sources .bashrc and verifies `set_profile` is in PATH
-4. **Added `--break-system-packages`** to pip install commands for PEP 668 compliance (Ubuntu 23.04+)
+## Implementation
 
-Changes made to `src/commands/ibs_common.py`:
+**Location**: `src/commands/runsql.py` around line 245-250 (after `find_file()` returns)
 
-5. **Fixed symlink timing bug** - Re-check if path exists before creating each symlink (parent symlink creation can make child paths exist)
-6. **Added lowercase symlinks** - `css` -> `CSS` and `ibs` -> `IBS` for Linux case-insensitive navigation
+**Logic**:
+```python
+sql_source = config.get('SQL_SOURCE', '')
+if sql_source and profile_name:
+    script_abs = os.path.normcase(os.path.abspath(script_path))
+    source_abs = os.path.normcase(os.path.abspath(sql_source))
+
+    if not script_abs.startswith(source_abs):
+        print(f"ERROR: File is outside profile's SQL_SOURCE", file=sys.stderr)
+        print(f"  File:       {script_path}", file=sys.stderr)
+        print(f"  SQL_SOURCE: {sql_source}", file=sys.stderr)
+        return 1
+```
+
+## Considerations
+- Use `os.path.normcase()` for Windows case-insensitive path comparison
+- Only check when using profiles (skip for direct `-H`/`-U` connections)
+- Consider optional `--allow-external` flag to bypass when intentional
+- Clear error message showing both paths
+
+## Impact
+- ~10 lines of code in runsql.py (lines 252-262)
+- ~10 lines of code in runcreate.py main() (lines 741-751)
+- No changes to ibs_common.py needed
+
+## Validation Strategy
+- **runsql**: Validates every direct command-line call
+- **runcreate main()**: Validates the top-level create file only
+- **runcreate nested**: No validation (calls run_create_file directly)
+- **runsql from runcreate**: No validation (uses execute_runsql, not runsql command)
+
+---
+
+# Task: VSCode Integration for runsql
+
+## Status: Pending
+
+## Goal
+Compile SQL files on hotkey (Ctrl+Shift+B) from VSCode.
+
+## Implementation
+
+Create `.vscode/tasks.json` in the SQL source directory:
+
+```json
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "runsql",
+            "type": "shell",
+            "command": "runsql",
+            "args": [
+                "${file}",
+                "sbnpro",
+                "GONZO"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            }
+        }
+    ]
+}
+```
+
+## Notes
+- `${file}` provides full absolute path of current file
+- Change `sbnpro` to target database (sbnmaster, sbnwork, etc.)
+- Change `GONZO` to target profile name
+- The SQL_SOURCE validation task (above) makes this safer when working across multiple SQL directories

@@ -1180,106 +1180,48 @@ def create_symbolic_links(config: dict, prompt: bool = True) -> bool:
 
 def find_file(filename, config):
     """
-    Searches for a file in specified paths, with recursive search and interactive selection.
+    Simple file lookup - no recursive search.
 
     Search order:
-    1. Absolute path (if provided)
-    2. Current working directory
-    3. Current directory + .sql extension
-    4. SQL_SOURCE path directly
-    5. SQL_SOURCE path + .sql extension
-    6. Recursive search in SQL_SOURCE subdirectories
-
-    If multiple matches are found during recursive search, the user is prompted
-    to select which file to use via a numbered menu.
-
-    Enhanced to support:
-    - Non-linked path conversion (\\ss\\ba\\ -> \\SQL_Sources\\Basics\\)
-    - Automatic .sql extension appending
-    - Recursive search in SQL_SOURCE subdirectories
-    - Interactive file selection when multiple matches found
+    1. Convert non-linked paths (\\ss\\ba\\ -> \\SQL_Sources\\Basics\\)
+    2. If absolute path, file must exist at that exact location
+    3. If relative path, file must exist in current directory
+    4. Try adding .sql extension if not present
 
     Args:
         filename: File path to search for
-        config: Configuration dictionary containing SQL_SOURCE path
+        config: Configuration dictionary (used for path conversion)
 
     Returns:
-        Absolute path to file if found, None if not found or user cancelled
+        Absolute path to file if found, None if not found
     """
-    # First, convert any non-linked paths
+    # First, convert any non-linked paths (/ss/ba/ -> /SQL_Sources/Basics/)
     filename = convert_non_linked_paths(filename)
 
     file_path = Path(filename)
 
-    # Try as absolute path
-    if file_path.is_absolute() and file_path.exists():
-        return str(file_path.resolve())
+    # Absolute path - must exist at exact location
+    if file_path.is_absolute():
+        if file_path.exists():
+            return str(file_path)
+        # Try with .sql extension
+        if not filename.endswith('.sql'):
+            sql_path = Path(filename + '.sql')
+            if sql_path.exists():
+                return str(sql_path)
+        return None
 
-    # Try in current directory
-    if (Path.cwd() / file_path).exists():
-        return str((Path.cwd() / file_path).resolve())
+    # Relative path - must exist in current directory
+    cwd_path = Path.cwd() / file_path
+    if cwd_path.exists():
+        return str(cwd_path)
 
     # Try with .sql extension
     if not filename.endswith('.sql'):
-        sql_file = Path(filename + '.sql')
-        if (Path.cwd() / sql_file).exists():
-            return str((Path.cwd() / sql_file).resolve())
+        sql_path = Path.cwd() / (filename + '.sql')
+        if sql_path.exists():
+            return str(sql_path)
 
-    # Try in SQL_SOURCE path
-    path_append_str = config.get('SQL_SOURCE', '')
-    if path_append_str:
-        path_append = Path(path_append_str)
-
-        # Try direct path in SQL_SOURCE
-        if (path_append / file_path).exists():
-            return str((path_append / file_path).resolve())
-
-        # Try with .sql extension in SQL_SOURCE
-        if not filename.endswith('.sql'):
-            sql_file = Path(filename + '.sql')
-            if (path_append / sql_file).exists():
-                return str((path_append / sql_file).resolve())
-
-        # Recursive search in SQL_SOURCE subdirectories
-        # Use only the basename for rglob - it requires a relative pattern
-        basename = file_path.name if file_path.name else filename
-        search_pattern = basename if basename.endswith('.sql') else basename + '.sql'
-        matches = list(path_append.rglob(search_pattern))
-
-        if len(matches) == 1:
-            # Single match - show path and use it
-            found_path = str(matches[0].resolve())
-            print(f"Executing: {found_path}")
-            return found_path
-
-        elif len(matches) > 1:
-            # Multiple matches - prompt user to select
-            print(f"\nMultiple files found matching '{search_pattern}':")
-            for i, match in enumerate(matches, 1):
-                # Show path relative to SQL_SOURCE for readability
-                try:
-                    rel_path = match.relative_to(path_append)
-                except ValueError:
-                    rel_path = match
-                print(f"  {i}. {rel_path}")
-            print(f"  {len(matches) + 1}. Cancel")
-
-            while True:
-                try:
-                    choice = input(f"\nChoose [1-{len(matches) + 1}]: ").strip()
-                    if not choice:
-                        continue
-                    choice_num = int(choice)
-                    if choice_num == len(matches) + 1:
-                        # User chose cancel
-                        return None
-                    if 1 <= choice_num <= len(matches):
-                        return str(matches[choice_num - 1].resolve())
-                    print(f"Please enter a number between 1 and {len(matches) + 1}")
-                except ValueError:
-                    print("Please enter a valid number")
-
-    logging.debug(f"File '{filename}' not found in common paths.")
     return None
 
 # --- UI Utilities ---

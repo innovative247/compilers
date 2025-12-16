@@ -66,7 +66,16 @@
       "Bash(time runsql:*)",
       "Bash(pip3 show:*)",
       "Bash(python3 -m pip show:*)",
-      "Bash(python3 -m pip install:*)"
+      "Bash(python3 -m pip install:*)",
+      "Bash(tree:*)",
+      "Bash(if [ -f src/pyproject.toml ])",
+      "Bash(then cat src/pyproject.toml)",
+      "Bash(fi)",
+      "Bash(if [ -f src/setup.py ])",
+      "Bash(then cat src/setup.py)",
+      "Bash(wc:*)",
+      "Bash(if [ -d src/commands/CSS ])",
+      "Bash(then find src/commands/CSS -type f)"
     ],
     "deny": [],
     "ask": []

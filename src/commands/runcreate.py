@@ -738,6 +738,18 @@ def main(args_list=None):
         print(f"ERROR: Create file not found: {create_file}")
         sys.exit(1)
 
+    # Validate create file is within profile's SQL_SOURCE directory
+    sql_source = config.get('SQL_SOURCE', '')
+    if sql_source:
+        create_abs = os.path.normcase(os.path.abspath(create_path))
+        source_abs = os.path.normcase(os.path.abspath(sql_source))
+
+        if not create_abs.startswith(source_abs + os.sep):
+            print(f"ERROR: File is outside profile's SQL_SOURCE", file=sys.stderr)
+            print(f"  File:       {create_path}", file=sys.stderr)
+            print(f"  SQL_SOURCE: {sql_source}", file=sys.stderr)
+            sys.exit(1)
+
     # Run the create file
     run_create_file(config, options, create_path, output_handle, echo_input)
 

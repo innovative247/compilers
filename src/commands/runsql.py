@@ -244,10 +244,27 @@ Notes:
         # Find the script file
         script_path = find_file(args.script_file, config)
         if not script_path:
-            print(f"ERROR: Script file '{args.script_file}' not found", file=sys.stderr)
+            sql_source = config.get('SQL_SOURCE', '')
+            profile_display = config.get('PROFILE_NAME', profile_name or '')
+            print(f"ERROR: You are outside of profile {profile_display}'s path of:", file=sys.stderr)
+            print(f"  {sql_source}", file=sys.stderr)
+            print(f"  Run `set_profile` and create a new profile for this sql path.", file=sys.stderr)
             return 1
 
         logging.debug(f"Found script file: {script_path}")
+
+        # Validate file is within profile's SQL_SOURCE directory
+        sql_source = config.get('SQL_SOURCE', '')
+        if sql_source and profile_name:
+            script_abs = os.path.normcase(os.path.abspath(script_path))
+            source_abs = os.path.normcase(os.path.abspath(sql_source))
+
+            if not script_abs.startswith(source_abs + os.sep):
+                profile_display = config.get('PROFILE_NAME', profile_name or '')
+                print(f"ERROR: You are outside of profile {profile_display}'s path of:", file=sys.stderr)
+                print(f"  {sql_source}", file=sys.stderr)
+                print(f"  Run `set_profile` and create a new profile for this sql path.", file=sys.stderr)
+                return 1
 
         # Read the script content (UTF-8 default, works cross-platform)
         try:
