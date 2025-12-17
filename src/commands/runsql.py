@@ -367,7 +367,11 @@ Notes:
                 else:
                     # Print "Running..." message to match Unix output
                     profile_display = config.get('PROFILE_NAME', profile_name or '')
-                    print(f"Running {script_path} on {profile_display} in {database}")
+                    # Include sequence number when using -F/-L flags
+                    if args.first_sequence != args.last_sequence:
+                        print(f"Running {script_path} on {profile_display} in {database} {current_seq}")
+                    else:
+                        print(f"Running {script_path} on {profile_display} in {database}")
 
                     # Execute SQL using interleaved mode (single tsql process, batch-by-batch)
                     # This gives us correct error placement while avoiding subprocess spawn overhead
@@ -377,6 +381,9 @@ Notes:
                         echo=args.echo,
                         output_handle=output_handle
                     )
+
+                    # Print return status to match Unix output
+                    print("(return status = 0)")
 
                 current_seq += 1
 
