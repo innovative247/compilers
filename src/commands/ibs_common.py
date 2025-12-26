@@ -359,6 +359,1220 @@ def prompt_for_new_profile(profile_name: str) -> dict:
 
 
 # =============================================================================
+# DATA TRANSFER PROJECT MANAGEMENT
+# =============================================================================
+# These functions manage the "data_transfer" section of settings.json.
+# They are completely separate from the "Profiles" section used by set_profile,
+# runsql, and other compiler tools.
+
+def load_data_transfer_projects() -> dict:
+    """
+    Load all data transfer projects from settings.json.
+
+    Returns only the "data_transfer" section, never touching "Profiles".
+
+    Returns:
+        Dictionary of project_name -> project_config
+    """
+    try:
+        settings = load_settings()
+        return settings.get("data_transfer", {})
+    except Exception as e:
+        logging.error(f"Failed to load data transfer projects: {e}")
+        return {}
+
+
+def save_data_transfer_project(project_name: str, project_data: dict) -> bool:
+    """
+    Save a data transfer project to settings.json.
+
+    Only modifies the "data_transfer" section, never touching "Profiles".
+
+    Args:
+        project_name: Name of the project (stored as-is, case-sensitive)
+        project_data: Project configuration dictionary
+
+    Returns:
+        True if successfully saved, False otherwise
+    """
+    try:
+        settings = load_settings()
+
+        if "data_transfer" not in settings:
+            settings["data_transfer"] = {}
+
+        settings["data_transfer"][project_name] = project_data
+
+        return save_settings(settings)
+
+    except Exception as e:
+        logging.error(f"Failed to save data transfer project '{project_name}': {e}")
+        return False
+
+
+def delete_data_transfer_project(project_name: str) -> bool:
+    """
+    Delete a data transfer project from settings.json.
+
+    Only modifies the "data_transfer" section, never touching "Profiles".
+
+    Args:
+        project_name: Name of the project to delete
+
+    Returns:
+        True if successfully deleted, False otherwise
+    """
+    try:
+        settings = load_settings()
+
+        if "data_transfer" not in settings:
+            return False
+
+        if project_name not in settings["data_transfer"]:
+            logging.warning(f"Data transfer project '{project_name}' not found")
+            return False
+
+        del settings["data_transfer"][project_name]
+
+        return save_settings(settings)
+
+    except Exception as e:
+        logging.error(f"Failed to delete data transfer project '{project_name}': {e}")
+        return False
+
+
+def list_data_transfer_projects() -> list:
+    """
+    Return list of data transfer project names from settings.json.
+
+    Returns:
+        List of project name strings
+    """
+    try:
+        projects = load_data_transfer_projects()
+        return list(projects.keys())
+    except Exception as e:
+        logging.error(f"Failed to list data transfer projects: {e}")
+        return []
+
+
+def load_data_transfer_project(project_name: str) -> dict:
+    """
+    Load a specific data transfer project by name.
+
+    Args:
+        project_name: Name of the project to load
+
+    Returns:
+        Project configuration dictionary, or empty dict if not found
+    """
+    try:
+        projects = load_data_transfer_projects()
+        return projects.get(project_name, {})
+    except Exception as e:
+        logging.error(f"Failed to load data transfer project '{project_name}': {e}")
+        return {}
+
+
+def match_wildcard_pattern(name: str, patterns: list) -> bool:
+    """
+    Check if a name matches any of the given wildcard patterns.
+
+    Supports simple wildcards:
+    - '*' matches any sequence of characters
+    - Matching is case-insensitive
+
+    Args:
+        name: The name to check (e.g., "sbnmaster", "w#temp")
+        patterns: List of patterns (e.g., ["sbn*", "ibs"])
+
+    Returns:
+        True if name matches any pattern, False otherwise
+
+    Examples:
+        match_wildcard_pattern("sbnmaster", ["sbn*"]) -> True
+        match_wildcard_pattern("w#temp", ["w#*"]) -> True
+        match_wildcard_pattern("users", ["w#*", "srm_*"]) -> False
+    """
+    import fnmatch
+
+    name_lower = name.lower()
+
+    for pattern in patterns:
+        pattern_lower = pattern.lower()
+        if fnmatch.fnmatch(name_lower, pattern_lower):
+            return True
+
+    return False
+
+
+def get_databases_from_server(host: str, port: int, username: str, password: str,
+                               platform: str) -> tuple:
+    """
+    Query available databases from a database server.
+
+    Args:
+        host: Database server host
+        port: Database server port
+        username: Database username
+        password: Database password
+        platform: Database platform ("SYBASE" or "MSSQL")
+
+    Returns:
+        Tuple of (success: bool, databases: list or error_message: str)
+        On success: (True, ["sbnmaster", "sbnpro", ...])
+        On failure: (False, "Error message")
+    """
+    # SQL to list databases differs by platform
+    if platform.upper() == "SYBASE":
+        sql = "select name from master..sysdatabases order by name"
+    else:  # MSSQL
+        sql = "select name from sys.databases order by name"
+
+    success, output = execute_sql_native(
+        host=host,
+        port=port,
+        username=username,
+        password=password,
+        database="master",
+        platform=platform,
+        sql_content=sql
+    )
+
+    if not success:
+        return False, output
+
+    # Parse output - each line is a database name
+    databases = []
+    for line in output.strip().split('\n'):
+        line = line.strip()
+        # Skip empty lines and header lines
+        if not line:
+            continue
+        if line.startswith('---') or line.lower() == 'name':
+            continue
+        # Skip system messages
+        if line.startswith('locale is') or line.startswith('using default'):
+            continue
+        if 'affected' in line.lower():
+            continue
+        databases.append(line)
+
+    return True, databases
+
+
+def get_tables_from_database(host: str, port: int, username: str, password: str,
+                              database: str, platform: str) -> tuple:
+    """
+    Query available tables from a database.
+
+    Args:
+        host: Database server host
+        port: Database server port
+        username: Database username
+        password: Database password
+        database: Database name to query
+        platform: Database platform ("SYBASE" or "MSSQL")
+
+    Returns:
+        Tuple of (success: bool, tables: list or error_message: str)
+        On success: (True, ["users", "branches", ...])
+        On failure: (False, "Error message")
+    """
+    # SQL to list user tables differs by platform
+    if platform.upper() == "SYBASE":
+        sql = "select name from sysobjects where type = 'U' order by name"
+    else:  # MSSQL
+        sql = "select name from sys.tables order by name"
+
+    success, output = execute_sql_native(
+        host=host,
+        port=port,
+        username=username,
+        password=password,
+        database=database,
+        platform=platform,
+        sql_content=sql
+    )
+
+    if not success:
+        return False, output
+
+    # Parse output - each line is a table name
+    tables = []
+    for line in output.strip().split('\n'):
+        line = line.strip()
+        # Skip empty lines and header lines
+        if not line:
+            continue
+        if line.startswith('---') or line.lower() == 'name':
+            continue
+        # Skip system messages
+        if line.startswith('locale is') or line.startswith('using default'):
+            continue
+        if 'affected' in line.lower():
+            continue
+        tables.append(line)
+
+    return True, tables
+
+
+def filter_tables_by_patterns(tables: list, include_patterns: list,
+                               exclude_patterns: list) -> list:
+    """
+    Filter a list of tables based on include and exclude patterns.
+
+    Args:
+        tables: List of table names
+        include_patterns: Patterns for tables to include (e.g., ["*"] for all)
+        exclude_patterns: Patterns for tables to exclude (e.g., ["w#*", "srm_*"])
+
+    Returns:
+        Filtered list of table names
+
+    Example:
+        filter_tables_by_patterns(
+            ["users", "branches", "w#temp", "srm_data"],
+            include_patterns=["*"],
+            exclude_patterns=["w#*", "srm_*"]
+        ) -> ["users", "branches"]
+    """
+    result = []
+
+    for table in tables:
+        # Check if table matches any include pattern
+        if not match_wildcard_pattern(table, include_patterns):
+            continue
+
+        # Check if table matches any exclude pattern
+        if exclude_patterns and match_wildcard_pattern(table, exclude_patterns):
+            continue
+
+        result.append(table)
+
+    return result
+
+
+# =============================================================================
+# DATA TRANSFER OPERATIONS
+# =============================================================================
+# Functions for transferring data between database servers.
+
+def get_table_columns(host: str, port: int, username: str, password: str,
+                      database: str, table: str, platform: str) -> tuple:
+    """
+    Query column names and types from a table.
+
+    Args:
+        host: Database server host
+        port: Database server port
+        username: Database username
+        password: Database password
+        database: Database name
+        table: Table name
+        platform: Database platform ("SYBASE" or "MSSQL")
+
+    Returns:
+        Tuple of (success: bool, columns: list of dict or error_message: str)
+        On success: (True, [{"name": "col1", "type": "varchar", "length": 50}, ...])
+        On failure: (False, "Error message")
+    """
+    if platform.upper() == "SYBASE":
+        sql = f"""
+            select c.name, t.name as type, c.length, c.prec, c.scale
+            from syscolumns c
+            join systypes t on c.usertype = t.usertype
+            where c.id = object_id('{table}')
+            order by c.colid
+        """
+    else:  # MSSQL
+        sql = f"""
+            select c.name, t.name as type, c.max_length as length, c.precision as prec, c.scale
+            from sys.columns c
+            join sys.types t on c.user_type_id = t.user_type_id
+            where c.object_id = object_id('{table}')
+            order by c.column_id
+        """
+
+    success, output = execute_sql_native(
+        host=host, port=port, username=username, password=password,
+        database=database, platform=platform, sql_content=sql
+    )
+
+    if not success:
+        return False, output
+
+    columns = []
+    lines = output.strip().split('\n')
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith('---') or line.lower().startswith('name'):
+            continue
+        if line.startswith('locale is') or line.startswith('using default'):
+            continue
+        if 'affected' in line.lower():
+            continue
+
+        # Parse columns - space separated
+        parts = line.split()
+        if len(parts) >= 2:
+            col_info = {
+                "name": parts[0],
+                "type": parts[1],
+                "length": int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
+            }
+            columns.append(col_info)
+
+    return True, columns
+
+
+def get_table_row_count(host: str, port: int, username: str, password: str,
+                        database: str, table: str, platform: str) -> tuple:
+    """
+    Get the row count of a table.
+
+    Returns:
+        Tuple of (success: bool, count: int or error_message: str)
+    """
+    sql = f"select count(*) from {table}"
+
+    success, output = execute_sql_native(
+        host=host, port=port, username=username, password=password,
+        database=database, platform=platform, sql_content=sql
+    )
+
+    if not success:
+        return False, output
+
+    # Parse the count from output
+    for line in output.strip().split('\n'):
+        line = line.strip()
+        if line.isdigit():
+            return True, int(line)
+
+    return False, "Could not parse row count"
+
+
+def escape_sql_value(value, col_type: str = "varchar") -> str:
+    """
+    Escape a value for safe inclusion in SQL INSERT statement.
+
+    Args:
+        value: The value to escape
+        col_type: Column type (for determining quoting)
+
+    Returns:
+        Escaped string safe for SQL
+    """
+    if value is None:
+        return "NULL"
+
+    # Convert to string
+    str_val = str(value)
+
+    # Check for NULL representations
+    if str_val.upper() == "NULL" or str_val == "":
+        return "NULL"
+
+    # Numeric types don't need quoting
+    numeric_types = ['int', 'smallint', 'tinyint', 'bigint', 'float', 'real',
+                     'decimal', 'numeric', 'money', 'smallmoney', 'bit']
+    if any(t in col_type.lower() for t in numeric_types):
+        # Verify it's actually numeric
+        try:
+            float(str_val)
+            return str_val
+        except ValueError:
+            return "NULL"
+
+    # Escape single quotes for string types
+    escaped = str_val.replace("'", "''")
+
+    return f"'{escaped}'"
+
+
+def extract_table_data(host: str, port: int, username: str, password: str,
+                       database: str, table: str, platform: str,
+                       columns: list, batch_size: int = 1000,
+                       offset: int = 0) -> tuple:
+    """
+    Extract rows from a table with pagination.
+
+    Args:
+        host, port, username, password: Connection info
+        database: Database name
+        table: Table name
+        platform: "SYBASE" or "MSSQL"
+        columns: List of column info dicts from get_table_columns
+        batch_size: Number of rows to fetch
+        offset: Starting row offset
+
+    Returns:
+        Tuple of (success: bool, rows: list of tuples or error_message: str)
+    """
+    col_names = ", ".join([c["name"] for c in columns])
+
+    # Build pagination query - differs by platform
+    if platform.upper() == "SYBASE":
+        # Sybase uses SET ROWCOUNT
+        sql = f"set rowcount {batch_size}\nselect {col_names} from {table}"
+        if offset > 0:
+            # For offset in Sybase, we need a different approach
+            # Using a temp table or cursor would be needed for true pagination
+            # For simplicity, we'll fetch all and skip in Python for now
+            sql = f"select {col_names} from {table}"
+    else:  # MSSQL
+        sql = f"select {col_names} from {table} order by (select null) offset {offset} rows fetch next {batch_size} rows only"
+
+    success, output = execute_sql_native(
+        host=host, port=port, username=username, password=password,
+        database=database, platform=platform, sql_content=sql
+    )
+
+    if not success:
+        return False, output
+
+    # Parse output into rows
+    rows = []
+    lines = output.strip().split('\n')
+    header_skipped = False
+
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith('locale is') or line.startswith('using default'):
+            continue
+        if 'affected' in line.lower():
+            continue
+        if line.startswith('---'):
+            header_skipped = True
+            continue
+        if not header_skipped:
+            # Skip header row
+            header_skipped = True
+            continue
+
+        # Parse tab-separated or space-separated values
+        if '\t' in line:
+            values = line.split('\t')
+        else:
+            # Space separated - tricky with string values
+            values = line.split()
+
+        if values:
+            rows.append(tuple(values))
+
+    return True, rows
+
+
+def generate_insert_statements(database: str, table: str, columns: list,
+                                rows: list, batch_size: int = 100) -> list:
+    """
+    Generate INSERT statements for rows of data.
+
+    Args:
+        database: Target database name
+        table: Target table name
+        columns: List of column info dicts
+        rows: List of row tuples
+        batch_size: Rows per INSERT statement (for batching)
+
+    Returns:
+        List of SQL INSERT statement strings
+    """
+    if not rows:
+        return []
+
+    col_names = ", ".join([c["name"] for c in columns])
+    statements = []
+
+    for row in rows:
+        values = []
+        for i, val in enumerate(row):
+            col_type = columns[i]["type"] if i < len(columns) else "varchar"
+            values.append(escape_sql_value(val, col_type))
+
+        values_str = ", ".join(values)
+        stmt = f"insert into {database}..{table} ({col_names}) values ({values_str})"
+        statements.append(stmt)
+
+    return statements
+
+
+def verify_table_transfer(src_host: str, src_port: int, src_user: str, src_pass: str,
+                          src_db: str, src_table: str, src_platform: str,
+                          dest_host: str, dest_port: int, dest_user: str, dest_pass: str,
+                          dest_db: str, dest_table: str, dest_platform: str,
+                          mode: str, dest_count_before: int = 0) -> dict:
+    """
+    Verify that a table transfer completed successfully by comparing row counts.
+
+    Args:
+        src_*: Source connection info
+        dest_*: Destination connection info
+        mode: "TRUNCATE" or "APPEND"
+        dest_count_before: Destination row count before transfer (for APPEND mode)
+
+    Returns:
+        Dict with verification results:
+        {
+            "verified": bool,
+            "source_rows": int,
+            "dest_rows": int,
+            "expected_rows": int,
+            "error": str or None
+        }
+    """
+    result = {
+        "verified": False,
+        "source_rows": 0,
+        "dest_rows": 0,
+        "expected_rows": 0,
+        "error": None
+    }
+
+    # Get source row count
+    success, src_count = get_table_row_count(
+        src_host, src_port, src_user, src_pass, src_db, src_table, src_platform
+    )
+    if not success:
+        result["error"] = f"Failed to get source row count: {src_count}"
+        return result
+
+    result["source_rows"] = src_count
+
+    # Get destination row count
+    success, dest_count = get_table_row_count(
+        dest_host, dest_port, dest_user, dest_pass, dest_db, dest_table, dest_platform
+    )
+    if not success:
+        result["error"] = f"Failed to get destination row count: {dest_count}"
+        return result
+
+    result["dest_rows"] = dest_count
+
+    # Verify based on mode
+    if mode.upper() == "TRUNCATE":
+        result["expected_rows"] = src_count
+        result["verified"] = (dest_count == src_count)
+    else:  # APPEND
+        expected = dest_count_before + src_count
+        result["expected_rows"] = expected
+        result["verified"] = (dest_count == expected)
+
+    if not result["verified"]:
+        diff = result["expected_rows"] - result["dest_rows"]
+        result["error"] = f"{abs(diff)} rows {'missing' if diff > 0 else 'extra'}"
+
+    return result
+
+
+def transfer_single_table(src_config: dict, dest_config: dict,
+                          src_db: str, src_table: str,
+                          dest_db: str, dest_table: str,
+                          mode: str, batch_size: int = 1000,
+                          progress_callback=None) -> dict:
+    """
+    Transfer a single table from source to destination.
+
+    Args:
+        src_config: Source connection config dict
+        dest_config: Destination connection config dict
+        src_db: Source database name
+        src_table: Source table name
+        dest_db: Destination database name
+        dest_table: Destination table name (usually same as src_table)
+        mode: "TRUNCATE" or "APPEND"
+        batch_size: Rows per batch
+        progress_callback: Optional callback(rows_done, total_rows)
+
+    Returns:
+        Dict with transfer results
+    """
+    import time
+    start_time = time.time()
+
+    result = {
+        "status": "pending",
+        "source_rows": 0,
+        "dest_rows": 0,
+        "rows_transferred": 0,
+        "verified": False,
+        "elapsed": "0s",
+        "error": None
+    }
+
+    try:
+        # Get source connection info
+        src_host = src_config.get("HOST")
+        src_port = src_config.get("PORT")
+        src_user = src_config.get("USERNAME")
+        src_pass = src_config.get("PASSWORD")
+        src_platform = src_config.get("PLATFORM")
+
+        # Get destination connection info
+        dest_host = dest_config.get("HOST")
+        dest_port = dest_config.get("PORT")
+        dest_user = dest_config.get("USERNAME")
+        dest_pass = dest_config.get("PASSWORD")
+        dest_platform = dest_config.get("PLATFORM")
+
+        result["status"] = "in_progress"
+
+        # Step 1: Get source row count
+        success, src_count = get_table_row_count(
+            src_host, src_port, src_user, src_pass, src_db, src_table, src_platform
+        )
+        if not success:
+            result["status"] = "failed"
+            result["error"] = f"Failed to get source row count: {src_count}"
+            return result
+
+        result["source_rows"] = src_count
+
+        # Step 2: Get source columns (validate source table)
+        success, src_columns = get_table_columns(
+            src_host, src_port, src_user, src_pass, src_db, src_table, src_platform
+        )
+        if not success:
+            result["status"] = "skipped"
+            result["error"] = f"Failed to get source columns: {src_columns}"
+            logging.error(f"SKIPPED {src_db}..{src_table}: {result['error']}")
+            return result
+
+        # Step 3: Get destination columns (validate dest table exists)
+        success, dest_columns = get_table_columns(
+            dest_host, dest_port, dest_user, dest_pass, dest_db, dest_table, dest_platform
+        )
+        if not success:
+            result["status"] = "skipped"
+            result["error"] = f"Destination table does not exist or is inaccessible: {dest_columns}"
+            logging.error(f"SKIPPED {dest_db}..{dest_table}: {result['error']}")
+            return result
+
+        # Step 4: Compare schemas - check column names match
+        src_col_names = [c["name"].lower() for c in src_columns]
+        dest_col_names = [c["name"].lower() for c in dest_columns]
+
+        if src_col_names != dest_col_names:
+            # Find differences
+            missing_in_dest = set(src_col_names) - set(dest_col_names)
+            extra_in_dest = set(dest_col_names) - set(src_col_names)
+
+            diff_msg = []
+            if missing_in_dest:
+                diff_msg.append(f"missing in dest: {', '.join(missing_in_dest)}")
+            if extra_in_dest:
+                diff_msg.append(f"extra in dest: {', '.join(extra_in_dest)}")
+            if not missing_in_dest and not extra_in_dest:
+                diff_msg.append("column order differs")
+
+            result["status"] = "skipped"
+            result["error"] = f"Schema mismatch: {'; '.join(diff_msg)}"
+            logging.error(f"SKIPPED {src_db}..{src_table} -> {dest_db}..{dest_table}: {result['error']}")
+            return result
+
+        # Use source columns for transfer (validated to match destination)
+        columns = src_columns
+
+        # Step 5: Get destination row count before (for APPEND mode verification)
+        dest_count_before = 0
+        if mode.upper() == "APPEND":
+            success, dest_count_before = get_table_row_count(
+                dest_host, dest_port, dest_user, dest_pass, dest_db, dest_table, dest_platform
+            )
+            if not success:
+                dest_count_before = 0
+
+        # Step 6: If TRUNCATE mode, truncate destination table
+        # (Only after schema validation passes to avoid data loss on mismatch)
+        if mode.upper() == "TRUNCATE":
+            truncate_sql = f"truncate table {dest_table}"
+            success, output = execute_sql_native(
+                dest_host, dest_port, dest_user, dest_pass,
+                dest_db, dest_platform, truncate_sql
+            )
+            if not success:
+                # Try DELETE if TRUNCATE fails (some permission issues)
+                delete_sql = f"delete from {dest_table}"
+                success, output = execute_sql_native(
+                    dest_host, dest_port, dest_user, dest_pass,
+                    dest_db, dest_platform, delete_sql
+                )
+                if not success:
+                    result["status"] = "failed"
+                    result["error"] = f"Failed to truncate/delete destination: {output}"
+                    return result
+
+        # Step 7: Extract and transfer data in batches
+        rows_done = 0
+        offset = 0
+
+        while rows_done < src_count:
+            # Extract batch
+            success, rows = extract_table_data(
+                src_host, src_port, src_user, src_pass,
+                src_db, src_table, src_platform,
+                columns, batch_size, offset
+            )
+
+            if not success:
+                result["status"] = "failed"
+                result["error"] = f"Failed to extract data: {rows}"
+                return result
+
+            if not rows:
+                break  # No more data
+
+            # Generate INSERT statements
+            inserts = generate_insert_statements(dest_db, dest_table, columns, rows)
+
+            # Execute inserts
+            if inserts:
+                # Batch inserts into a single SQL block
+                sql_block = "\n".join(inserts)
+                success, output = execute_sql_native(
+                    dest_host, dest_port, dest_user, dest_pass,
+                    dest_db, dest_platform, sql_block
+                )
+
+                if not success:
+                    result["status"] = "failed"
+                    result["error"] = f"Failed to insert data: {output}"
+                    return result
+
+            rows_done += len(rows)
+            offset += len(rows)
+            result["rows_transferred"] = rows_done
+
+            # Call progress callback
+            if progress_callback:
+                progress_callback(rows_done, src_count)
+
+            # For Sybase without proper pagination, break after first batch
+            if src_platform.upper() == "SYBASE":
+                break
+
+        # Step 6: Verify transfer
+        verification = verify_table_transfer(
+            src_host, src_port, src_user, src_pass, src_db, src_table, src_platform,
+            dest_host, dest_port, dest_user, dest_pass, dest_db, dest_table, dest_platform,
+            mode, dest_count_before
+        )
+
+        result["dest_rows"] = verification["dest_rows"]
+        result["verified"] = verification["verified"]
+
+        if result["verified"]:
+            result["status"] = "completed"
+        else:
+            result["status"] = "mismatch"
+            result["error"] = verification["error"]
+
+    except Exception as e:
+        result["status"] = "failed"
+        result["error"] = str(e)
+
+    finally:
+        elapsed = time.time() - start_time
+        if elapsed < 60:
+            result["elapsed"] = f"{elapsed:.1f}s"
+        else:
+            result["elapsed"] = f"{elapsed/60:.1f}m"
+
+    return result
+
+
+# =============================================================================
+# TRANSFER STATE MANAGEMENT
+# =============================================================================
+
+def save_transfer_state(project_name: str, state: dict) -> bool:
+    """
+    Save transfer state to a project in settings.json.
+
+    Thread-safe: Uses file locking approach by reading and writing atomically.
+
+    Args:
+        project_name: Name of the data transfer project
+        state: Transfer state dictionary
+
+    Returns:
+        True if saved successfully
+    """
+    try:
+        project = load_data_transfer_project(project_name)
+        if not project:
+            return False
+
+        project["TRANSFER_STATE"] = state
+        return save_data_transfer_project(project_name, project)
+
+    except Exception as e:
+        logging.error(f"Failed to save transfer state: {e}")
+        return False
+
+
+def load_transfer_state(project_name: str) -> dict:
+    """
+    Load transfer state from a project.
+
+    Args:
+        project_name: Name of the data transfer project
+
+    Returns:
+        Transfer state dictionary, or None if not found
+    """
+    try:
+        project = load_data_transfer_project(project_name)
+        return project.get("TRANSFER_STATE")
+
+    except Exception as e:
+        logging.error(f"Failed to load transfer state: {e}")
+        return None
+
+
+def clear_transfer_state(project_name: str) -> bool:
+    """
+    Clear transfer state from a project.
+
+    Args:
+        project_name: Name of the data transfer project
+
+    Returns:
+        True if cleared successfully
+    """
+    return save_transfer_state(project_name, None)
+
+
+def get_pending_tables(state: dict) -> list:
+    """
+    Get list of tables that still need to be transferred.
+
+    Args:
+        state: Transfer state dictionary
+
+    Returns:
+        List of table names (database..table format) that are pending or in_progress
+    """
+    if not state or "TABLES" not in state:
+        return []
+
+    pending = []
+    for table_name, table_state in state.get("TABLES", {}).items():
+        status = table_state.get("status", "pending")
+        if status in ("pending", "in_progress"):
+            pending.append(table_name)
+
+    return pending
+
+
+def get_completed_tables(state: dict) -> list:
+    """
+    Get list of tables that have been transferred.
+
+    Args:
+        state: Transfer state dictionary
+
+    Returns:
+        List of table names that are completed
+    """
+    if not state or "TABLES" not in state:
+        return []
+
+    completed = []
+    for table_name, table_state in state.get("TABLES", {}).items():
+        status = table_state.get("status", "pending")
+        if status == "completed":
+            completed.append(table_name)
+
+    return completed
+
+
+# =============================================================================
+# THREADING AND PROGRESS DISPLAY
+# =============================================================================
+
+import threading
+import queue
+import time
+import sys
+import os
+
+class ProgressDisplay:
+    """
+    Real-time progress bar display for multiple concurrent transfers.
+
+    Uses ANSI escape codes for in-place updates.
+    """
+
+    def __init__(self, total_tables: int, num_threads: int = 5):
+        self.total_tables = total_tables
+        self.num_threads = num_threads
+        self.completed_count = 0
+        self.start_time = time.time()
+        self.lock = threading.Lock()
+
+        # Track active transfers: slot_id -> {table, rows_done, total_rows, status}
+        self.active_slots = {}
+
+        # Completed tables for display
+        self.completed_tables = []
+
+        # Terminal width
+        try:
+            self.term_width = os.get_terminal_size().columns
+        except:
+            self.term_width = 80
+
+        # Flag to stop display
+        self.stop_flag = False
+
+    def _make_progress_bar(self, percent: float, width: int = 20) -> str:
+        """Generate a progress bar string."""
+        filled = int(width * percent / 100)
+        empty = width - filled
+        return f"[{'█' * filled}{'-' * empty}]"
+
+    def _format_table_name(self, name: str, max_len: int = 25) -> str:
+        """Truncate table name if too long."""
+        if len(name) > max_len:
+            return name[:max_len-2] + ".."
+        return name.ljust(max_len)
+
+    def update_progress(self, slot_id: int, table: str, rows_done: int,
+                        total_rows: int, status: str = "transferring"):
+        """Update progress for a specific slot."""
+        with self.lock:
+            self.active_slots[slot_id] = {
+                "table": table,
+                "rows_done": rows_done,
+                "total_rows": total_rows,
+                "status": status
+            }
+
+    def mark_completed(self, slot_id: int, table: str, rows: int,
+                       elapsed: str, verified: bool):
+        """Mark a slot as completed and record in completed list."""
+        with self.lock:
+            if slot_id in self.active_slots:
+                del self.active_slots[slot_id]
+
+            self.completed_count += 1
+            status = "✓ VERIFIED" if verified else "✗ MISMATCH"
+            self.completed_tables.append({
+                "table": table,
+                "rows": rows,
+                "elapsed": elapsed,
+                "status": status
+            })
+
+    def render(self):
+        """Render the current progress display."""
+        with self.lock:
+            lines = []
+
+            # Header
+            elapsed = time.time() - self.start_time
+            elapsed_str = f"{elapsed/60:.1f}m" if elapsed >= 60 else f"{elapsed:.0f}s"
+            lines.append(f"=== Transfer Progress ({self.num_threads} threads) ===")
+            lines.append("")
+
+            # Show last few completed tables
+            recent_completed = self.completed_tables[-3:] if self.completed_tables else []
+            for c in recent_completed:
+                table_fmt = self._format_table_name(c["table"])
+                lines.append(f"DONE  {table_fmt}  {c['status']}  {c['rows']} rows  {c['elapsed']}")
+
+            if recent_completed:
+                lines.append("")
+
+            # Show active transfers
+            for slot_id in sorted(self.active_slots.keys()):
+                slot = self.active_slots[slot_id]
+                table_fmt = self._format_table_name(slot["table"])
+                total = slot["total_rows"] or 1
+                percent = (slot["rows_done"] / total) * 100 if total > 0 else 0
+                bar = self._make_progress_bar(percent)
+                lines.append(f"[{self.completed_count + slot_id + 1}/{self.total_tables}]  "
+                           f"{table_fmt}  {bar}  {percent:3.0f}%  {slot['rows_done']}/{total} rows")
+
+            # Footer
+            lines.append("")
+            lines.append(f"Completed: {self.completed_count}/{self.total_tables} | "
+                        f"Elapsed: {elapsed_str} | Press 'q' to stop")
+
+            return "\n".join(lines)
+
+    def clear_and_print(self, text: str):
+        """Clear previous output and print new text."""
+        # Move cursor up and clear lines
+        num_lines = text.count('\n') + 1
+        sys.stdout.write(f"\033[{num_lines}A")  # Move up
+        sys.stdout.write("\033[J")  # Clear from cursor to end
+        sys.stdout.write(text + "\n")
+        sys.stdout.flush()
+
+
+class TransferWorker(threading.Thread):
+    """
+    Worker thread for transferring a single table.
+    """
+
+    def __init__(self, worker_id: int, task_queue: queue.Queue,
+                 result_queue: queue.Queue, src_config: dict,
+                 dest_config: dict, mode: str, batch_size: int,
+                 progress_display: ProgressDisplay, stop_event: threading.Event):
+        super().__init__(daemon=True)
+        self.worker_id = worker_id
+        self.task_queue = task_queue
+        self.result_queue = result_queue
+        self.src_config = src_config
+        self.dest_config = dest_config
+        self.mode = mode
+        self.batch_size = batch_size
+        self.progress_display = progress_display
+        self.stop_event = stop_event
+        self.current_table = None
+
+    def run(self):
+        """Main worker loop."""
+        while not self.stop_event.is_set():
+            try:
+                # Get next task (non-blocking with timeout)
+                task = self.task_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+
+            if task is None:  # Poison pill
+                break
+
+            src_db, src_table, dest_db, dest_table = task
+            full_name = f"{src_db}..{src_table}"
+            self.current_table = full_name
+
+            # Progress callback
+            def progress_cb(rows_done, total_rows):
+                self.progress_display.update_progress(
+                    self.worker_id, full_name, rows_done, total_rows
+                )
+
+            # Initial progress update
+            self.progress_display.update_progress(
+                self.worker_id, full_name, 0, 0, "starting"
+            )
+
+            # Transfer the table
+            result = transfer_single_table(
+                self.src_config, self.dest_config,
+                src_db, src_table, dest_db, dest_table,
+                self.mode, self.batch_size, progress_cb
+            )
+
+            # Mark completed in progress display
+            self.progress_display.mark_completed(
+                self.worker_id, full_name,
+                result.get("rows_transferred", 0),
+                result.get("elapsed", "0s"),
+                result.get("verified", False)
+            )
+
+            # Put result in result queue
+            self.result_queue.put((full_name, result))
+
+            self.task_queue.task_done()
+            self.current_table = None
+
+
+class TransferThreadPool:
+    """
+    Thread pool for parallel table transfers.
+    """
+
+    def __init__(self, src_config: dict, dest_config: dict,
+                 mode: str, num_threads: int = 5, batch_size: int = 1000):
+        self.src_config = src_config
+        self.dest_config = dest_config
+        self.mode = mode
+        self.num_threads = num_threads
+        self.batch_size = batch_size
+
+        self.task_queue = queue.Queue()
+        self.result_queue = queue.Queue()
+        self.stop_event = threading.Event()
+        self.workers = []
+        self.progress_display = None
+
+    def start(self, tables: list):
+        """
+        Start the transfer process.
+
+        Args:
+            tables: List of (src_db, src_table, dest_db, dest_table) tuples
+        """
+        self.progress_display = ProgressDisplay(len(tables), self.num_threads)
+
+        # Create workers
+        for i in range(self.num_threads):
+            worker = TransferWorker(
+                i, self.task_queue, self.result_queue,
+                self.src_config, self.dest_config,
+                self.mode, self.batch_size,
+                self.progress_display, self.stop_event
+            )
+            worker.start()
+            self.workers.append(worker)
+
+        # Queue all tasks
+        for task in tables:
+            self.task_queue.put(task)
+
+    def stop(self):
+        """Signal workers to stop after current task."""
+        self.stop_event.set()
+
+        # Send poison pills
+        for _ in self.workers:
+            self.task_queue.put(None)
+
+    def wait_for_completion(self, state_callback=None):
+        """
+        Wait for all tasks to complete.
+
+        Args:
+            state_callback: Called with (table_name, result) after each completion
+        """
+        results = {}
+        completed = 0
+        total = self.task_queue.qsize() + len([w for w in self.workers if w.current_table])
+
+        while completed < total and not self.stop_event.is_set():
+            try:
+                table_name, result = self.result_queue.get(timeout=0.5)
+                results[table_name] = result
+                completed += 1
+
+                if state_callback:
+                    state_callback(table_name, result)
+
+            except queue.Empty:
+                pass
+
+            # Render progress
+            if self.progress_display:
+                display = self.progress_display.render()
+                print("\033[2J\033[H" + display)  # Clear screen and print
+
+        return results
+
+    def join(self):
+        """Wait for all workers to finish."""
+        for worker in self.workers:
+            worker.join(timeout=2.0)
+
+
+# =============================================================================
 # CONNECTION TESTING (using tsql)
 # =============================================================================
 

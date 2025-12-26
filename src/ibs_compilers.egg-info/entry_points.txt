@@ -20,3 +20,4 @@ set_options = commands.set_options:main
 set_profile = commands.set_profile:main
 set_required_fields = commands.set_required_fields:main
 set_table_locations = commands.set_table_locations:main
+transfer_data = commands.transfer_data:main

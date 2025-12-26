@@ -1047,6 +1047,30 @@ def edit_profile_inline(profile, current_name=None):
             else:
                 profile[key] = new_value
 
+    # RAW_MODE setting
+    current_raw = profile.get("RAW_MODE", False)
+    current_raw_display = "y" if current_raw else "n"
+    print(f"\n  Raw mode skips SBN-specific preprocessing (options files, symlinks, changelog).")
+    raw_input = input(f"  Raw mode (y/N) [{current_raw_display}]: ").strip().lower()
+    if raw_input == 'y':
+        profile["RAW_MODE"] = True
+    elif raw_input == 'n':
+        profile["RAW_MODE"] = False
+    # If empty, keep current value
+
+    # DATABASE - only ask if RAW_MODE is True
+    is_raw_mode = profile.get("RAW_MODE", False)
+    if is_raw_mode:
+        current_db = profile.get("DATABASE", "")
+        print(f"\n  Default database for raw mode (used when -D not specified).")
+        new_db = input(f"  DATABASE [{current_db}]: ").strip()
+        if new_db:
+            profile["DATABASE"] = new_db
+    else:
+        # Remove DATABASE if not in raw mode
+        if "DATABASE" in profile:
+            del profile["DATABASE"]
+
     print_success("Profile updated.")
     return new_name
 
@@ -1164,6 +1188,11 @@ def create_profile():
     raw_choice = input("Enable raw mode? [y/N]: ").strip().lower()
     if raw_choice == 'y':
         profile["RAW_MODE"] = True
+        # Ask for default database when in raw mode
+        print("\nDefault database for raw mode (used when -D not specified).")
+        db_input = input("Enter default database: ").strip()
+        if db_input:
+            profile["DATABASE"] = db_input
 
     # Language (set default - user can change via edit if needed)
     profile["DEFAULT_LANGUAGE"] = 1

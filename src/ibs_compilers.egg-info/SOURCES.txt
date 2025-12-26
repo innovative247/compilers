@@ -11,6 +11,7 @@ commands/set_options.py
 commands/set_profile.py
 commands/set_required_fields.py
 commands/set_table_locations.py
+commands/transfer_data.py
 ibs_compilers.egg-info/PKG-INFO
 ibs_compilers.egg-info/SOURCES.txt
 ibs_compilers.egg-info/dependency_links.txt

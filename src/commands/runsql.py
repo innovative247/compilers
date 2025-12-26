@@ -244,11 +244,7 @@ Notes:
         # Find the script file
         script_path = find_file(args.script_file, config)
         if not script_path:
-            sql_source = config.get('SQL_SOURCE', '')
-            profile_display = config.get('PROFILE_NAME', profile_name or '')
-            print(f"ERROR: You are outside of profile {profile_display}'s path of:", file=sys.stderr)
-            print(f"  {sql_source}", file=sys.stderr)
-            print(f"  Run `set_profile` and create a new profile for this sql path.", file=sys.stderr)
+            print(f"ERROR: '{args.script_file}' not found.", file=sys.stderr)
             return 1
 
         logging.debug(f"Found script file: {script_path}")

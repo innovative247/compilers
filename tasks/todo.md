@@ -92,6 +92,38 @@ Create `.vscode/tasks.json` in the SQL source directory:
 
 ---
 
+# Task: Raw Mode Fixes for runcreate and set_profile
+
+## Status: Complete
+
+## Issues Fixed
+
+### 1. set_profile not prompting for RAW_MODE when editing
+- **Problem**: When editing an existing profile, the RAW_MODE setting was not shown or editable
+- **Solution**: Added RAW_MODE prompt to `edit_profile_inline()` in `set_profile.py`
+- **Format**: `Raw mode (y/N) [current_value]:`
+
+### 2. DATABASE field missing from profile edit
+- **Problem**: Raw mode profiles need DATABASE field since they can't resolve `&dbtbl&`
+- **Solution**: Added DATABASE to editable fields in `edit_profile_inline()`
+
+### 3. runcreate failing with raw mode profiles (symlinks)
+- **Problem**: `create_symbolic_links()` was called unconditionally, failing for raw mode
+- **Solution**: Wrapped in `if not is_raw_mode(config):` check in `runcreate.py`
+
+### 4. runcreate sending literal `&dbtbl&` as database in raw mode
+- **Problem**: Code tried `options.replace_options('&dbtbl&')` which returns unchanged in raw mode
+- **Solution**: New logic:
+  1. First try DATABASE from profile config
+  2. Only try options resolution if NOT in raw mode
+  3. Error if no database can be resolved (suggest `-D` flag or set DATABASE in profile)
+
+## Files Modified
+- `src/commands/set_profile.py` - Added RAW_MODE and DATABASE to edit prompts
+- `src/commands/runcreate.py` - Skip symlinks in raw mode, fix database resolution
+
+---
+
 # Task: transfer_data - Cross-Platform Data Transfer Utility
 
 ## Status: Planning
@@ -370,63 +402,70 @@ Create a new `transfer_data` command that transfers data between database server
 
 ## Implementation Plan
 
-### Phase 1: Core Infrastructure (ibs_common.py changes)
-- [ ] 1.1 Add `load_data_transfer_projects()` function - reads only "data_transfer" section
-- [ ] 1.2 Add `save_data_transfer_project()` function - saves to "data_transfer" section
-- [ ] 1.3 Add `list_data_transfer_projects()` function
-- [ ] 1.4 Verify `load_profile()` and related functions ONLY read "Profiles" section (confirmed)
-- [ ] 1.5 Add `get_databases(config)` - query available databases from server
-- [ ] 1.6 Add `get_tables(config, database)` - query tables in a database
-- [ ] 1.7 Add `match_wildcard_pattern(name, patterns)` - support `*` wildcards
+### Phase 1: Core Infrastructure (ibs_common.py changes) - COMPLETE
+- [x] 1.1 Add `load_data_transfer_projects()` function - reads only "data_transfer" section
+- [x] 1.2 Add `save_data_transfer_project()` function - saves to "data_transfer" section
+- [x] 1.3 Add `list_data_transfer_projects()` function
+- [x] 1.4 Verify `load_profile()` and related functions ONLY read "Profiles" section (confirmed)
+- [x] 1.5 Add `get_databases_from_server()` - query available databases from server
+- [x] 1.6 Add `get_tables_from_database()` - query tables in a database
+- [x] 1.7 Add `match_wildcard_pattern(name, patterns)` - support `*` wildcards
+- [x] 1.8 Add `filter_tables_by_patterns()` - combine include/exclude filtering
+- [x] 1.9 Add `delete_data_transfer_project()` - delete projects
+- [x] 1.10 Add `load_data_transfer_project()` - load single project by name
+- [x] 1.11 Verified all existing compiler commands still import successfully
 
-### Phase 2: Data Transfer Logic (ibs_common.py additions)
-- [ ] 2.1 Add `get_table_columns(config, database, table)` - query column names/types
-- [ ] 2.2 Add `get_table_row_count(config, database, table)` - for progress and verification
-- [ ] 2.3 Add `extract_table_data(config, database, table, batch_size, offset)` - paginated SELECT
-- [ ] 2.4 Add `generate_insert_statements(columns, rows)` - build INSERT SQL with escaping
-- [ ] 2.5 Add `transfer_table(src, dest, db, table, options, progress_callback)` - single table transfer
-  - Calls progress_callback(rows_done, total_rows) after each batch
-- [ ] 2.6 Add `save_transfer_state(project, state, lock)` - thread-safe state persistence
-- [ ] 2.7 Add `load_transfer_state(project)` - check for incomplete transfers
-- [ ] 2.8 Add `verify_table_transfer(src, dest, db, table, mode, dest_before)` - row count verification
-  - Returns: (verified: bool, source_count, dest_count, error_msg)
+### Phase 2: Data Transfer Logic (ibs_common.py additions) - COMPLETE
+- [x] 2.1 Add `get_table_columns(config, database, table)` - query column names/types
+- [x] 2.2 Add `get_table_row_count(config, database, table)` - for progress and verification
+- [x] 2.3 Add `extract_table_data(config, database, table, batch_size, offset)` - paginated SELECT
+- [x] 2.4 Add `generate_insert_statements(columns, rows)` - build INSERT SQL with escaping
+- [x] 2.5 Add `transfer_single_table()` - single table transfer with progress callback
+- [x] 2.6 Add `save_transfer_state(project, state)` - state persistence
+- [x] 2.7 Add `load_transfer_state(project)` - check for incomplete transfers
+- [x] 2.8 Add `verify_table_transfer()` - row count verification
+- [x] 2.9 Add `escape_sql_value()` - proper value escaping for INSERT statements
 
-### Phase 2b: Threading & Progress (ibs_common.py additions)
-- [ ] 2.9 Add `TransferWorker` class - thread worker for single table transfer
-  - Handles: transfer, verification, progress reporting, error handling
-- [ ] 2.10 Add `TransferThreadPool` class - manages worker threads
-  - Thread count from OPTIONS (default 5)
-  - Work queue of pending tables
-  - Coordinates mismatch pausing across all threads
-- [ ] 2.11 Add `ProgressDisplay` class - real-time progress bar rendering
-  - ANSI escape codes for in-place updates
-  - Multiple concurrent progress bars
-  - Refresh rate limiting (250ms)
-  - Terminal width detection
+### Phase 2b: Threading & Progress (ibs_common.py additions) - COMPLETE
+- [x] 2.10 Add `TransferWorker` class - thread worker for single table transfer
+- [x] 2.11 Add `TransferThreadPool` class - manages worker threads
+- [x] 2.12 Add `ProgressDisplay` class - real-time progress bar rendering
+- [x] 2.13 Add `get_pending_tables()` and `get_completed_tables()` state helpers
+- [x] 2.14 Add `clear_transfer_state()` for resetting projects
 
-### Phase 3: CLI Command (transfer_data.py)
-- [ ] 3.1 Create `src/commands/transfer_data.py` with main menu
-- [ ] 3.2 **Create Project Wizard**:
+### Phase 3: CLI Command (transfer_data.py) - COMPLETE
+- [x] 3.1 Create `src/commands/transfer_data.py` with main menu
+- [x] 3.2 **Create Project Wizard**:
   - Project name
-  - Source connection (platform, host, port, user, password)
-  - Destination connection (same fields)
+  - Source connection with testing and error handling
+  - Destination connection with testing
   - Database selection with wildcards
   - Per-database table selection with include/exclude patterns
   - Interactive table review and toggle
   - Transfer mode (APPEND/TRUNCATE)
-- [ ] 3.3 **Run Project**:
+  - Thread count configuration
+- [x] 3.3 **Run Project**:
   - Check for incomplete state, prompt resume
   - Pre-transfer confirmation
-  - First-table review pause
-  - Progress display with interrupt handling
+  - First-table review pause (single-threaded)
+  - Parallel transfer for remaining tables
   - Row count verification after each table
   - Mismatch handling (Retry/Skip/Abort prompt)
-  - State persistence after each table (with verification results)
+  - State persistence after each table
   - Final summary report with verified/mismatch counts
-- [ ] 3.4 Menu options: Create, Edit, Delete, Run, List, View State
-- [ ] 3.5 Register command in `setup.py` entry points
+- [x] 3.4 Menu options: Create, Edit (placeholder), Delete, Run, List
+- [x] 3.5 Register command in `pyproject.toml` entry points
+- [x] 3.6 Connection testing with helpful error messages for permission issues
 
-### Phase 4: Testing & Polish
+### Phase 3b: Schema Validation - COMPLETE
+- [x] 3.7 Validate source table exists before transfer
+- [x] 3.8 Validate destination table exists before transfer
+- [x] 3.9 Compare column names between source and destination
+- [x] 3.10 Skip table with "skipped" status if validation fails
+- [x] 3.11 Move TRUNCATE step after schema validation (prevent data loss)
+- [x] 3.12 Show skipped tables in final summary report
+
+### Phase 4: Testing & Polish - READY FOR USER TESTING
 - [ ] 4.1 Test SYBASE → MSSQL transfer
 - [ ] 4.2 Test MSSQL → SYBASE transfer
 - [ ] 4.3 Test same-platform transfers
@@ -440,6 +479,7 @@ Create a new `transfer_data` command that transfers data between database server
 - [ ] 4.11 Test multi-threaded transfer (default 5 threads)
 - [ ] 4.12 Test progress bar display with multiple concurrent transfers
 - [ ] 4.13 Test graceful shutdown ('q' key and Ctrl+C)
+- [ ] 4.14 Test skipped tables (missing dest table, schema mismatch)
 
 ## Key Technical Considerations
 
@@ -583,22 +623,37 @@ Destination: MSSQL @ 127.0.0.1:1433
 Databases:   3
 Tables:      127
 Mode:        TRUNCATE
+Threads:     5
 
 Ready to start transfer? [y/N]: y
 
 [1/127] sbnmaster..users      TRANSFERRING...
-        Rows: 5000/5000 (100%)
+        [████████████████████]  100%   5000/5000 rows
+
+Verifying row counts...
+  Source:      5000
+  Destination: 5000
+  Status:      ✓ VERIFIED
 
 --- First Table Complete ---
 Table:   sbnmaster..users
 Rows:    5000
 Time:    12 seconds
-Mode:    TRUNCATE
+Verified: YES
 
-Continue with remaining 126 tables? [y/N]: y
+Continue with remaining 126 tables (5 parallel)? [y/N]: y
 
-[2/127] sbnmaster..branches   TRANSFERRING... (1200/3500)
-[Press 'q' to stop after current table]
+=== Transfer Progress (5 threads) ===
+
+DONE [1/127] sbnmaster..users       ✓ VERIFIED  5000 rows  12s
+
+[2/127]  sbnmaster..branches   [████████████--------]  60%   2100/3500 rows
+[3/127]  sbnmaster..addresses  [██████--------------]  30%   1500/5000 rows
+[4/127]  sbnmaster..customers  [████████████████----]  80%   8000/10000 rows
+[5/127]  sbnmaster..invoices   [██------------------]  10%   500/5000 rows
+[6/127]  sbnmaster..payments   [--------------------]   0%   starting...
+
+Completed: 1/127 | Elapsed: 0m 45s | Press 'q' to stop
 ```
 
 ### Resuming an Interrupted Transfer

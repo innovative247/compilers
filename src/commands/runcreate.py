@@ -499,8 +499,13 @@ def run_create_file(config: dict, options: Options, create_file_path: str,
 
             # If no databases specified, use default from config
             if not databases:
-                db = config.get('DATABASE') or options.replace_options('&dbtbl&')
-                databases = [db] if db else []
+                db = config.get('DATABASE')
+                if not db and not is_raw_mode(config):
+                    db = options.replace_options('&dbtbl&')
+                if not db or db.startswith('&'):
+                    write_output(f"  Line {line_num}: No database specified and cannot resolve default. Use -D flag or set DATABASE in profile.", output_handle)
+                    continue
+                databases = [db]
 
             # Execute for each database
             for db in databases:
@@ -727,10 +732,11 @@ def main(args_list=None):
         log_msg = f"-- Options: {cache_file}"
         write_output(log_msg, output_handle)
 
-    # Ensure symbolic links exist before processing create files
-    if not create_symbolic_links(config, prompt=False):
-        print("ERROR: Failed to create symbolic links. Run `set_profile` to create them with Administrator privileges.")
-        sys.exit(1)
+    # Ensure symbolic links exist before processing create files (skip in raw mode)
+    if not is_raw_mode(config):
+        if not create_symbolic_links(config, prompt=False):
+            print("ERROR: Failed to create symbolic links. Run `set_profile` to create them with Administrator privileges.")
+            sys.exit(1)
 
     # Find the create file
     create_path = find_file(create_file, config)

@@ -43,7 +43,8 @@
       "Bash(eopt:*)",
       "Bash(eact:*)",
       "Bash(eloc:*)",
-      "Bash(ereq:*)"
+      "Bash(ereq:*)",
+      "Bash(transfer_data:*)"
     ],
     "deny": [],
     "ask": []
