@@ -753,6 +753,34 @@ def get_table_row_count(host: str, port: int, username: str, password: str,
     return False, "Could not parse row count"
 
 
+def truncate_table(host: str, port: int, username: str, password: str,
+                   database: str, table: str, platform: str) -> tuple:
+    """
+    Truncate a table.
+
+    Returns:
+        Tuple of (success: bool, message: str)
+    """
+    sql = f"truncate table {table}"
+
+    success, output = execute_sql_native(
+        host=host, port=port, username=username, password=password,
+        database=database, platform=platform, sql_content=sql
+    )
+
+    if not success:
+        # Try DELETE if TRUNCATE fails (permission issues)
+        sql = f"delete from {table}"
+        success, output = execute_sql_native(
+            host=host, port=port, username=username, password=password,
+            database=database, platform=platform, sql_content=sql
+        )
+        if not success:
+            return False, output
+
+    return True, "OK"
+
+
 def escape_sql_value(value, col_type: str = "varchar") -> str:
     """
     Escape a value for safe inclusion in SQL INSERT statement.
@@ -787,6 +815,12 @@ def escape_sql_value(value, col_type: str = "varchar") -> str:
 
     # Escape single quotes for string types
     escaped = str_val.replace("'", "''")
+
+    # Escape newlines and carriage returns (would break SQL)
+    escaped = escaped.replace('\r\n', ' ').replace('\n', ' ').replace('\r', ' ')
+
+    # Escape tabs
+    escaped = escaped.replace('\t', ' ')
 
     return f"'{escaped}'"
 
@@ -1105,54 +1139,76 @@ def transfer_single_table(src_config: dict, dest_config: dict,
                     result["error"] = f"Failed to truncate/delete destination: {output}"
                     return result
 
-        # Step 7: Extract and transfer data in batches
-        rows_done = 0
-        offset = 0
+        # Step 7: Transfer data using BCP (freebcp)
+        import tempfile
+        import os
 
-        while rows_done < src_count:
-            # Extract batch
-            success, rows = extract_table_data(
+        logging.info(f"Starting BCP transfer: {src_db}..{src_table} -> {dest_db}..{dest_table}")
+        logging.info(f"Source rows: {src_count}")
+
+        # Create temp file for BCP data
+        temp_dir = tempfile.gettempdir()
+        bcp_file = os.path.join(temp_dir, f"bcp_{src_table}_{os.getpid()}.dat")
+
+        try:
+            # BCP OUT from source
+            src_table_full = f"{src_db}..{src_table}"
+            logging.info(f"BCP OUT: {src_table_full} -> {bcp_file}")
+
+            success, output = execute_bcp(
                 src_host, src_port, src_user, src_pass,
-                src_db, src_table, src_platform,
-                columns, batch_size, offset
+                src_table_full, "out", bcp_file,
+                platform=src_platform
             )
 
             if not success:
                 result["status"] = "failed"
-                result["error"] = f"Failed to extract data: {rows}"
+                result["error"] = f"BCP OUT failed: {output}"
+                logging.error(f"BCP OUT failed: {output}")
                 return result
 
-            if not rows:
-                break  # No more data
+            rows_exported = int(output) if output.isdigit() else 0
+            logging.info(f"BCP OUT complete: {rows_exported} rows exported")
 
-            # Generate INSERT statements
-            inserts = generate_insert_statements(dest_db, dest_table, columns, rows)
-
-            # Execute inserts
-            if inserts:
-                # Batch inserts into a single SQL block
-                sql_block = "\n".join(inserts)
-                success, output = execute_sql_native(
-                    dest_host, dest_port, dest_user, dest_pass,
-                    dest_db, dest_platform, sql_block
-                )
-
-                if not success:
-                    result["status"] = "failed"
-                    result["error"] = f"Failed to insert data: {output}"
-                    return result
-
-            rows_done += len(rows)
-            offset += len(rows)
-            result["rows_transferred"] = rows_done
-
-            # Call progress callback
+            # Call progress callback (extraction complete)
             if progress_callback:
-                progress_callback(rows_done, src_count)
+                progress_callback("extract", rows_exported, src_count)
 
-            # For Sybase without proper pagination, break after first batch
-            if src_platform.upper() == "SYBASE":
-                break
+            # BCP IN to destination
+            dest_table_full = f"{dest_db}..{dest_table}"
+            logging.info(f"BCP IN: {bcp_file} -> {dest_table_full}")
+
+            success, output = execute_bcp(
+                dest_host, dest_port, dest_user, dest_pass,
+                dest_table_full, "in", bcp_file,
+                platform=dest_platform
+            )
+
+            if not success:
+                result["status"] = "failed"
+                result["error"] = f"BCP IN failed: {output}"
+                logging.error(f"BCP IN failed: {output}")
+                return result
+
+            rows_imported = int(output) if output.isdigit() else 0
+            logging.info(f"BCP IN complete: {rows_imported} rows imported")
+
+            result["rows_transferred"] = rows_imported
+
+            # Call progress callback (insert complete)
+            if progress_callback:
+                progress_callback("insert", rows_imported, src_count)
+
+        finally:
+            # Clean up temp file
+            if os.path.exists(bcp_file):
+                try:
+                    os.remove(bcp_file)
+                    logging.debug(f"Cleaned up temp file: {bcp_file}")
+                except Exception as e:
+                    logging.warning(f"Failed to clean up temp file {bcp_file}: {e}")
+
+        logging.info(f"BCP transfer complete: {result['rows_transferred']} rows transferred")
 
         # Step 6: Verify transfer
         verification = verify_table_transfer(
@@ -1307,10 +1363,13 @@ class ProgressDisplay:
     Uses ANSI escape codes for in-place updates.
     """
 
-    def __init__(self, total_tables: int, num_threads: int = 5):
+    def __init__(self, total_tables: int, num_threads: int = 5,
+                 start_index: int = 0, overall_total: int = None):
         self.total_tables = total_tables
         self.num_threads = num_threads
         self.completed_count = 0
+        self.start_index = start_index  # 0-based index of first table in this batch
+        self.overall_total = overall_total or total_tables  # Total across all batches
         self.start_time = time.time()
         self.lock = threading.Lock()
 
@@ -1333,7 +1392,7 @@ class ProgressDisplay:
         """Generate a progress bar string."""
         filled = int(width * percent / 100)
         empty = width - filled
-        return f"[{'█' * filled}{'-' * empty}]"
+        return f"[{'#' * filled}{'-' * empty}]"
 
     def _format_table_name(self, name: str, max_len: int = 25) -> str:
         """Truncate table name if too long."""
@@ -1342,14 +1401,16 @@ class ProgressDisplay:
         return name.ljust(max_len)
 
     def update_progress(self, slot_id: int, table: str, rows_done: int,
-                        total_rows: int, status: str = "transferring"):
+                        total_rows: int, status: str = "transferring",
+                        phase: str = None):
         """Update progress for a specific slot."""
         with self.lock:
             self.active_slots[slot_id] = {
                 "table": table,
                 "rows_done": rows_done,
                 "total_rows": total_rows,
-                "status": status
+                "status": status,
+                "phase": phase or "transferring"
             }
 
     def mark_completed(self, slot_id: int, table: str, rows: int,
@@ -1373,35 +1434,18 @@ class ProgressDisplay:
         with self.lock:
             lines = []
 
-            # Header
-            elapsed = time.time() - self.start_time
-            elapsed_str = f"{elapsed/60:.1f}m" if elapsed >= 60 else f"{elapsed:.0f}s"
-            lines.append(f"=== Transfer Progress ({self.num_threads} threads) ===")
-            lines.append("")
-
-            # Show last few completed tables
-            recent_completed = self.completed_tables[-3:] if self.completed_tables else []
-            for c in recent_completed:
-                table_fmt = self._format_table_name(c["table"])
-                lines.append(f"DONE  {table_fmt}  {c['status']}  {c['rows']} rows  {c['elapsed']}")
-
-            if recent_completed:
-                lines.append("")
-
-            # Show active transfers
+            # Show active transfers (compact format matching single table)
             for slot_id in sorted(self.active_slots.keys()):
                 slot = self.active_slots[slot_id]
-                table_fmt = self._format_table_name(slot["table"])
+                table_name = slot["table"]
                 total = slot["total_rows"] or 1
                 percent = (slot["rows_done"] / total) * 100 if total > 0 else 0
                 bar = self._make_progress_bar(percent)
-                lines.append(f"[{self.completed_count + slot_id + 1}/{self.total_tables}]  "
-                           f"{table_fmt}  {bar}  {percent:3.0f}%  {slot['rows_done']}/{total} rows")
-
-            # Footer
-            lines.append("")
-            lines.append(f"Completed: {self.completed_count}/{self.total_tables} | "
-                        f"Elapsed: {elapsed_str} | Press 'q' to stop")
+                phase = slot.get("phase", "transferring")
+                phase_label = "Extracting" if phase == "extract" else "Inserting " if phase == "insert" else "          "
+                table_num = self.start_index + self.completed_count + slot_id + 1
+                lines.append(f"[{table_num}/{self.overall_total}] {table_name}")
+                lines.append(f"        {phase_label}: {bar} {percent:3.0f}%  {slot['rows_done']}/{total}")
 
             return "\n".join(lines)
 
@@ -1453,9 +1497,10 @@ class TransferWorker(threading.Thread):
             self.current_table = full_name
 
             # Progress callback
-            def progress_cb(rows_done, total_rows):
+            def progress_cb(phase, rows_done, total_rows):
                 self.progress_display.update_progress(
-                    self.worker_id, full_name, rows_done, total_rows
+                    self.worker_id, full_name, rows_done, total_rows,
+                    phase=phase
                 )
 
             # Initial progress update
@@ -1491,12 +1536,15 @@ class TransferThreadPool:
     """
 
     def __init__(self, src_config: dict, dest_config: dict,
-                 mode: str, num_threads: int = 5, batch_size: int = 1000):
+                 mode: str, num_threads: int = 5, batch_size: int = 1000,
+                 start_index: int = 0, overall_total: int = None):
         self.src_config = src_config
         self.dest_config = dest_config
         self.mode = mode
         self.num_threads = num_threads
         self.batch_size = batch_size
+        self.start_index = start_index
+        self.overall_total = overall_total
 
         self.task_queue = queue.Queue()
         self.result_queue = queue.Queue()
@@ -1511,7 +1559,11 @@ class TransferThreadPool:
         Args:
             tables: List of (src_db, src_table, dest_db, dest_table) tuples
         """
-        self.progress_display = ProgressDisplay(len(tables), self.num_threads)
+        overall = self.overall_total or len(tables)
+        self.progress_display = ProgressDisplay(
+            len(tables), self.num_threads,
+            start_index=self.start_index, overall_total=overall
+        )
 
         # Create workers
         for i in range(self.num_threads):
@@ -1558,11 +1610,6 @@ class TransferThreadPool:
 
             except queue.Empty:
                 pass
-
-            # Render progress
-            if self.progress_display:
-                display = self.progress_display.render()
-                print("\033[2J\033[H" + display)  # Clear screen and print
 
         return results
 
@@ -1859,10 +1906,68 @@ def get_db_connection_from_profile(profile_name: str, database: str = None,
 # BCP OPERATIONS (using freebcp)
 # =============================================================================
 
+# Ctrl-Z (0x1a) causes freebcp to fail on Windows because Windows text mode
+# interprets 0x1a as EOF. This is a known limitation of freebcp.
+_CTRLZ_BYTE = b'\x1a'
+
+
+def _diagnose_bcp_failure(chunk_data: bytes, chunk_start_line: int,
+                          field_term: bytes = b'\x1e', row_term: bytes = b'\x00') -> str:
+    """
+    Analyze a failed BCP chunk to identify problematic rows and explain why.
+
+    Args:
+        chunk_data: The raw BCP data that failed to import
+        chunk_start_line: 1-based line number where this chunk starts in the original file
+        field_term: Field terminator byte
+        row_term: Row terminator byte
+
+    Returns:
+        Diagnostic message explaining what went wrong and where
+    """
+    rows = chunk_data.split(row_term)
+    rows = [r for r in rows if r]  # Remove empty
+
+    issues = []
+
+    for i, row in enumerate(rows):
+        line_num = chunk_start_line + i
+        fields = row.split(field_term)
+        row_issues = []
+
+        # Check for Ctrl-Z (0x1a) - Windows EOF marker
+        if _CTRLZ_BYTE in row:
+            pos = row.find(_CTRLZ_BYTE)
+            row_issues.append(f"contains Ctrl-Z (0x1a) at byte {pos} - Windows interprets as EOF")
+
+        # Check for very long rows (freebcp may have buffer limits)
+        if len(row) > 65000:
+            row_issues.append(f"row is {len(row)} bytes - may exceed freebcp buffer")
+
+        # Check for unexpected field count
+        # (This is informational - may indicate parsing issues)
+
+        if row_issues:
+            issues.append(f"  Line {line_num}: {'; '.join(row_issues)}")
+
+    if issues:
+        if len(issues) <= 20:
+            return "Problematic rows detected:\n" + "\n".join(issues)
+        else:
+            return (f"Problematic rows detected ({len(issues)} total):\n" +
+                    "\n".join(issues[:10]) +
+                    f"\n  ... and {len(issues) - 10} more lines with issues")
+    else:
+        return "No obvious data issues detected - failure may be due to server-side constraints"
+
+
 def execute_bcp(host: str, port: int, username: str, password: str,
                 table: str, direction: str, file_path: str,
                 platform: str = "SYBASE",
-                field_terminator: str = None) -> tuple[bool, str]:
+                field_terminator: str = None,
+                row_terminator: str = None,
+                textsize: int = None,
+                batch_size: int = 1000) -> tuple[bool, str]:
     """
     Execute freebcp using host:port connection.
 
@@ -1875,10 +1980,13 @@ def execute_bcp(host: str, port: int, username: str, password: str,
         direction: "in" or "out"
         file_path: Path to data file
         platform: Database platform (SYBASE or MSSQL), default SYBASE
-        field_terminator: Field terminator (default: tab for multi-column, none for single-column)
+        field_terminator: Field terminator (default: tab)
+        row_terminator: Row terminator (default: newline)
+        textsize: Max text/varchar size in bytes (default: 64512)
+        batch_size: Max rows per BCP chunk (default: 1000)
 
     Returns:
-        Tuple of (success: bool, message: str)
+        Tuple of (success: bool, message: str with row count)
 
     Example:
         success, msg = execute_bcp("54.235.236.130", 5000, "sbn0", "ibsibs",
@@ -1890,12 +1998,92 @@ def execute_bcp(host: str, port: int, username: str, password: str,
 
     logging.info(f"Executing freebcp {direction} for table {table}")
 
+
+    # For large BCP "in" files, split into chunks to work around freebcp row limit
+    max_rows_per_chunk = batch_size
+    if direction == "in":
+        file_path_obj = Path(file_path)
+        if file_path_obj.exists():
+            file_size = file_path_obj.stat().st_size
+            # Estimate rows: typical row ~70 bytes, so 1.5M rows ~105MB
+            if file_size > 100 * 1024 * 1024:  # > 100MB, likely needs chunking
+                logging.info(f"Large BCP file ({file_size / 1024 / 1024:.1f}MB), checking row count...")
+                row_term = b'\x00'  # null byte row terminator
+                with open(file_path, 'rb') as f:
+                    data = f.read()
+                row_count = data.count(row_term)
+
+                if row_count > max_rows_per_chunk:
+                    logging.info(f"Splitting {row_count} rows into chunks of {max_rows_per_chunk}")
+                    total_imported = 0
+                    chunk_num = 0
+                    pos = 0
+
+                    current_line = 1  # Track 1-based line numbers
+
+                    while pos < len(data):
+                        # Find end of this chunk (at row terminator boundary)
+                        chunk_rows = 0
+                        chunk_end = pos
+                        chunk_start_line = current_line
+                        while chunk_end < len(data) and chunk_rows < max_rows_per_chunk:
+                            next_null = data.find(row_term, chunk_end)
+                            if next_null == -1:
+                                chunk_end = len(data)
+                                break
+                            chunk_end = next_null + 1
+                            chunk_rows += 1
+
+                        if chunk_end <= pos:
+                            break
+
+                        chunk_data = data[pos:chunk_end]
+
+                        # Write chunk to temp file
+                        chunk_file = file_path_obj.with_suffix(f'.chunk{chunk_num}.bcp')
+                        with open(chunk_file, 'wb') as f:
+                            f.write(chunk_data)
+
+                        logging.info(f"Importing chunk {chunk_num + 1} (lines {chunk_start_line}-{chunk_start_line + chunk_rows - 1}, {chunk_rows} rows)...")
+
+                        # Recursively call execute_bcp for chunk (won't re-split since < max)
+                        success, msg = execute_bcp(host, port, username, password, table,
+                                                   direction, chunk_file, platform,
+                                                   field_terminator, row_terminator, textsize,
+                                                   batch_size)
+
+                        # Clean up chunk file
+                        chunk_file.unlink()
+
+                        if success:
+                            try:
+                                chunk_imported = int(msg)
+                                total_imported += chunk_imported
+                                logging.info(f"Chunk {chunk_num + 1}: imported {chunk_imported}/{chunk_rows} rows")
+                            except ValueError:
+                                logging.warning(f"Chunk {chunk_num + 1}: could not parse row count from: {msg}")
+                        else:
+                            # Chunk failed - run diagnostics
+                            diag = _diagnose_bcp_failure(chunk_data, chunk_start_line)
+                            logging.error(f"Chunk {chunk_num + 1} FAILED (lines {chunk_start_line}-{chunk_start_line + chunk_rows - 1}):")
+                            logging.error(f"  freebcp error: {msg[:200]}")
+                            logging.error(f"  {diag}")
+
+                        chunk_num += 1
+                        current_line += chunk_rows
+                        pos = chunk_end
+
+                    logging.info(f"Total imported from {chunk_num} chunks: {total_imported}")
+                    return True, str(total_imported)
+
     # Build freebcp command
     # -S = server (host:port format)
     # -U = username
     # -P = password
     # -c = character mode
-    # -t = field terminator (optional)
+    # -t = field terminator
+    # -r = row terminator
+    # -T = textsize
     server_arg = f"{host}:{port}"
 
     bcp_command = [
@@ -1909,38 +2097,64 @@ def execute_bcp(host: str, port: int, username: str, password: str,
         "-c",  # Character mode
     ]
 
-    # Add field terminator if specified
+    # Add field terminator (default to Record Separator char(30) to handle embedded tabs in text fields)
     if field_terminator is not None:
         bcp_command.extend(["-t", field_terminator])
+    else:
+        bcp_command.extend(["-t", "\x1e"])
 
+    # Add row terminator (default to null byte to handle embedded newlines in text fields)
+    # Note: freebcp expects the escape sequence "\0" (backslash-zero), not a literal null byte
+    if row_terminator is not None:
+        bcp_command.extend(["-r", row_terminator])
+    else:
+        bcp_command.extend(["-r", r"\0"])  # raw string to pass literal \0 to freebcp
 
-    # Print command for debugging (hide password)
+    # Add textsize for large varchar/text fields (default 64KB)
+    if textsize is not None:
+        bcp_command.extend(["-T", str(textsize)])
+    else:
+        bcp_command.extend(["-T", "65536"])
+
+    # Allow max errors (default 1000000 to handle duplicate key violations gracefully)
+    bcp_command.extend(["-m", "1000000"])
+
+    # Log command for debugging (hide password)
     safe_cmd = bcp_command.copy()
     pw_idx = safe_cmd.index("-P") + 1
     safe_cmd[pw_idx] = "****"
-    print(f"BCP command: {' '.join(safe_cmd)}")
+    logging.debug(f"BCP command: {' '.join(safe_cmd)}")
 
     try:
-        result = subprocess.run(bcp_command, capture_output=True, text=True, check=False)
+        # Note: Do NOT use text=True as it can cause freebcp to fail on large files
+        result = subprocess.run(bcp_command, capture_output=True, check=False)
 
-        logging.debug(f"freebcp STDOUT:\n{result.stdout}")
+        # Decode output as text, ignoring encoding errors
+        stdout_text = result.stdout.decode('utf-8', errors='replace') if result.stdout else ''
+        stderr_text = result.stderr.decode('utf-8', errors='replace') if result.stderr else ''
 
-        if result.stderr:
-            logging.warning(f"freebcp STDERR:\n{result.stderr}")
+        logging.debug(f"freebcp STDOUT:\n{stdout_text}")
+
+        if stderr_text:
+            logging.warning(f"freebcp STDERR:\n{stderr_text}")
 
         # Check for success indicators
         if result.returncode == 0:
-            # Extract row count from output
-            output_lower = result.stdout.lower()
-            if "rows copied" in output_lower or "rows successfully" in output_lower:
-                return True, f"BCP {direction} completed successfully"
-            else:
-                return True, f"BCP {direction} completed (returncode 0)"
+            # Extract row count from output (e.g., "7 rows copied.")
+            row_count = 0
+            import re
+            match = re.search(r'(\d+)\s+rows?\s+copied', stdout_text, re.IGNORECASE)
+            if match:
+                row_count = int(match.group(1))
+            return True, str(row_count)
         else:
             # Extract error message
             error_msg = f"BCP failed with returncode {result.returncode}"
-            if result.stderr:
-                error_msg += f": {result.stderr[:200]}"
+            if stderr_text:
+                error_msg += f": {stderr_text[:200]}"
+            if stdout_text:
+                error_msg += f" {stdout_text[:200]}"
+
             return False, error_msg
 
     except FileNotFoundError:

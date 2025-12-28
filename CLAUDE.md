@@ -15,3 +15,12 @@ This file provides guidance to Claude Code when working with code in this reposi
 9. MAKE ALL FIXES AND CODE CHANGES AS SIMPLE AS HUMANLY POSSIBLE. THEY SHOULD ONLY IMPACT NECESSARY CODE RELEVANT TO THE TASK AND NOTHING ELSE. IT SHOULD IMPACT AS LITTLE CODE AS POSSIBLE. YOUR GOAL IS TO NOT INTRODUCE ANY BUGS. IT'S ALL ABOUT SIMPLICITY
 10. Do NOT create excessive documentation files. Only create files when absolutely necessary to move the project forward. Session summaries, completion announcements, checklists, and debug logs should NOT be saved as separate .md files.
 11. Do NOT create setup guides, completion summaries, F5 documentation, test checklists, fix summaries, or any other temporary documentation. If information is important for the lifetime of the project, update PROJECT-STATUS.md instead.
+
+## Cross-Platform Requirements
+
+These Python compilers must work on **Windows, Mac, and Ubuntu**. Do not implement solutions that depend on platform-specific tools (e.g., Microsoft bcp.exe, Windows-only utilities).
+
+Key cross-platform considerations:
+- Use FreeTDS (freebcp, tsql) for database operations - available on all platforms
+- Use pyodbc with appropriate ODBC drivers for each platform
+- Be aware of Windows-specific file handling issues (e.g., Ctrl-Z/0x1a as EOF in text mode)

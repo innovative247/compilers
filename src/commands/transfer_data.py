@@ -13,7 +13,266 @@ import sys
 import os
 import getpass
 import time
+import shutil
+import subprocess
+import re
 from datetime import datetime
+
+
+def check_freetds_version() -> tuple:
+    """
+    Check FreeTDS installation and version for long column support.
+
+    Returns:
+        Tuple of (success: bool, message: str, version: str or None)
+    """
+    # Check if tools exist
+    tsql_path = shutil.which("tsql")
+    freebcp_path = shutil.which("freebcp")
+
+    if not tsql_path:
+        return False, "tsql not found in PATH. Install FreeTDS.", None
+    if not freebcp_path:
+        return False, "freebcp not found in PATH. Install FreeTDS.", None
+
+    # Get version info from tsql -C
+    try:
+        result = subprocess.run(
+            ["tsql", "-C"],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        output = result.stdout + result.stderr
+
+        # Parse version: "Version: freetds v1.5.4"
+        version_match = re.search(r'Version:\s*freetds\s*v?(\d+\.\d+\.?\d*)', output, re.IGNORECASE)
+        if not version_match:
+            return False, "Could not determine FreeTDS version.", None
+
+        version_str = version_match.group(1)
+
+        # Parse version components
+        parts = version_str.split('.')
+        major = int(parts[0])
+        minor = int(parts[1]) if len(parts) > 1 else 0
+
+        # Check minimum version (1.0+ recommended for reliable long column support)
+        # Version 0.95+ has partial support, 1.0+ is reliable
+        if major < 1:
+            if major == 0 and minor >= 95:
+                return True, f"FreeTDS v{version_str} (warning: v1.0+ recommended for long columns)", version_str
+            else:
+                return False, f"FreeTDS v{version_str} is too old. Upgrade to v1.0+ for long column support.", version_str
+
+        return True, f"FreeTDS v{version_str}", version_str
+
+    except subprocess.TimeoutExpired:
+        return False, "Timeout checking FreeTDS version.", None
+    except Exception as e:
+        return False, f"Error checking FreeTDS: {e}", None
+
+# Cross-platform keyboard input
+if sys.platform == 'win32':
+    import msvcrt
+    def get_key():
+        """Get a single keypress on Windows."""
+        key = msvcrt.getch()
+        if key == b'\xe0':  # Arrow key prefix
+            key = msvcrt.getch()
+            if key == b'H':
+                return 'up'
+            elif key == b'P':
+                return 'down'
+        elif key == b'\r':
+            return 'enter'
+        elif key == b' ':
+            return 'space'
+        elif key in (b'a', b'A'):
+            return 'a'
+        elif key in (b'n', b'N'):
+            return 'n'
+        elif key in (b'q', b'Q', b'\x1b'):  # q or Escape
+            return 'quit'
+        return None
+else:
+    import tty
+    import termios
+    def get_key():
+        """Get a single keypress on Unix/Mac."""
+        fd = sys.stdin.fileno()
+        old_settings = termios.tcgetattr(fd)
+        try:
+            tty.setraw(fd)
+            ch = sys.stdin.read(1)
+            if ch == '\x1b':  # Escape sequence
+                ch2 = sys.stdin.read(1)
+                if ch2 == '[':
+                    ch3 = sys.stdin.read(1)
+                    if ch3 == 'A':
+                        return 'up'
+                    elif ch3 == 'B':
+                        return 'down'
+                return 'quit'
+            elif ch == '\r' or ch == '\n':
+                return 'enter'
+            elif ch == ' ':
+                return 'space'
+            elif ch in ('a', 'A'):
+                return 'a'
+            elif ch in ('n', 'N'):
+                return 'n'
+            elif ch in ('q', 'Q'):
+                return 'quit'
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+        return None
+
+
+def interactive_checkbox(title: str, items: list, selected: set = None) -> list:
+    """
+    Interactive checkbox selection with arrow keys.
+
+    Args:
+        title: Title to display
+        items: List of items to select from
+        selected: Set of pre-selected items (default: all selected)
+
+    Returns:
+        List of selected items, or None if cancelled
+    """
+    if selected is None:
+        selected = set(items)
+    else:
+        selected = set(selected)
+
+    cursor = 0
+    total = len(items)
+
+    # Determine visible window (for long lists)
+    max_visible = 20
+
+    while True:
+        # Calculate visible range
+        if total <= max_visible:
+            start = 0
+            end = total
+        else:
+            # Keep cursor roughly centered
+            half = max_visible // 2
+            start = max(0, cursor - half)
+            end = min(total, start + max_visible)
+            if end == total:
+                start = total - max_visible
+
+        # Clear screen and draw
+        print(f"\033[2J\033[H", end="")  # Clear screen, cursor to top
+        print(f"{title}")
+        print(f"↑↓=move  Space=toggle  A=all  N=none  Q=cancel\n")
+
+        for i in range(start, end):
+            marker = "[X]" if items[i] in selected else "[ ]"
+            pointer = ">" if i == cursor else " "
+            print(f"  {pointer} {marker} {items[i]}")
+
+        if total > max_visible:
+            print(f"\n  ... showing {start+1}-{end} of {total}")
+
+        print(f"\nSelected: {len(selected)}/{total}")
+        print(f">>> Press ENTER to confirm <<<")
+
+        # Get keypress
+        key = get_key()
+
+        if key == 'up':
+            cursor = (cursor - 1) % total
+        elif key == 'down':
+            cursor = (cursor + 1) % total
+        elif key == 'space':
+            item = items[cursor]
+            if item in selected:
+                selected.remove(item)
+            else:
+                selected.add(item)
+        elif key == 'enter':
+            print()  # Newline after selection
+            return [item for item in items if item in selected]
+        elif key == 'a':
+            selected = set(items)
+        elif key == 'n':
+            selected = set()
+        elif key == 'quit':
+            print()
+            return None
+
+
+class ProjectLog:
+    """Simple logger that writes to both console and project-specific log file."""
+
+    def __init__(self, project_name: str, project_dir: str, append: bool = False):
+        self.project_name = project_name
+        self.project_dir = project_dir
+        self.log_path = os.path.join(project_dir, f"{project_name}.log")
+        mode = 'a' if append else 'w'
+        self.file = open(self.log_path, mode, encoding='utf-8')
+        # Write header to log file only (not console)
+        if not append:
+            self.file.write(f"=== Transfer Log: {project_name} ===\n")
+            self.file.write(f"Started: {datetime.now().isoformat()}\n")
+        else:
+            self.file.write(f"\n=== Resumed: {datetime.now().isoformat()} ===\n")
+        self.file.flush()
+
+    def log(self, message: str = "", end: str = '\n'):
+        """Print to console and write to log file."""
+        print(message, end=end, flush=True)
+        # Strip carriage returns for log file (progress updates)
+        if message.startswith('\r'):
+            message = message[1:]
+        self.file.write(message + end)
+        self.file.flush()
+
+    def close(self):
+        """Close the log file."""
+        self.file.write(f"\nCompleted: {datetime.now().isoformat()}\n")
+        self.file.close()
+        print(f"\nLog saved to: {self.log_path}")
+
+
+def load_manifest(project_dir: str, database: str) -> dict:
+    """Load manifest for a database from project directory."""
+    import json
+    manifest_path = os.path.join(project_dir, f"{database}_manifest.json")
+    if os.path.exists(manifest_path):
+        with open(manifest_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    return {"database": database, "tables": {}}
+
+
+def save_manifest(project_dir: str, database: str, manifest: dict):
+    """Save manifest for a database to project directory."""
+    import json
+    manifest_path = os.path.join(project_dir, f"{database}_manifest.json")
+    with open(manifest_path, 'w', encoding='utf-8') as f:
+        json.dump(manifest, f, indent=2)
+
+
+def update_manifest(project_dir: str, database: str, table: str, extracted_rows: int):
+    """Update manifest with extraction info for a table."""
+    manifest = load_manifest(project_dir, database)
+    manifest["tables"][table] = {
+        "extracted_rows": extracted_rows,
+        "extracted_at": datetime.now().isoformat()
+    }
+    save_manifest(project_dir, database, manifest)
+
+
+def get_expected_rows(project_dir: str, database: str, table: str) -> int:
+    """Get expected row count from manifest. Returns -1 if not found."""
+    manifest = load_manifest(project_dir, database)
+    table_info = manifest.get("tables", {}).get(table, {})
+    return table_info.get("extracted_rows", -1)
+
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -39,8 +298,6 @@ from commands.ibs_common import (
     clear_transfer_state,
     get_pending_tables,
     get_completed_tables,
-    # Threading
-    TransferThreadPool,
 )
 
 
@@ -105,22 +362,24 @@ def test_connection(platform: str, host: str, port: int,
         return False, f"Connection error: {str(e)}"
 
 
-def prompt_connection_info(label: str, default_platform: str = "SYBASE") -> dict:
+def prompt_connection_info(label: str, existing: dict = None) -> dict:
     """
     Prompt user for database connection information.
 
     Args:
         label: "Source" or "Destination"
-        default_platform: Default platform to suggest
+        existing: Existing config to use as defaults (for editing)
 
     Returns:
         Dict with connection info, or None if cancelled
     """
+    existing = existing or {}
     print(f"\n--- {label} Connection ---")
 
     config = {}
 
     # Platform
+    default_platform = existing.get("PLATFORM", "SYBASE" if label == "Source" else "MSSQL")
     while True:
         platform = input(f"Platform (SYBASE/MSSQL) [{default_platform}]: ").strip().upper()
         if not platform:
@@ -131,27 +390,41 @@ def prompt_connection_info(label: str, default_platform: str = "SYBASE") -> dict
         print("Invalid platform. Enter SYBASE or MSSQL.")
 
     # Host
-    config["HOST"] = input("Host (IP or hostname): ").strip()
-    if not config["HOST"]:
-        print("Host is required.")
-        return None
+    default_host = existing.get("HOST", "")
+    if default_host:
+        host = input(f"Host [{default_host}]: ").strip()
+        config["HOST"] = host if host else default_host
+    else:
+        config["HOST"] = input("Host (IP or hostname): ").strip()
+        if not config["HOST"]:
+            print("Host is required.")
+            return None
 
     # Port
-    default_port = 5000 if config["PLATFORM"] == "SYBASE" else 1433
+    default_port = existing.get("PORT", 5000 if config["PLATFORM"] == "SYBASE" else 1433)
     port_input = input(f"Port [{default_port}]: ").strip()
     config["PORT"] = int(port_input) if port_input else default_port
 
     # Username
-    config["USERNAME"] = input("Username: ").strip()
-    if not config["USERNAME"]:
-        print("Username is required.")
-        return None
+    default_user = existing.get("USERNAME", "")
+    if default_user:
+        username = input(f"Username [{default_user}]: ").strip()
+        config["USERNAME"] = username if username else default_user
+    else:
+        config["USERNAME"] = input("Username: ").strip()
+        if not config["USERNAME"]:
+            print("Username is required.")
+            return None
 
-    # Password
-    config["PASSWORD"] = getpass.getpass("Password: ")
-    if not config["PASSWORD"]:
-        print("Password is required.")
-        return None
+    # Password - show hint if existing
+    if existing.get("PASSWORD"):
+        password = getpass.getpass("Password [****]: ")
+        config["PASSWORD"] = password if password else existing["PASSWORD"]
+    else:
+        config["PASSWORD"] = getpass.getpass("Password: ")
+        if not config["PASSWORD"]:
+            print("Password is required.")
+            return None
 
     # Test connection
     success, message = test_connection(
@@ -166,7 +439,7 @@ def prompt_connection_info(label: str, default_platform: str = "SYBASE") -> dict
         print(f"\n  ERROR: {message}")
         retry = input("\nRetry connection? [Y/n]: ").strip().lower()
         if retry != 'n':
-            return prompt_connection_info(label, config["PLATFORM"])
+            return prompt_connection_info(label, config)
         return None
 
 
@@ -272,56 +545,89 @@ def prompt_table_selection(config: dict, database: str) -> list:
 
     print(f"\nFound {len(filtered)} tables after filtering.")
 
-    # Interactive review
-    selected = set(filtered)  # All selected by default
+    # Interactive selection with arrow keys
+    result = interactive_checkbox(f"Select tables for {database}:", filtered)
 
+    if result is None:
+        return []
+
+    return result
+
+
+def save_project_progress(project_name: str, project: dict) -> bool:
+    """Save project and show confirmation."""
+    if save_data_transfer_project(project_name, project):
+        print(f"  [Saved: {project_name}]")
+        return True
+    else:
+        print("  [ERROR: Failed to save]")
+        return False
+
+
+def prompt_save_continue(project_name: str, project: dict) -> str:
+    """
+    Prompt user to save progress.
+
+    Returns:
+        'continue' - saved and continue
+        'exit' - saved and exit
+        'skip' - continue without saving
+    """
+    choice = input("\n[S]ave and continue, [E]xit (save and quit), or Enter to continue: ").strip().lower()
+    if choice in ('s', 'save'):
+        save_project_progress(project_name, project)
+        return 'continue'
+    elif choice in ('e', 'exit'):
+        save_project_progress(project_name, project)
+        return 'exit'
+    return 'skip'
+
+
+def prompt_transfer_options(current_options: dict = None) -> dict:
+    """
+    Prompt for transfer options (mode, BCP batch size).
+
+    Args:
+        current_options: Existing options to show as defaults
+
+    Returns:
+        Dict with OPTIONS config
+    """
+    current_options = current_options or {}
+    current_mode = current_options.get("MODE", "TRUNCATE")
+    current_bcp_batch = current_options.get("BCP_BATCH_SIZE", 1000)
+
+    print("\n--- Transfer Options ---")
+
+    # Mode
     while True:
-        print(f"\nReview tables for {database}:")
-        for i, table in enumerate(filtered, 1):
-            marker = "[X]" if table in selected else "[ ]"
-            print(f"{marker} {i:3}. {table}")
-
-        print(f"\nSelected: {len(selected)}/{len(filtered)}")
-        print("Commands: 1-N toggle, 'all', 'none', 'done'")
-
-        cmd = input("> ").strip().lower()
-
-        if cmd == 'done':
+        mode_prompt = f"Mode: [T]runcate or [A]ppend? [{current_mode[0]}]: "
+        mode = input(mode_prompt).strip().upper()
+        if not mode:
+            mode = current_mode
             break
-        elif cmd == 'all':
-            selected = set(filtered)
-        elif cmd == 'none':
-            selected = set()
-        elif cmd.isdigit():
-            idx = int(cmd) - 1
-            if 0 <= idx < len(filtered):
-                table = filtered[idx]
-                if table in selected:
-                    selected.remove(table)
-                else:
-                    selected.add(table)
-        else:
-            # Try parsing as range or multiple numbers
-            try:
-                nums = [int(n.strip()) for n in cmd.replace(',', ' ').split()]
-                for num in nums:
-                    idx = num - 1
-                    if 0 <= idx < len(filtered):
-                        table = filtered[idx]
-                        if table in selected:
-                            selected.remove(table)
-                        else:
-                            selected.add(table)
-            except ValueError:
-                print("Invalid command. Use numbers, 'all', 'none', or 'done'.")
+        if mode in ('T', 'TRUNCATE'):
+            mode = 'TRUNCATE'
+            break
+        elif mode in ('A', 'APPEND'):
+            mode = 'APPEND'
+            break
+        print("Enter T for Truncate or A for Append.")
 
-    # Return in original order
-    return [t for t in filtered if t in selected]
+    # BCP batch size (rows per chunk for freebcp import)
+    bcp_batch_input = input(f"BCP batch size (rows per chunk) [{current_bcp_batch}]: ").strip()
+    bcp_batch_size = int(bcp_batch_input) if bcp_batch_input.isdigit() else current_bcp_batch
+
+    return {
+        "MODE": mode,
+        "BCP_BATCH_SIZE": bcp_batch_size
+    }
 
 
 def create_project_wizard():
     """
     Interactive wizard to create a new data transfer project.
+    Saves progress after each step.
     """
     print("\n" + "=" * 50)
     print("CREATE NEW DATA TRANSFER PROJECT")
@@ -340,82 +646,76 @@ def create_project_wizard():
         if overwrite != 'y':
             return
 
-    # Source connection
+    # Initialize empty project
+    project = {
+        "SOURCE": None,
+        "DESTINATION": None,
+        "DATABASES": {},
+        "OPTIONS": {"MODE": "TRUNCATE", "BCP_BATCH_SIZE": 1000},
+        "TRANSFER_STATE": None
+    }
+
+    # Step 1: Source connection
     src_config = prompt_connection_info("Source", "SYBASE")
     if not src_config:
         print("Source connection cancelled.")
         return
+    project["SOURCE"] = src_config
 
-    # Destination connection
+    action = prompt_save_continue(project_name, project)
+    if action == 'exit':
+        return
+
+    # Step 2: Destination connection
     dest_config = prompt_connection_info("Destination", "MSSQL")
     if not dest_config:
         print("Destination connection cancelled.")
         return
+    project["DESTINATION"] = dest_config
 
-    # Database selection
+    action = prompt_save_continue(project_name, project)
+    if action == 'exit':
+        return
+
+    # Step 3: Database selection
     databases = prompt_database_selection(src_config)
     if not databases:
         print("No databases selected.")
         return
 
-    # Table selection per database
+    # Step 4: Table selection per database (save after each database)
     db_configs = {}
     for database in databases:
+        # Ask for destination database name
+        dest_db = input(f"\nDestination database for '{database}' [{database}]: ").strip()
+        if not dest_db:
+            dest_db = database  # Default to same name
+
         tables = prompt_table_selection(src_config, database)
         if tables is None:
-            # User chose not to skip, but failed - abort
             print("Table selection failed.")
             return
         if tables:
             db_configs[database] = {
-                "DEST_DATABASE": database,  # Same name by default
+                "DEST_DATABASE": dest_db,
                 "TABLES": tables
             }
+            project["DATABASES"] = db_configs
+
+            # Save after each database's tables are selected
+            action = prompt_save_continue(project_name, project)
+            if action == 'exit':
+                return
 
     if not db_configs:
         print("No tables selected from any database.")
         return
 
-    # Transfer options
-    print("\n--- Transfer Options ---")
+    # Step 5: Transfer options
+    project["OPTIONS"] = prompt_transfer_options()
 
-    # Mode
-    while True:
-        mode = input("Mode: [T]runcate or [A]ppend? ").strip().upper()
-        if mode in ('T', 'TRUNCATE'):
-            mode = 'TRUNCATE'
-            break
-        elif mode in ('A', 'APPEND'):
-            mode = 'APPEND'
-            break
-        print("Enter T for Truncate or A for Append.")
-
-    # Threads
-    threads_input = input("Parallel threads [5]: ").strip()
-    threads = int(threads_input) if threads_input.isdigit() else 5
-    threads = max(1, min(threads, 20))  # Limit to 1-20
-
-    # Batch size
-    batch_input = input("Batch size [1000]: ").strip()
-    batch_size = int(batch_input) if batch_input.isdigit() else 1000
-
-    # Build project config
-    project = {
-        "SOURCE": src_config,
-        "DESTINATION": dest_config,
-        "DATABASES": db_configs,
-        "OPTIONS": {
-            "MODE": mode,
-            "THREADS": threads,
-            "BATCH_SIZE": batch_size
-        },
-        "TRANSFER_STATE": None
-    }
-
-    # Calculate totals
+    # Final save
     total_tables = sum(len(db["TABLES"]) for db in db_configs.values())
-
-    # Save project
     if save_data_transfer_project(project_name, project):
         print(f"\nProject saved: {project_name}")
         print(f"Total: {len(db_configs)} databases, {total_tables} tables")
@@ -435,34 +735,201 @@ def display_project_summary(project_name: str, project: dict):
     print(f"\n=== Project: {project_name} ===")
     print(f"Source:      {src.get('PLATFORM')} @ {src.get('HOST')}:{src.get('PORT')}")
     print(f"Destination: {dest.get('PLATFORM')} @ {dest.get('HOST')}:{dest.get('PORT')}")
-    print(f"Databases:   {len(dbs)}")
-    print(f"Tables:      {total_tables}")
     print(f"Mode:        {options.get('MODE', 'TRUNCATE')}")
-    print(f"Threads:     {options.get('THREADS', 5)}")
+    print(f"BCP Batch:   {options.get('BCP_BATCH_SIZE', 1000)} rows/chunk")
+    print(f"\nDatabase mappings:")
+    for src_db, db_config in dbs.items():
+        dest_db = db_config.get("DEST_DATABASE", src_db)
+        table_count = len(db_config.get("TABLES", []))
+        print(f"  {src_db} -> {dest_db}  ({table_count} tables)")
 
 
 def run_project(project_name: str):
     """
-    Run a data transfer project.
+    Run a data transfer project with edit options.
     """
+    from commands.ibs_common import (
+        get_databases_from_server, execute_bcp, get_table_row_count,
+        truncate_table, verify_table_transfer
+    )
+
     project = load_data_transfer_project(project_name)
     if not project:
         print(f"Project '{project_name}' not found.")
         return
 
-    display_project_summary(project_name, project)
+    while True:
+        # Reload project in case edits were made
+        project = load_data_transfer_project(project_name)
+        display_project_summary(project_name, project)
+
+        # Create/check project directory
+        project_dir = os.path.join(os.getcwd(), f"data_transfer_{project_name}")
+        if not os.path.exists(project_dir):
+            os.makedirs(project_dir)
+
+        # Check for existing BCP files
+        existing_bcp_files = [f for f in os.listdir(project_dir) if f.endswith('.bcp')]
+        bcp_info = f"  ({len(existing_bcp_files)} BCP files)" if existing_bcp_files else ""
+
+        print(f"\n--- Options ---")
+        print(f"  1. Run transfer{bcp_info}")
+        print(f"  2. Edit source connection")
+        print(f"  3. Edit destination connection")
+        print(f"  4. Edit databases and tables")
+        print(f"  5. Edit transfer options")
+        print(f"  6. Exit")
+
+        choice = input("\nChoose [1-6]: ").strip()
+
+        if choice == '1':
+            # Run transfer - show mode submenu
+            _execute_transfer(project_name, project, project_dir, existing_bcp_files)
+
+        elif choice == '2':
+            # Edit source
+            src = project.get("SOURCE", {})
+            new_src = prompt_connection_info("Source", src)
+            if new_src:
+                project["SOURCE"] = new_src
+                clear_transfer_state(project_name)
+                save_data_transfer_project(project_name, project)
+                print("Source updated and saved.")
+
+        elif choice == '3':
+            # Edit destination
+            dest = project.get("DESTINATION", {})
+            new_dest = prompt_connection_info("Destination", dest)
+            if new_dest:
+                project["DESTINATION"] = new_dest
+                clear_transfer_state(project_name)
+                save_data_transfer_project(project_name, project)
+                print("Destination updated and saved.")
+
+        elif choice == '4':
+            # Edit databases and tables
+            src_config = project.get("SOURCE")
+            if not src_config:
+                print("Configure source connection first.")
+                continue
+            _edit_databases(project_name, project, src_config)
+
+        elif choice == '5':
+            # Edit transfer options
+            current_options = project.get("OPTIONS", {})
+            project["OPTIONS"] = prompt_transfer_options(current_options)
+            save_data_transfer_project(project_name, project)
+            print("Options updated and saved.")
+
+        elif choice == '6':
+            return
+
+        else:
+            print("Invalid choice. Enter 1-6.")
+
+
+def _edit_databases(project_name: str, project: dict, src_config: dict):
+    """Edit databases and tables for a project."""
+    current_dbs = list(project.get("DATABASES", {}).keys())
+
+    print(f"\nDatabase mappings:")
+    if current_dbs:
+        for i, src_db in enumerate(current_dbs, 1):
+            dest_db = project["DATABASES"][src_db].get("DEST_DATABASE", src_db)
+            table_count = len(project["DATABASES"][src_db].get("TABLES", []))
+            print(f"  {i}. {src_db} -> {dest_db}  ({table_count} tables)")
+        print(f"  {len(current_dbs) + 1}. [Add new database]")
+    else:
+        print("  None configured")
+        print(f"  1. [Add new database]")
+
+    db_choice = input("\nSelect database (or 0 to cancel): ").strip()
+    if db_choice == '0' or not db_choice:
+        return
+
+    if db_choice.isdigit():
+        idx = int(db_choice) - 1
+        add_new_idx = len(current_dbs)
+
+        if idx == add_new_idx:
+            # Add new database
+            new_dbs = prompt_database_selection(src_config)
+            if new_dbs:
+                for db in new_dbs:
+                    if db not in project["DATABASES"]:
+                        dest_db = input(f"Destination database for '{db}' [{db}]: ").strip()
+                        if not dest_db:
+                            dest_db = db
+                        tables = prompt_table_selection(src_config, db)
+                        if tables:
+                            project["DATABASES"][db] = {
+                                "DEST_DATABASE": dest_db,
+                                "TABLES": tables
+                            }
+                            print(f"\n  {db} -> {dest_db}:")
+                            for t in tables:
+                                print(f"    - {t}")
+                clear_transfer_state(project_name)
+                save_data_transfer_project(project_name, project)
+                print("\nDatabases added and saved.")
+
+        elif 0 <= idx < len(current_dbs):
+            # Edit or delete existing database
+            src_db = current_dbs[idx]
+            dest_db = project["DATABASES"][src_db].get("DEST_DATABASE", src_db)
+            tables = project["DATABASES"][src_db].get("TABLES", [])
+
+            print(f"\n{src_db} -> {dest_db}  ({len(tables)} tables)")
+
+            action = input("[E]dit or [D]elete? ").strip().lower()
+
+            if action in ('d', 'delete'):
+                confirm = input(f"Delete {src_db}? [y/N]: ").strip().lower()
+                if confirm == 'y':
+                    del project["DATABASES"][src_db]
+                    clear_transfer_state(project_name)
+                    save_data_transfer_project(project_name, project)
+                    print(f"Deleted and saved: {src_db}")
+
+            elif action in ('e', 'edit'):
+                new_dest = input(f"Destination database [{dest_db}]: ").strip()
+                if new_dest:
+                    project["DATABASES"][src_db]["DEST_DATABASE"] = new_dest
+                    dest_db = new_dest
+
+                tables = prompt_table_selection(src_config, src_db)
+                if tables:
+                    project["DATABASES"][src_db]["TABLES"] = tables
+                    clear_transfer_state(project_name)
+                    save_data_transfer_project(project_name, project)
+                    print(f"\n  {src_db} -> {dest_db} (saved):")
+                    for t in tables:
+                        print(f"    - {t}")
+                elif tables is not None and len(tables) == 0:
+                    confirm = input(f"No tables selected. Delete {src_db}? [y/N]: ").strip().lower()
+                    if confirm == 'y':
+                        del project["DATABASES"][src_db]
+                        clear_transfer_state(project_name)
+                        save_data_transfer_project(project_name, project)
+                        print(f"Deleted and saved: {src_db}")
+
+
+def _execute_transfer(project_name: str, project: dict, project_dir: str, existing_bcp_files: list):
+    """Execute the actual data transfer."""
+    from commands.ibs_common import (
+        get_databases_from_server, execute_bcp, get_table_row_count,
+        truncate_table
+    )
 
     src_config = project.get("SOURCE", {})
     dest_config = project.get("DESTINATION", {})
     options = project.get("OPTIONS", {})
     databases = project.get("DATABASES", {})
-
     mode = options.get("MODE", "TRUNCATE")
-    threads = options.get("THREADS", 5)
-    batch_size = options.get("BATCH_SIZE", 1000)
+    bcp_batch_size = options.get("BCP_BATCH_SIZE", 1000)
 
-    # Build list of tables to transfer
-    all_tables = []  # List of (src_db, src_table, dest_db, dest_table)
+    # Build list of tables
+    all_tables = []
     for src_db, db_config in databases.items():
         dest_db = db_config.get("DEST_DATABASE", src_db)
         for table in db_config.get("TABLES", []):
@@ -472,252 +939,237 @@ def run_project(project_name: str):
         print("No tables to transfer.")
         return
 
-    # Check for incomplete transfer state
-    state = load_transfer_state(project_name)
-    resume = False
-
-    if state and get_pending_tables(state):
-        completed = get_completed_tables(state)
-        pending = get_pending_tables(state)
-        print(f"\n*** Previous transfer was interrupted ***")
-        print(f"Started:   {state.get('STARTED_AT', 'Unknown')}")
-        print(f"Last:      {state.get('LAST_UPDATE', 'Unknown')}")
-        print(f"Completed: {len(completed)}/{len(all_tables)} tables")
-        print(f"Pending:   {len(pending)} tables")
-
-        choice = input("\nResume from where you left off? [Y/n]: ").strip().lower()
-        if choice != 'n':
-            resume = True
-            # Filter to only pending tables
-            pending_set = set(pending)
-            all_tables = [t for t in all_tables if f"{t[0]}..{t[1]}" in pending_set]
-        else:
-            clear_transfer_state(project_name)
-
     total_tables = len(all_tables)
 
-    # Pre-transfer confirmation
-    print(f"\n=== Transfer Summary ===")
-    print(f"Tables to transfer: {total_tables}")
-    print(f"Mode: {mode}")
-    print(f"Threads: {threads}")
+    # Run mode selection
+    print(f"\n--- Run Mode ---")
+    print(f"  1. Full transfer (Extract + Insert)")
+    print(f"  2. Extract only")
+    print(f"  3. Insert only")
+    if existing_bcp_files:
+        print(f"\n  ({len(existing_bcp_files)} BCP files found)")
 
-    confirm = input(f"\nReady to start transfer? [y/N]: ").strip().lower()
+    while True:
+        run_mode = input("\nChoose [1-3] (or 0 to cancel): ").strip()
+        if run_mode == '0':
+            return
+        if run_mode in ('1', '2', '3'):
+            break
+        print("Enter 1, 2, or 3.")
+
+    do_extract = run_mode in ('1', '2')
+    do_insert = run_mode in ('1', '3')
+
+    # Initialize project log
+    log = ProjectLog(project_name, project_dir, append=False)
+
+    # Validate connections based on mode
+    if do_extract:
+        log.log(f"\n--- Validating source connection ---")
+        src_platform = src_config.get("PLATFORM", "SYBASE")
+        success, src_dbs = get_databases_from_server(
+            src_config.get("HOST"), src_config.get("PORT"),
+            src_config.get("USERNAME"), src_config.get("PASSWORD"), src_platform
+        )
+        if not success:
+            log.log(f"ERROR: Cannot connect to source server: {src_dbs}")
+            log.close()
+            return
+        log.log(f"  Source connection OK")
+
+    if do_insert:
+        log.log(f"\n--- Validating destination connection ---")
+        dest_platform = dest_config.get("PLATFORM", "MSSQL")
+        success, dest_dbs = get_databases_from_server(
+            dest_config.get("HOST"), dest_config.get("PORT"),
+            dest_config.get("USERNAME"), dest_config.get("PASSWORD"), dest_platform
+        )
+        if not success:
+            log.log(f"ERROR: Cannot connect to destination server: {dest_dbs}")
+            log.close()
+            return
+
+        # Check destination databases exist
+        dest_databases = set(t[2] for t in all_tables)
+        dest_dbs_lower = [db.lower() for db in dest_dbs]
+        missing_dbs = [db for db in dest_databases if db.lower() not in dest_dbs_lower]
+        if missing_dbs:
+            log.log(f"\nERROR: Missing destination databases: {', '.join(missing_dbs)}")
+            log.close()
+            return
+        log.log(f"  Destination connection OK")
+
+    # Summary
+    log.log(f"\n=== Transfer Summary ===")
+    log.log(f"Project:     {project_name}")
+    log.log(f"Tables:      {total_tables}")
+    log.log(f"Mode:        {mode}")
+    log.log(f"Directory:   {project_dir}")
+    mode_desc = "Full transfer" if run_mode == '1' else ("Extract only" if run_mode == '2' else "Insert only")
+    log.log(f"Run mode:    {mode_desc}")
+    if do_extract:
+        log.log(f"Source:      {src_config.get('PLATFORM')} {src_config.get('HOST')}:{src_config.get('PORT')}")
+    if do_insert:
+        log.log(f"Destination: {dest_config.get('PLATFORM')} {dest_config.get('HOST')}:{dest_config.get('PORT')}")
+
+    confirm = input(f"\nReady to start? [y/N]: ").strip().lower()
     if confirm != 'y':
-        print("Transfer cancelled.")
+        log.log("Cancelled.")
+        log.close()
         return
 
-    # Initialize state
-    if not resume:
-        state = {
-            "STARTED_AT": datetime.now().isoformat(),
-            "LAST_UPDATE": datetime.now().isoformat(),
-            "TABLES": {}
-        }
-        for src_db, src_table, dest_db, dest_table in all_tables:
+    # Track results
+    extract_results = {}
+    insert_results = {}
+
+    # ===== EXTRACTION PHASE =====
+    if do_extract:
+        log.log(f"\n{'='*50}")
+        log.log(f"EXTRACTION PHASE")
+        log.log(f"{'='*50}")
+
+        src_host = src_config.get("HOST")
+        src_port = src_config.get("PORT")
+        src_user = src_config.get("USERNAME")
+        src_pass = src_config.get("PASSWORD")
+        src_platform = src_config.get("PLATFORM", "SYBASE")
+
+        log.log(f"Source: {src_platform} {src_host}:{src_port} (user: {src_user})")
+        log.log("")
+
+        for idx, (src_db, src_table, dest_db, dest_table) in enumerate(all_tables, 1):
             full_name = f"{src_db}..{src_table}"
-            state["TABLES"][full_name] = {"status": "pending"}
+            bcp_file = os.path.join(project_dir, f"{src_db}_{src_table}.bcp")
 
-        save_transfer_state(project_name, state)
+            # Get source row count
+            success, src_count = get_table_row_count(
+                src_host, src_port, src_user, src_pass,
+                src_db, src_table, src_platform
+            )
+            if not success:
+                src_count = 0
 
-    # FIRST TABLE - Single threaded for review
-    if all_tables:
-        first_table = all_tables[0]
-        src_db, src_table, dest_db, dest_table = first_table
-        full_name = f"{src_db}..{src_table}"
+            # Show extracting status with expected row count
+            log.log(f"[{idx}/{total_tables}] Extracting: {full_name} ({src_count:,} rows)...")
 
-        print(f"\n[1/{total_tables}] {full_name}  TRANSFERRING...")
+            # BCP OUT
+            src_table_full = f"{src_db}..{src_table}"
+            success, output = execute_bcp(
+                src_host, src_port, src_user, src_pass,
+                src_table_full, "out", bcp_file, platform=src_platform,
+                batch_size=bcp_batch_size
+            )
 
-        # Update state
-        state["TABLES"][full_name] = {"status": "in_progress"}
-        save_transfer_state(project_name, state)
+            if success:
+                rows = int(output) if output.isdigit() else 0
+                log.log(f"[{idx}/{total_tables}] Extracted:  {full_name}  {rows:,} rows  OK")
+                extract_results[full_name] = {"status": "ok", "rows": rows, "file": bcp_file}
+                # Update manifest with extracted row count
+                update_manifest(project_dir, src_db, src_table, rows)
+            else:
+                log.log(f"[{idx}/{total_tables}] Extracted:  {full_name}  FAILED")
+                log.log(f"        ERROR: {output}")
+                extract_results[full_name] = {"status": "failed", "error": output}
 
-        # Progress callback for single table
-        def progress_cb(rows_done, total_rows):
-            percent = (rows_done / total_rows * 100) if total_rows > 0 else 0
-            bar_width = 20
-            filled = int(bar_width * percent / 100)
-            bar = '█' * filled + '-' * (bar_width - filled)
-            print(f"\r        [{bar}]  {percent:3.0f}%   {rows_done}/{total_rows} rows", end='', flush=True)
+        # Extraction summary
+        extracted = sum(1 for r in extract_results.values() if r["status"] == "ok")
+        failed = sum(1 for r in extract_results.values() if r["status"] == "failed")
+        log.log(f"\nExtraction complete: {extracted} OK, {failed} failed")
 
-        # Transfer first table
-        result = transfer_single_table(
-            src_config, dest_config,
-            src_db, src_table, dest_db, dest_table,
-            mode, batch_size, progress_cb
-        )
+    # ===== INSERTION PHASE =====
+    if do_insert:
+        log.log(f"\n{'='*50}")
+        log.log(f"INSERTION PHASE")
+        log.log(f"{'='*50}")
 
-        print()  # Newline after progress
+        dest_host = dest_config.get("HOST")
+        dest_port = dest_config.get("PORT")
+        dest_user = dest_config.get("USERNAME")
+        dest_pass = dest_config.get("PASSWORD")
+        dest_platform = dest_config.get("PLATFORM", "MSSQL")
 
-        # Show verification
-        print(f"\nVerifying row counts...")
-        print(f"  Source:      {result.get('source_rows', 0)}")
-        print(f"  Destination: {result.get('dest_rows', 0)}")
-        verified = result.get("verified", False)
-        print(f"  Status:      {'VERIFIED' if verified else 'MISMATCH'}")
+        log.log(f"Destination: {dest_platform} {dest_host}:{dest_port} (user: {dest_user})")
+        log.log("")
 
-        # Update state
-        state["TABLES"][full_name] = {
-            "status": result.get("status", "failed"),
-            "source_rows": result.get("source_rows", 0),
-            "dest_rows": result.get("dest_rows", 0),
-            "verified": verified,
-            "elapsed": result.get("elapsed", "0s"),
-            "error": result.get("error")
-        }
-        state["LAST_UPDATE"] = datetime.now().isoformat()
-        save_transfer_state(project_name, state)
+        # If insert-only mode, check for BCP files
+        if not do_extract:
+            for src_db, src_table, dest_db, dest_table in all_tables:
+                full_name = f"{src_db}..{src_table}"
+                bcp_file = os.path.join(project_dir, f"{src_db}_{src_table}.bcp")
+                if os.path.exists(bcp_file):
+                    extract_results[full_name] = {"status": "ok", "file": bcp_file}
+                else:
+                    extract_results[full_name] = {"status": "missing"}
 
-        # Handle mismatch
-        if not verified and result.get("status") == "mismatch":
-            print(f"\nWARNING: Row count mismatch!")
-            if result.get("error"):
-                print(f"  {result['error']}")
-            choice = input("\n[R]etry, [S]kip, [A]bort? ").strip().upper()
-            if choice == 'A':
-                print("Transfer aborted.")
-                return
-            elif choice == 'R':
-                # For simplicity, we'll just continue and let user re-run
-                print("Please re-run the project to retry.")
-                return
+        for idx, (src_db, src_table, dest_db, dest_table) in enumerate(all_tables, 1):
+            full_name = f"{src_db}..{src_table}"
+            bcp_file = os.path.join(project_dir, f"{src_db}_{src_table}.bcp")
 
-        # First table review
-        print(f"\n--- First Table Complete ---")
-        print(f"Table:    {full_name}")
-        print(f"Rows:     {result.get('rows_transferred', 0)}")
-        print(f"Time:     {result.get('elapsed', '0s')}")
-        print(f"Verified: {'YES' if verified else 'NO'}")
+            # Check if BCP file exists
+            if full_name not in extract_results or extract_results[full_name]["status"] != "ok":
+                if not os.path.exists(bcp_file):
+                    log.log(f"[{idx}/{total_tables}] Inserting: {full_name} - SKIPPED (no BCP file)")
+                    insert_results[full_name] = {"status": "skipped", "error": "No BCP file"}
+                    continue
 
-        if len(all_tables) > 1:
-            remaining = len(all_tables) - 1
-            continue_choice = input(f"\nContinue with remaining {remaining} tables ({threads} parallel)? [y/N]: ").strip().lower()
-            if continue_choice != 'y':
-                print("Transfer paused. Run again to resume.")
-                return
+            # Get expected rows from manifest
+            expected = get_expected_rows(project_dir, src_db, src_table)
+            if expected >= 0:
+                log.log(f"[{idx}/{total_tables}] Inserting: {dest_db}..{dest_table} ({expected:,} rows)...")
+            else:
+                log.log(f"[{idx}/{total_tables}] Inserting: {dest_db}..{dest_table}...")
 
-            # Remove first table from list
-            all_tables = all_tables[1:]
+            # Truncate if needed
+            if mode == "TRUNCATE":
+                truncate_table(dest_host, dest_port, dest_user, dest_pass,
+                              dest_db, dest_table, dest_platform)
 
-    # PARALLEL TRANSFER for remaining tables
-    if all_tables:
-        print(f"\n[Now running {threads} tables in parallel...]")
-        print("Press Ctrl+C to stop after current tables complete.\n")
+            # BCP IN
+            dest_table_full = f"{dest_db}..{dest_table}"
+            success, output = execute_bcp(
+                dest_host, dest_port, dest_user, dest_pass,
+                dest_table_full, "in", bcp_file, platform=dest_platform,
+                batch_size=bcp_batch_size
+            )
 
-        # State callback to save progress after each table
-        def state_callback(table_name, result):
-            state["TABLES"][table_name] = {
-                "status": result.get("status", "failed"),
-                "source_rows": result.get("source_rows", 0),
-                "dest_rows": result.get("dest_rows", 0),
-                "verified": result.get("verified", False),
-                "elapsed": result.get("elapsed", "0s"),
-                "error": result.get("error")
-            }
-            state["LAST_UPDATE"] = datetime.now().isoformat()
-            save_transfer_state(project_name, state)
+            if success:
+                rows = int(output) if output.isdigit() else 0
+                if expected >= 0:
+                    if rows == expected:
+                        log.log(f"[{idx}/{total_tables}] Inserted:  {dest_db}..{dest_table}  {rows:,} rows  OK")
+                        insert_results[full_name] = {"status": "ok", "rows": rows, "expected": expected}
+                    else:
+                        log.log(f"[{idx}/{total_tables}] Inserted:  {dest_db}..{dest_table}  {rows:,}/{expected:,} rows  ** MISMATCH **")
+                        insert_results[full_name] = {"status": "mismatch", "rows": rows, "expected": expected}
+                else:
+                    log.log(f"[{idx}/{total_tables}] Inserted:  {dest_db}..{dest_table}  {rows:,} rows  OK (no manifest)")
+                    insert_results[full_name] = {"status": "ok", "rows": rows, "expected": -1}
+            else:
+                log.log(f"[{idx}/{total_tables}] Inserted:  {dest_db}..{dest_table}  FAILED")
+                log.log(f"        ERROR: {output}")
+                insert_results[full_name] = {"status": "failed", "error": output}
 
-        # Create thread pool
-        pool = TransferThreadPool(
-            src_config, dest_config,
-            mode, threads, batch_size
-        )
-
-        try:
-            pool.start(all_tables)
-            results = pool.wait_for_completion(state_callback)
-        except KeyboardInterrupt:
-            print("\n\nStopping after current tables...")
-            pool.stop()
-            pool.join()
-            print("Transfer paused. Run again to resume.")
-            return
-        finally:
-            pool.join()
+        # Insertion summary
+        inserted = sum(1 for r in insert_results.values() if r["status"] == "ok")
+        mismatched = sum(1 for r in insert_results.values() if r["status"] == "mismatch")
+        failed = sum(1 for r in insert_results.values() if r["status"] == "failed")
+        skipped = sum(1 for r in insert_results.values() if r["status"] == "skipped")
+        log.log(f"\nInsertion complete: {inserted} OK, {mismatched} mismatched, {failed} failed, {skipped} skipped")
 
     # Final summary
-    print("\n" + "=" * 50)
-    print("TRANSFER COMPLETE")
-    print("=" * 50)
+    log.log(f"\n{'='*50}")
+    log.log("TRANSFER COMPLETE")
+    log.log(f"{'='*50}")
 
-    # Count results
-    completed = 0
-    verified = 0
-    mismatches = 0
-    failed = 0
-    skipped = 0
     total_rows = 0
+    if do_insert:
+        for r in insert_results.values():
+            if r["status"] == "ok":
+                total_rows += r.get("rows", 0)
+        log.log(f"Total rows inserted: {total_rows:,}")
 
-    for table_name, table_state in state.get("TABLES", {}).items():
-        status = table_state.get("status", "pending")
-        if status == "completed":
-            completed += 1
-            if table_state.get("verified"):
-                verified += 1
-            total_rows += table_state.get("dest_rows", 0)
-        elif status == "mismatch":
-            mismatches += 1
-            completed += 1
-        elif status == "failed":
-            failed += 1
-        elif status == "skipped":
-            skipped += 1
-
-    print(f"\nTotal tables:  {len(state.get('TABLES', {}))}")
-    print(f"Completed:     {completed}")
-    print(f"Verified:      {verified}")
-    print(f"Mismatches:    {mismatches}")
-    print(f"Skipped:       {skipped}")
-    print(f"Failed:        {failed}")
-    print(f"Total rows:    {total_rows:,}")
-
-    # Show skipped tables if any
-    if skipped > 0:
-        print("\nSkipped tables (missing or schema mismatch):")
-        for table_name, table_state in state.get("TABLES", {}).items():
-            if table_state.get("status") == "skipped":
-                print(f"  - {table_name}: {table_state.get('error', 'Unknown error')}")
-
-    # Show mismatches if any
-    if mismatches > 0:
-        print("\nMismatched tables (row count verification failed):")
-        for table_name, table_state in state.get("TABLES", {}).items():
-            if table_state.get("status") == "mismatch":
-                print(f"  - {table_name}: {table_state.get('error', 'Unknown error')}")
-
-
-def list_projects_menu():
-    """Display list of all projects."""
-    projects = list_data_transfer_projects()
-
-    if not projects:
-        print("\nNo data transfer projects found.")
-        return
-
-    print("\n=== Data Transfer Projects ===\n")
-
-    for name in projects:
-        project = load_data_transfer_project(name)
-        if project:
-            src = project.get("SOURCE", {})
-            dest = project.get("DESTINATION", {})
-            dbs = project.get("DATABASES", {})
-            total_tables = sum(len(db.get("TABLES", [])) for db in dbs.values())
-
-            state = project.get("TRANSFER_STATE")
-            status = ""
-            if state:
-                completed = len(get_completed_tables(state))
-                total = len(state.get("TABLES", {}))
-                if completed < total:
-                    status = f" [INCOMPLETE: {completed}/{total}]"
-                else:
-                    status = " [DONE]"
-
-            print(f"  {name}")
-            print(f"    {src.get('PLATFORM')} -> {dest.get('PLATFORM')} | "
-                  f"{len(dbs)} databases, {total_tables} tables{status}")
-        print()
+    log.log(f"BCP files in: {project_dir}")
+    log.close()
 
 
 def delete_project_menu():
@@ -789,33 +1241,36 @@ def main_menu():
         print("DATA TRANSFER UTILITY")
         print("=" * 40)
         print("\n  1. Create new project")
-        print("  2. Edit project (coming soon)")
-        print("  3. Delete project")
-        print("  4. Run project")
-        print("  5. List projects")
-        print("  6. Exit")
+        print("  2. Delete a project")
+        print("  3. Run a project")
+        print("  4. Exit")
 
-        choice = input("\nChoose [1-6]: ").strip()
+        choice = input("\nChoose [1-4]: ").strip()
 
         if choice == '1':
             create_project_wizard()
         elif choice == '2':
-            print("\nEdit functionality coming soon. Delete and recreate for now.")
-        elif choice == '3':
             delete_project_menu()
-        elif choice == '4':
+        elif choice == '3':
             run_project_menu()
-        elif choice == '5':
-            list_projects_menu()
-        elif choice == '6':
+        elif choice == '4':
             print("\nGoodbye!")
             break
         else:
-            print("Invalid choice. Enter 1-6.")
+            print("Invalid choice. Enter 1-4.")
 
 
 def main():
     """Entry point."""
+    # Check FreeTDS version at startup
+    success, message, version = check_freetds_version()
+    if not success:
+        print(f"\nERROR: {message}")
+        print("FreeTDS with freebcp is required for data transfers.")
+        sys.exit(1)
+
+    print(f"\n{message}")
+
     try:
         main_menu()
     except KeyboardInterrupt:
