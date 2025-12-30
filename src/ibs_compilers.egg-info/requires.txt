@@ -1,4 +1,5 @@
 pyodbc
+colorama
 
 [dev]
 pytest>=7.0

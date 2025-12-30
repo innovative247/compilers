@@ -18,6 +18,12 @@ import subprocess
 import re
 from datetime import datetime
 
+from .ibs_common import (
+    # Styling utilities
+    Icons, Fore, Style,
+    print_success, print_error, print_warning, print_info,
+)
+
 
 def check_freetds_version() -> tuple:
     """
@@ -764,7 +770,7 @@ def run_project(project_name: str):
         display_project_summary(project_name, project)
 
         # Create/check project directory
-        project_dir = os.path.join(os.getcwd(), f"data_transfer_{project_name}")
+        project_dir = os.path.join(os.getcwd(), f"transfer_data_{project_name}")
         if not os.path.exists(project_dir):
             os.makedirs(project_dir)
 

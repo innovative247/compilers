@@ -15,6 +15,7 @@ isqlline = commands.isqlline:main
 runcreate = commands.runcreate:main
 runsql = commands.runsql:main
 set_actions = commands.set_actions:main
+set_ide = commands.set_ide:main
 set_messages = commands.set_messages:main
 set_options = commands.set_options:main
 set_profile = commands.set_profile:main

@@ -8,7 +8,8 @@ name = "ibs_compilers"
 version = "1.0.0"
 description = "A collection of command-line tools for managing and deploying IBS databases."
 dependencies = [
-    "pyodbc"
+    "pyodbc",
+    "colorama"
 ]
 
 [project.optional-dependencies]
@@ -50,4 +51,5 @@ install_required_fields = "commands.set_required_fields:main"
 i_run_upgrade = "commands.i_run_upgrade:main"
 runcreate = "commands.runcreate:main"
 set_profile = "commands.set_profile:main"
+set_ide = "commands.set_ide:main"
 transfer_data = "commands.transfer_data:main"

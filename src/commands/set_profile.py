@@ -15,7 +15,7 @@ import re
 from pathlib import Path
 import subprocess
 
-# Import from ibs_common for profile management
+# Import from ibs_common for profile management and styling
 from .ibs_common import (
     find_settings_file,
     load_settings as ibs_load_settings,
@@ -25,6 +25,11 @@ from .ibs_common import (
     validate_profile_aliases,
     find_profile_by_name_or_alias,
     create_symbolic_links,
+    # Styling utilities
+    Icons, Fore, Style,
+    print_header, print_subheader,
+    print_success, print_error, print_warning, print_info,
+    style_path, style_database, style_command, style_dim,
 )
 
 
@@ -359,23 +364,6 @@ def check_and_create_symbolic_links(profile: dict) -> None:
             print_success(f"Symbolic links created successfully.")
         else:
             print_error("Failed to create some symbolic links.")
-
-
-def print_header(text):
-    """Print formatted header"""
-    print("\n" + "=" * 70)
-    print(f"  {text}")
-    print("=" * 70 + "\n")
-
-
-def print_success(text):
-    """Print success message"""
-    print(f"[OK] {text}")
-
-
-def print_error(text):
-    """Print error message"""
-    print(f"[ERROR] {text}")
 
 
 def load_settings():

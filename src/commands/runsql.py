@@ -60,6 +60,9 @@ from .ibs_common import (
     Options,
     create_symbolic_links,
     is_raw_mode,
+    # Styling utilities
+    Icons, Fore, Style,
+    print_success, print_error, print_warning, print_info,
 )
 
 
@@ -155,10 +158,10 @@ Notes:
         if attempting_direct:
             # Direct connection mode - must have host and user at minimum
             if not args.host:
-                print("ERROR: -H/--host is required for direct connection", file=sys.stderr)
+                print(f"{Fore.RED}{Icons.ERROR} -H/--host is required for direct connection{Style.RESET_ALL}", file=sys.stderr)
                 return 1
             if not args.user:
-                print("ERROR: -U/--user is required for direct connection", file=sys.stderr)
+                print(f"{Fore.RED}{Icons.ERROR} -U/--user is required for direct connection{Style.RESET_ALL}", file=sys.stderr)
                 return 1
 
             # Use default port if not provided
@@ -171,7 +174,7 @@ Notes:
             if not password:
                 password = getpass.getpass("Password: ")
                 if not password:
-                    print("ERROR: Password is required", file=sys.stderr)
+                    print(f"{Fore.RED}{Icons.ERROR} Password is required{Style.RESET_ALL}", file=sys.stderr)
                     return 1
 
             # Build minimal config for placeholder replacement
@@ -194,10 +197,10 @@ Notes:
             try:
                 profile_data = load_profile(profile_name)
             except KeyError:
-                print(f"ERROR: Profile '{profile_name}' not found in settings.json", file=sys.stderr)
-                print("\nAvailable profiles:", file=sys.stderr)
+                print(f"{Fore.RED}{Icons.ERROR} Profile '{profile_name}' not found in settings.json{Style.RESET_ALL}", file=sys.stderr)
+                print(f"\n{Style.BRIGHT}Available profiles:{Style.RESET_ALL}", file=sys.stderr)
                 for pname in list_profiles():
-                    print(f"  - {pname}", file=sys.stderr)
+                    print(f"  {Icons.ARROW} {pname}", file=sys.stderr)
                 return 1
 
             # Allow command-line overrides
@@ -225,26 +228,26 @@ Notes:
 
         else:
             # No profile and no direct connection params
-            print("ERROR: Either specify a profile name or provide direct connection parameters", file=sys.stderr)
-            print("\nUsage:", file=sys.stderr)
-            print("  runsql script.sql sbnmaster GONZO", file=sys.stderr)
-            print("  runsql script.sql sbnmaster -S GONZO", file=sys.stderr)
-            print("  runsql script.sql sbnmaster -H 10.0.0.1 -U sa", file=sys.stderr)
+            print(f"{Fore.RED}{Icons.ERROR} Either specify a profile name or provide direct connection parameters{Style.RESET_ALL}", file=sys.stderr)
+            print(f"\n{Style.BRIGHT}Usage:{Style.RESET_ALL}", file=sys.stderr)
+            print(f"  {Icons.ARROW} runsql script.sql sbnmaster GONZO", file=sys.stderr)
+            print(f"  {Icons.ARROW} runsql script.sql sbnmaster -S GONZO", file=sys.stderr)
+            print(f"  {Icons.ARROW} runsql script.sql sbnmaster -H 10.0.0.1 -U sa", file=sys.stderr)
             return 1
 
         # Test connection if requested
         if args.test_connection:
-            print(f"Testing connection to {platform} at {host}:{port}...", file=sys.stderr)
+            print(f"{Icons.RUNNING} Testing connection to {platform} at {host}:{port}...", file=sys.stderr)
             success, msg = test_connection(host, port, username, password, platform)
             if not success:
-                print(f"ERROR: Connection test failed: {msg}", file=sys.stderr)
+                print(f"{Fore.RED}{Icons.ERROR} Connection test failed: {msg}{Style.RESET_ALL}", file=sys.stderr)
                 return 1
-            print(f"Connection test successful: {msg}", file=sys.stderr)
+            print(f"{Fore.GREEN}{Icons.SUCCESS} Connection successful: {msg}{Style.RESET_ALL}", file=sys.stderr)
 
         # Find the script file
         script_path = find_file(args.script_file, config)
         if not script_path:
-            print(f"ERROR: '{args.script_file}' not found.", file=sys.stderr)
+            print(f"{Fore.RED}{Icons.ERROR} '{args.script_file}' not found.{Style.RESET_ALL}", file=sys.stderr)
             return 1
 
         logging.debug(f"Found script file: {script_path}")
@@ -257,9 +260,9 @@ Notes:
 
             if not script_abs.startswith(source_abs + os.sep):
                 profile_display = config.get('PROFILE_NAME', profile_name or '')
-                print(f"ERROR: You are outside of profile {profile_display}'s path of:", file=sys.stderr)
-                print(f"  {sql_source}", file=sys.stderr)
-                print(f"  Run `set_profile` and create a new profile for this sql path.", file=sys.stderr)
+                print(f"{Fore.RED}{Icons.ERROR} You are outside of profile {profile_display}'s path of:{Style.RESET_ALL}", file=sys.stderr)
+                print(f"  {Icons.FOLDER} {sql_source}", file=sys.stderr)
+                print(f"  Run {Style.BRIGHT}set_profile{Style.RESET_ALL} and create a new profile for this sql path.", file=sys.stderr)
                 return 1
 
         # Read the script content (UTF-8 default, works cross-platform)
@@ -267,7 +270,7 @@ Notes:
             with open(script_path, 'r', encoding='utf-8') as f:
                 script_content = f.read()
         except IOError as e:
-            print(f"ERROR: Could not read script file '{script_path}': {e}", file=sys.stderr)
+            print(f"{Fore.RED}{Icons.ERROR} Could not read script file '{script_path}': {e}{Style.RESET_ALL}", file=sys.stderr)
             return 1
 
         # ==========================================================================
@@ -314,7 +317,7 @@ Notes:
                     output_handle.write(options_log_line + '\n')
                     output_handle.flush()
             except IOError as e:
-                print(f"ERROR: Failed to open output file: {e}", file=sys.stderr)
+                print(f"{Fore.RED}{Icons.ERROR} Failed to open output file: {e}{Style.RESET_ALL}", file=sys.stderr)
                 return 1
 
         try:
@@ -398,11 +401,11 @@ Notes:
         return 0
 
     except KeyboardInterrupt:
-        print("\nInterrupted by user", file=sys.stderr)
+        print(f"\n{Fore.YELLOW}{Icons.WARNING} Interrupted by user{Style.RESET_ALL}", file=sys.stderr)
         return 130
 
     except Exception as e:
-        print(f"ERROR: {e}", file=sys.stderr)
+        print(f"{Fore.RED}{Icons.ERROR} {e}{Style.RESET_ALL}", file=sys.stderr)
         if args.debug:
             import traceback
             traceback.print_exc()

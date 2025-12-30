@@ -6,6 +6,7 @@ commands/isqlline.py
 commands/runcreate.py
 commands/runsql.py
 commands/set_actions.py
+commands/set_ide.py
 commands/set_messages.py
 commands/set_options.py
 commands/set_profile.py

@@ -25,6 +25,166 @@ import re
 import getpass
 import signal
 
+# =============================================================================
+# TERMINAL STYLING (Cross-platform colors and icons)
+# =============================================================================
+# Uses colorama for Windows compatibility. Works on Windows 10+, Mac, Ubuntu.
+
+# Fix Windows console encoding for UTF-8 output
+if sys.platform == 'win32':
+    # Try to set UTF-8 mode for Windows console
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    except (AttributeError, OSError):
+        pass  # Older Python or non-reconfigurable stream
+
+try:
+    from colorama import init as colorama_init, Fore, Style
+    colorama_init()  # Required for Windows ANSI support
+    _HAS_COLOR = True
+except ImportError:
+    _HAS_COLOR = False
+    # Fallback: define empty color codes
+    class Fore:
+        GREEN = RED = YELLOW = CYAN = BLUE = MAGENTA = WHITE = ""
+        LIGHTGREEN_EX = LIGHTRED_EX = LIGHTYELLOW_EX = LIGHTCYAN_EX = ""
+        LIGHTBLUE_EX = LIGHTMAGENTA_EX = LIGHTWHITE_EX = ""
+    class Style:
+        RESET_ALL = BRIGHT = DIM = ""
+
+
+def _supports_unicode() -> bool:
+    """Check if the terminal supports Unicode output."""
+    try:
+        # Try to encode a test character
+        encoding = getattr(sys.stdout, 'encoding', 'ascii') or 'ascii'
+        '✓'.encode(encoding)
+        return True
+    except (UnicodeEncodeError, LookupError):
+        return False
+
+
+# Icons - use Unicode if supported, ASCII fallbacks otherwise
+class Icons:
+    """Terminal icons with automatic ASCII fallback for legacy consoles."""
+    _USE_UNICODE = _supports_unicode()
+
+    # Unicode icons with ASCII fallbacks
+    SUCCESS = "✓" if _USE_UNICODE else "[OK]"
+    ERROR = "✗" if _USE_UNICODE else "[X]"
+    WARNING = "⚠" if _USE_UNICODE else "[!]"
+    INFO = "ℹ" if _USE_UNICODE else "[i]"
+    ARROW = "→" if _USE_UNICODE else "->"
+    BULLET = "•" if _USE_UNICODE else "*"
+    RUNNING = "⚡" if _USE_UNICODE else "[~]"
+    FOLDER = "📁" if _USE_UNICODE else "[D]"
+    FILE = "📄" if _USE_UNICODE else "[F]"
+    DATABASE = "🗄" if _USE_UNICODE else "[DB]"
+    GEAR = "⚙" if _USE_UNICODE else "[*]"
+    CLOCK = "⏱" if _USE_UNICODE else "[T]"
+    CHECK = "☑" if _USE_UNICODE else "[x]"
+    UNCHECK = "☐" if _USE_UNICODE else "[ ]"
+    STAR = "★" if _USE_UNICODE else "[*]"
+
+
+def style_success(text: str) -> str:
+    """Format text as success (green with checkmark)."""
+    return f"{Fore.GREEN}{Icons.SUCCESS} {text}{Style.RESET_ALL}"
+
+
+def style_error(text: str) -> str:
+    """Format text as error (red with X)."""
+    return f"{Fore.RED}{Icons.ERROR} {text}{Style.RESET_ALL}"
+
+
+def style_warning(text: str) -> str:
+    """Format text as warning (yellow with warning icon)."""
+    return f"{Fore.YELLOW}{Icons.WARNING} {text}{Style.RESET_ALL}"
+
+
+def style_info(text: str) -> str:
+    """Format text as info (cyan with info icon)."""
+    return f"{Fore.CYAN}{Icons.INFO} {text}{Style.RESET_ALL}"
+
+
+def style_running(text: str) -> str:
+    """Format text as running/in-progress (yellow with lightning)."""
+    return f"{Fore.YELLOW}{Icons.RUNNING} {text}{Style.RESET_ALL}"
+
+
+def style_header(text: str, width: int = 70) -> str:
+    """Format text as a header with decorative borders."""
+    line = "=" * width
+    return f"{Fore.CYAN}{line}\n  {text}\n{line}{Style.RESET_ALL}"
+
+
+def style_subheader(text: str, width: int = 70) -> str:
+    """Format text as a subheader with dashed borders."""
+    line = "-" * width
+    return f"{Fore.CYAN}{line}\n  {text}\n{line}{Style.RESET_ALL}"
+
+
+def style_step(step_num: int, text: str) -> str:
+    """Format text as a numbered step."""
+    return f"{Fore.CYAN}{Style.BRIGHT}STEP {step_num}:{Style.RESET_ALL} {text}"
+
+
+def style_path(path: str) -> str:
+    """Format a file path with folder icon."""
+    return f"{Icons.FOLDER} {Fore.LIGHTBLUE_EX}{path}{Style.RESET_ALL}"
+
+
+def style_database(db_name: str) -> str:
+    """Format a database name."""
+    return f"{Fore.MAGENTA}{db_name}{Style.RESET_ALL}"
+
+
+def style_command(cmd: str) -> str:
+    """Format a command for display."""
+    return f"{Fore.LIGHTWHITE_EX}{Style.BRIGHT}{cmd}{Style.RESET_ALL}"
+
+
+def style_dim(text: str) -> str:
+    """Format text as dimmed/subtle."""
+    return f"{Style.DIM}{text}{Style.RESET_ALL}"
+
+
+def print_success(text: str):
+    """Print a success message."""
+    print(style_success(text))
+
+
+def print_error(text: str):
+    """Print an error message."""
+    print(style_error(text))
+
+
+def print_warning(text: str):
+    """Print a warning message."""
+    print(style_warning(text))
+
+
+def print_info(text: str):
+    """Print an info message."""
+    print(style_info(text))
+
+
+def print_header(text: str, width: int = 70):
+    """Print a header."""
+    print(style_header(text, width))
+
+
+def print_subheader(text: str, width: int = 70):
+    """Print a subheader."""
+    print(style_subheader(text, width))
+
+
+def print_step(step_num: int, text: str):
+    """Print a numbered step."""
+    print(style_step(step_num, text))
+
+
 def _handle_interrupt(sig, frame):
     """Handle Ctrl-C gracefully."""
     print("\nCtrl-C")

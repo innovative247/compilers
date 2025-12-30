@@ -45,11 +45,9 @@
       "Bash(eloc:*)",
       "Bash(ereq:*)",
       "Bash(transfer_data:*)",
-      "Bash(# Check FreeTDS configuration echo \"\"=== FreeTDS Configuration ===\"\" cat /etc/freetds.conf || cat /c/msys64/ucrt64/etc/freetds.conf || echo \"\"Config not found at standard locations\"\" echo \"\"\"\" echo \"\"=== tsql version output \\(shows TDS version\\) ===\"\" echo \"\"exit\"\" | tsql -H 107.22.178.254 -p 5000 -U sa -P innsoft247 2>&1)",
-      "Bash(# Check what''s at approximately row 7000 position \\(7000 * 68 avg = ~476000 bytes\\) # Look at hex dump from ~470000 to ~490000 and see a few rows dd if=/c/_innovative/_source/sbn-services/SRM/sql_source/data_transfer_srm/ibs_ub_request_text.bcp bs=1 skip=470000 count=2000)",
-      "Bash(# Check what''s at approximately row 7000 position \\(7000 * 68 avg = ~476000 bytes\\) dd if=/c/_innovative/_source/sbn-services/SRM/sql_source/data_transfer_srm/ibs_ub_request_text.bcp bs=1 skip=470000 count=2000)",
-      "Bash(__NEW_LINE__ echo \"\")",
-      "Bash(\"/c/Program Files/Microsoft SQL Server/Client SDK/ODBC/170/Tools/Binn/bcp.exe\" srm.dbo.ub_request_text in test_msbcp.txt -S 127.0.0.1,1433 -U sa -P innsoft247 -c)"
+      "WebFetch(domain:code.visualstudio.com)",
+      "Bash(set_ide:*)",
+      "Bash(set_profile:*)"
     ],
     "deny": [],
     "ask": []
