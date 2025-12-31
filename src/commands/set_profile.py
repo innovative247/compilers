@@ -27,7 +27,7 @@ from .ibs_common import (
     create_symbolic_links,
     # Styling utilities
     Icons, Fore, Style,
-    print_header, print_subheader,
+    print_header, print_subheader, print_step,
     print_success, print_error, print_warning, print_info,
     style_path, style_database, style_command, style_dim,
 )
@@ -439,31 +439,37 @@ def display_single_profile(name, profile):
 
     # Format profile name with aliases if present
     if aliases:
-        aliases_str = ", ".join(aliases)
-        print(f"\nProfile: {name} (aliases: {aliases_str})")
+        aliases_joined = ", ".join(aliases)
+        aliases_str = f" {style_dim(f'(aliases: {aliases_joined})')}"
     else:
-        print(f"\nProfile: {name}")
-    print(f"  Company: {company}")
-    print(f"  Platform: {platform}")
-    print(f"  Server: {host}:{port}")
-    print(f"  SQL Source: {path_append}")
+        aliases_str = ""
+
+    print()
+    print(f"  {Style.BRIGHT}{name}{Style.RESET_ALL}{aliases_str}")
+    print(f"    {Icons.GEAR} Company:    {Fore.WHITE}{company}{Style.RESET_ALL}")
+    print(f"    {Icons.DATABASE} Platform:   {Fore.CYAN}{platform}{Style.RESET_ALL}")
+    print(f"    {Icons.ARROW} Server:     {Fore.GREEN}{host}:{port}{Style.RESET_ALL}")
+    print(f"    {Icons.FOLDER} SQL Source: {style_path(path_append)}")
     if raw_mode:
-        print(f"  Raw Mode: Yes")
+        print(f"    {Icons.WARNING} Raw Mode:   {Fore.YELLOW}Yes{Style.RESET_ALL}")
 
 
 def list_profiles(settings):
     """Display all profiles"""
     if not settings.get("Profiles"):
-        print("No profiles configured yet.")
+        print_warning("No profiles configured yet.")
+        print()
+        print(f"  Run {style_command('set_profile')} and select option 1 to create your first profile.")
         return
 
-    print("\nConfigured profiles:")
-    print("-" * 70)
+    profile_count = len(settings.get("Profiles", {}))
+    print()
+    print_subheader(f"Configured Profiles ({profile_count})")
 
     for name, profile in settings["Profiles"].items():
         display_single_profile(name, profile)
 
-    print("-" * 70)
+    print()
 
 
 def view_profile(settings):
@@ -908,7 +914,7 @@ def print_profile_summary(name, profile):
 def test_profile_menu(settings):
     """Menu for testing a profile."""
     if not settings.get("Profiles"):
-        print("No profiles to test.")
+        print_warning("No profiles to test.")
         return
 
     list_profiles(settings)
@@ -925,21 +931,24 @@ def test_profile_menu(settings):
     raw_mode = profile.get('RAW_MODE', False)
 
     while True:
-        print(f"\nTesting profile: {profile_name}")
+        print()
+        print(f"{Style.BRIGHT}Test Profile: {profile_name}{Style.RESET_ALL}")
         if raw_mode:
-            print("  (RAW MODE - preprocessing tests not available)")
-            print("  1. Test SQL Source path")
-            print("  2. Test connection")
-            print("  3. Return to main menu")
+            print(f"  {style_dim('(RAW MODE - preprocessing tests not available)')}")
+            print()
+            print(f"  {Fore.CYAN}1.{Style.RESET_ALL} Test SQL Source path")
+            print(f"  {Fore.CYAN}2.{Style.RESET_ALL} Test connection")
+            print(f"  {Fore.CYAN}3.{Style.RESET_ALL} Return to main menu")
             max_choice = 3
         else:
-            print("  1. Test SQL Source path")
-            print("  2. Test connection")
-            print("  3. Test options")
-            print("  4. Test changelog")
-            print("  5. Test table locations")
-            print("  6. Test symbolic links")
-            print("  7. Return to main menu")
+            print()
+            print(f"  {Fore.CYAN}1.{Style.RESET_ALL} Test SQL Source path")
+            print(f"  {Fore.CYAN}2.{Style.RESET_ALL} Test connection")
+            print(f"  {Fore.CYAN}3.{Style.RESET_ALL} Test options")
+            print(f"  {Fore.CYAN}4.{Style.RESET_ALL} Test changelog")
+            print(f"  {Fore.CYAN}5.{Style.RESET_ALL} Test table locations")
+            print(f"  {Fore.CYAN}6.{Style.RESET_ALL} Test symbolic links")
+            print(f"  {Fore.CYAN}7.{Style.RESET_ALL} Return to main menu")
             max_choice = 7
 
         choice = input(f"\nChoose [1-{max_choice}]: ").strip()
@@ -1065,38 +1074,51 @@ def edit_profile_inline(profile, current_name=None):
 
 def create_profile():
     """Interactive profile creation wizard. All fields are required."""
-    print_header("Create New Profile")
+    print_subheader("Create New Profile")
+    print()
+    print(f"  {style_dim('A profile stores all the connection settings needed to compile SQL')}")
+    print(f"  {style_dim('to a specific database server. Follow the prompts below.')}")
+    print()
 
     profile = {}
 
     # Profile name (required, stored uppercase)
+    print_step(1, "Profile Name")
+    print(f"  {style_dim('Use a short, memorable name like GONZO, PROD, or DEV.')}")
     while True:
-        name = input("Enter profile name (e.g., GONZO, S123_SBNA, TEST): ").strip().upper()
+        name = input("  Profile name: ").strip().upper()
         if name:
             break
-        print("Profile name is required.")
+        print_warning("Profile name is required.")
 
     # Aliases (optional) - with retry on conflict
     print()
+    print_step(2, "Aliases (Optional)")
     settings = ibs_load_settings()
     aliases = prompt_for_aliases(settings, name, current_aliases=None)
     if aliases:
         profile["ALIASES"] = aliases
 
     # Company (required, default 101)
-    cmpy_input = input("\nEnter company number (COMPANY) [101]: ").strip()
+    print()
+    print_step(3, "Company Number")
+    print(f"  {style_dim('The COMPANY number identifies your organization in the database.')}")
+    cmpy_input = input("  Company [101]: ").strip()
     if cmpy_input:
         profile["COMPANY"] = int(cmpy_input) if cmpy_input.isdigit() else cmpy_input
     else:
         profile["COMPANY"] = 101
 
     # Platform (required)
-    print("\nWhat database platform does this server use?")
-    print("  1. Sybase ASE")
-    print("  2. Microsoft SQL Server")
+    print()
+    print_step(4, "Database Platform")
+    print(f"  {style_dim('Select the type of database server you are connecting to.')}")
+    print()
+    print(f"  {Fore.CYAN}1.{Style.RESET_ALL} Sybase ASE")
+    print(f"  {Fore.CYAN}2.{Style.RESET_ALL} Microsoft SQL Server")
 
     while True:
-        choice = input("\nChoose [1-2]: ").strip()
+        choice = input("\n  Choose [1-2]: ").strip()
         if choice == "1":
             profile["PLATFORM"] = "SYBASE"
             break
@@ -1104,81 +1126,95 @@ def create_profile():
             profile["PLATFORM"] = "MSSQL"
             break
         else:
-            print("Invalid choice. Please enter 1 or 2.")
+            print("  Invalid choice. Please enter 1 or 2.")
 
     # Host (required)
+    print()
+    print_step(5, "Server Connection")
+    print(f"  {style_dim('Enter the hostname or IP address of your database server.')}")
     while True:
-        host = input("\nEnter server hostname or IP: ").strip()
+        host = input("  Hostname or IP: ").strip()
         if host:
             profile["HOST"] = host
             break
-        print("Server hostname is required.")
+        print_warning("Server hostname is required.")
 
     # Port (required, with default)
     default_port = 5000 if profile["PLATFORM"] == "SYBASE" else 1433
     while True:
-        port_input = input(f"Enter port number [{default_port}]: ").strip()
+        port_input = input(f"  Port [{default_port}]: ").strip()
         if not port_input:
             profile["PORT"] = default_port
             break
         if port_input.isdigit():
             profile["PORT"] = int(port_input)
             break
-        print("Port must be a number.")
+        print_warning("Port must be a number.")
 
     # Username (required)
+    print()
+    print_step(6, "Database Credentials")
+    print(f"  {style_dim('Enter the username and password for the database server.')}")
     while True:
-        username = input("Enter database username: ").strip()
+        username = input("  Username: ").strip()
         if username:
             profile["USERNAME"] = username
             break
-        print("Username is required.")
+        print_warning("Username is required.")
 
     # Password (required)
     while True:
-        password = getpass.getpass("Enter password: ")
+        password = getpass.getpass("  Password: ")
         if password:
             profile["PASSWORD"] = password
             break
-        print("Password is required.")
+        print_warning("Password is required.")
 
     # SQL source location (required)
-    print("\nWhere is your SQL source code located?")
-    print(f"  (Enter '.' or './' to use current directory: {os.getcwd()})")
+    print()
+    print_step(7, "SQL Source Directory")
+    print(f"  {style_dim('The directory containing your SQL source files (CSS/, IBS/ folders).')}")
+    cwd = os.getcwd()
+    cwd_hint = f"Enter '.' to use current directory: {cwd}"
+    print(f"  {style_dim(cwd_hint)}")
 
     while True:
-        choice = input("\nEnter path: ").strip()
+        choice = input("\n  Path: ").strip()
 
         if not choice:
-            print("SQL source path is required.")
+            print_warning("SQL source path is required.")
             continue
 
         # Handle current directory shortcut
         if choice in ['.', './', '.\\']:
             profile["SQL_SOURCE"] = os.getcwd()
-            print(f"Using current directory: {profile['SQL_SOURCE']}")
+            print(f"  {Icons.SUCCESS} Using: {style_path(profile['SQL_SOURCE'])}")
             break
 
         # Treat as custom path
         if Path(choice).exists():
             profile["SQL_SOURCE"] = choice
+            print(f"  {Icons.SUCCESS} Using: {style_path(choice)}")
             break
         else:
-            print(f"Path does not exist: {choice}")
-            use_anyway = input("Use anyway? [y/n]: ").strip().lower()
+            print_warning(f"Path does not exist: {choice}")
+            use_anyway = input("  Use anyway? [y/n]: ").strip().lower()
             if use_anyway == 'y':
                 profile["SQL_SOURCE"] = choice
                 break
 
     # Raw mode (optional, defaults to No)
-    print("\nRaw mode skips SBN-specific preprocessing (options files, symlinks, changelog).")
-    print("Use this for projects that don't have the css/setup/ directory structure.")
-    raw_choice = input("Enable raw mode? [y/N]: ").strip().lower()
+    print()
+    print_step(8, "Raw Mode (Optional)")
+    print(f"  {style_dim('Raw mode skips SBN-specific preprocessing (options files, symlinks, changelog).')}")
+    print(f"  {style_dim('Use this for projects without the CSS/Setup/ directory structure.')}")
+    raw_choice = input("  Enable raw mode? [y/N]: ").strip().lower()
     if raw_choice == 'y':
         profile["RAW_MODE"] = True
         # Ask for default database when in raw mode
-        print("\nDefault database for raw mode (used when -D not specified).")
-        db_input = input("Enter default database: ").strip()
+        print()
+        print(f"  {style_dim('Default database for raw mode (used when -D not specified).')}")
+        db_input = input("  Default database: ").strip()
         if db_input:
             profile["DATABASE"] = db_input
 
@@ -1258,9 +1294,294 @@ def delete_profile(settings):
         print("Delete cancelled.")
 
 
+# =============================================================================
+# VSCODE INTEGRATION
+# =============================================================================
+
+# Problem matcher for runsql error format
+VSCODE_PROBLEM_MATCHER = {
+    "owner": "runsql",
+    "fileLocation": ["absolute"],
+    "pattern": [
+        {
+            "regexp": r"^Msg\s+(\d+)\s+\(severity\s+(\d+),\s+state\s+\d+\).*Line\s+(\d+):",
+            "line": 3,
+            "code": 1
+        },
+        {
+            "regexp": r"^\s*\"?(.+?)\"?\s*$",
+            "message": 1,
+            "loop": True
+        }
+    ]
+}
+
+
+def get_vscode_user_folder():
+    """Get the VSCode User settings folder path (cross-platform)."""
+    if sys.platform == 'win32':
+        appdata = os.environ.get('APPDATA')
+        if appdata:
+            return Path(appdata) / "Code" / "User"
+    elif sys.platform == 'darwin':
+        return Path.home() / "Library" / "Application Support" / "Code" / "User"
+    else:
+        return Path.home() / ".config" / "Code" / "User"
+    return None
+
+
+def generate_vscode_task(database, profile_name, is_default=False):
+    """Generate a single VSCode task entry."""
+    task = {
+        "label": f"runsql ({database})",
+        "type": "shell",
+        "command": "runsql",
+        "args": ["${file}", database, profile_name],
+        "presentation": {"reveal": "always", "panel": "shared", "clear": True},
+        "problemMatcher": VSCODE_PROBLEM_MATCHER
+    }
+    if is_default:
+        task["group"] = {"kind": "build", "isDefault": True}
+    else:
+        task["group"] = "build"
+    return task
+
+
+def generate_vscode_tasks_json(databases, profile_name):
+    """Generate complete tasks.json content."""
+    tasks = []
+    for i, database in enumerate(databases):
+        task = generate_vscode_task(database, profile_name, is_default=(i == 0))
+        tasks.append(task)
+    return {"version": "2.0.0", "tasks": tasks}
+
+
+def write_vscode_tasks(tasks_content):
+    """Write tasks.json to the VSCode User folder."""
+    vscode_dir = get_vscode_user_folder()
+    if not vscode_dir:
+        print_error("Could not determine VSCode User folder for this platform.")
+        return False
+
+    tasks_path = vscode_dir / "tasks.json"
+
+    # Check for existing file
+    if tasks_path.exists():
+        print()
+        print_warning("tasks.json already exists.")
+        print()
+        print(f"  {Fore.CYAN}[O]verwrite{Style.RESET_ALL} - Replace with new runsql tasks")
+        print(f"  {Fore.CYAN}[M]erge{Style.RESET_ALL}     - Keep existing tasks, add/replace runsql tasks")
+        print(f"  {Fore.CYAN}[C]ancel{Style.RESET_ALL}    - Abort")
+        print()
+        while True:
+            choice = input("  Choose [O/M/C]: ").strip().upper()
+            if choice in ('C', 'CANCEL'):
+                return False
+            elif choice in ('O', 'OVERWRITE'):
+                break
+            elif choice in ('M', 'MERGE'):
+                try:
+                    with open(tasks_path, 'r') as f:
+                        existing = json.load(f)
+                    # Keep non-runsql tasks
+                    existing_tasks = existing.get("tasks", [])
+                    non_runsql = [t for t in existing_tasks if not t.get("label", "").startswith("runsql (")]
+                    tasks_content["tasks"] = non_runsql + tasks_content["tasks"]
+                    print(f"  Keeping {len(non_runsql)} existing non-runsql tasks.")
+                except (json.JSONDecodeError, IOError):
+                    print_warning("Could not read existing file, will overwrite.")
+                break
+            else:
+                print("  Please enter O, M, or C.")
+
+    # Create directory if needed
+    try:
+        vscode_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        print_error(f"Failed to create VSCode User directory: {e}")
+        return False
+
+    # Write file
+    try:
+        with open(tasks_path, 'w') as f:
+            json.dump(tasks_content, f, indent=4)
+        return True
+    except IOError as e:
+        print_error(f"Failed to write tasks.json: {e}")
+        return False
+
+
+def generate_vscode_tasks_all_profiles(profile_names, databases, default_profile, default_db):
+    """Generate tasks.json with tasks for ALL profiles."""
+    tasks = []
+    for profile_name in profile_names:
+        for database in databases:
+            task = {
+                "label": f"runsql {profile_name} ({database})",
+                "type": "shell",
+                "command": "runsql",
+                "args": ["${file}", database, profile_name],
+                "presentation": {"reveal": "always", "panel": "shared", "clear": True},
+                "problemMatcher": VSCODE_PROBLEM_MATCHER
+            }
+            # Set default task
+            if profile_name == default_profile and database == default_db:
+                task["group"] = {"kind": "build", "isDefault": True}
+            else:
+                task["group"] = "build"
+            tasks.append(task)
+    return {"version": "2.0.0", "tasks": tasks}
+
+
+def generate_vscode_tasks_with_prompt(profile_names, default_profile):
+    """Generate tasks.json with input prompt for database."""
+    tasks = []
+    for profile_name in profile_names:
+        task = {
+            "label": f"runsql {profile_name}",
+            "type": "shell",
+            "command": "runsql",
+            "args": ["${file}", "${input:database}", profile_name],
+            "presentation": {"reveal": "always", "panel": "shared", "clear": True},
+            "problemMatcher": VSCODE_PROBLEM_MATCHER
+        }
+        if profile_name == default_profile:
+            task["group"] = {"kind": "build", "isDefault": True}
+        else:
+            task["group"] = "build"
+        tasks.append(task)
+
+    return {
+        "version": "2.0.0",
+        "tasks": tasks,
+        "inputs": [
+            {
+                "id": "database",
+                "type": "promptString",
+                "description": "Enter database name"
+            }
+        ]
+    }
+
+
+def add_to_vscode_menu(settings):
+    """Add runsql tasks to VSCode for all profiles."""
+    print()
+    print_subheader("Add to VSCode")
+    print()
+    print(f"  {style_dim('This adds runsql build tasks to your global VSCode settings.')}")
+    print(f"  {style_dim('Press Ctrl+Shift+B in VSCode to compile the current SQL file.')}")
+    print()
+
+    # Get all profile names
+    profile_names = list(settings.get("Profiles", {}).keys())
+    if not profile_names:
+        print_warning("No profiles configured. Create a profile first.")
+        return
+
+    # Show profiles
+    print(f"  {Style.BRIGHT}Profiles:{Style.RESET_ALL} {', '.join(profile_names)}")
+    print()
+
+    # Ask for databases or prompt mode
+    print(f"  {Style.BRIGHT}Enter databases (comma-separated), or press Enter to prompt each time:{Style.RESET_ALL}")
+    db_input = input("  > ").strip()
+
+    use_prompt_mode = not db_input
+    databases = []
+    if not use_prompt_mode:
+        databases = [db.strip() for db in db_input.split(',') if db.strip()]
+        if not databases:
+            use_prompt_mode = True
+
+    # Ask which profile should be default
+    default_profile = None
+    default_db = None
+
+    if len(profile_names) > 1:
+        print()
+        print(f"  {Style.BRIGHT}Which profile should be the default (Ctrl+Shift+B)?{Style.RESET_ALL}")
+        print()
+        for i, profile in enumerate(profile_names, 1):
+            print(f"    {Fore.CYAN}{i}.{Style.RESET_ALL} {profile}")
+        print()
+        while True:
+            choice = input(f"  Choose [1-{len(profile_names)}]: ").strip()
+            if choice.isdigit() and 1 <= int(choice) <= len(profile_names):
+                default_profile = profile_names[int(choice) - 1]
+                break
+            print(f"  Please enter 1-{len(profile_names)}.")
+    else:
+        default_profile = profile_names[0]
+
+    # If using specific databases, ask which db should be default
+    if not use_prompt_mode and len(databases) > 1:
+        print()
+        print(f"  {Style.BRIGHT}Which database should be the default for {default_profile}?{Style.RESET_ALL}")
+        print()
+        for i, db in enumerate(databases, 1):
+            print(f"    {Fore.CYAN}{i}.{Style.RESET_ALL} {db}")
+        print()
+        while True:
+            choice = input(f"  Choose [1-{len(databases)}]: ").strip()
+            if choice.isdigit() and 1 <= int(choice) <= len(databases):
+                default_db = databases[int(choice) - 1]
+                break
+            print(f"  Please enter 1-{len(databases)}.")
+    elif not use_prompt_mode:
+        default_db = databases[0] if databases else None
+
+    # Show target path
+    print()
+    vscode_dir = get_vscode_user_folder()
+    if not vscode_dir:
+        print_error("Could not determine VSCode User folder.")
+        return
+
+    tasks_path = vscode_dir / "tasks.json"
+    print(f"  Will write to: {Fore.YELLOW}{tasks_path}{Style.RESET_ALL}")
+    print()
+
+    # Confirm
+    confirm = input("  Proceed? [Y/n]: ").strip().lower()
+    if confirm in ('n', 'no'):
+        print("  Cancelled.")
+        return
+
+    # Generate tasks
+    if use_prompt_mode:
+        tasks_content = generate_vscode_tasks_with_prompt(profile_names, default_profile)
+    else:
+        tasks_content = generate_vscode_tasks_all_profiles(profile_names, databases, default_profile, default_db)
+
+    # Write
+    if write_vscode_tasks(tasks_content):
+        print()
+        if use_prompt_mode:
+            print_success(f"Added {len(profile_names)} tasks to VSCode (will prompt for database):")
+            for profile_name in profile_names:
+                if profile_name == default_profile:
+                    print(f"  {Icons.ARROW} runsql {profile_name} {Fore.GREEN}[default - Ctrl+Shift+B]{Style.RESET_ALL}")
+                else:
+                    print(f"  {Icons.ARROW} runsql {profile_name}")
+        else:
+            task_count = len(profile_names) * len(databases)
+            print_success(f"Added {task_count} tasks to VSCode:")
+            for profile_name in profile_names:
+                for db in databases:
+                    if profile_name == default_profile and db == default_db:
+                        print(f"  {Icons.ARROW} runsql {profile_name} ({style_database(db)}) {Fore.GREEN}[default - Ctrl+Shift+B]{Style.RESET_ALL}")
+                    else:
+                        print(f"  {Icons.ARROW} runsql {profile_name} ({style_database(db)})")
+
+
 def main_menu():
     """Main menu loop"""
-    print_header("Innovative247 Compiler Profile Setup Wizard")
+    print_header("Profile Setup Wizard")
+    print()
+    print(f"  {style_dim('Profiles store database connection settings used by runsql, runcreate,')}")
+    print(f"  {style_dim('and other compiler commands. Each profile points to a SQL source directory.')}")
 
     settings, settings_path = load_settings()
 
@@ -1271,15 +1592,20 @@ def main_menu():
             return  # User chose to fix manually or exit
 
     while True:
-        print("\nWhat would you like to do?")
-        print("  1. Create a new profile")
-        print("  2. Edit existing profile")
-        print("  3. Delete a profile")
-        print("  4. View profile")
-        print("  5. Test a profile")
-        print("  6. Exit")
+        # Show profile count
+        profile_count = len(settings.get("Profiles", {}))
+        print()
+        print(f"{Style.BRIGHT}Main Menu{Style.RESET_ALL} {style_dim(f'({profile_count} profiles configured)')}")
+        print()
+        print(f"  {Fore.CYAN}1.{Style.RESET_ALL} Create a new profile")
+        print(f"  {Fore.CYAN}2.{Style.RESET_ALL} Edit existing profile")
+        print(f"  {Fore.CYAN}3.{Style.RESET_ALL} Delete a profile")
+        print(f"  {Fore.CYAN}4.{Style.RESET_ALL} View profile")
+        print(f"  {Fore.CYAN}5.{Style.RESET_ALL} Test a profile")
+        print(f"  {Fore.CYAN}6.{Style.RESET_ALL} Add to VSCode")
+        print(f"  {Fore.CYAN}7.{Style.RESET_ALL} Exit")
 
-        choice = input("\nChoose [1-6]: ").strip()
+        choice = input("\nChoose [1-7]: ").strip()
 
         if choice == "1":
             # Create new profile
@@ -1310,12 +1636,16 @@ def main_menu():
             test_profile_menu(settings)
 
         elif choice == "6":
+            # Add to VSCode
+            add_to_vscode_menu(settings)
+
+        elif choice == "7":
             # Exit
             print("\nExiting profile setup wizard.")
             break
 
         else:
-            print("Invalid choice. Please enter 1-6.")
+            print("Invalid choice. Please enter 1-7.")
 
     print("\n" + "=" * 70)
     print_success("Profile configuration complete!")

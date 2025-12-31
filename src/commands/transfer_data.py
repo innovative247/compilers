@@ -21,7 +21,9 @@ from datetime import datetime
 from .ibs_common import (
     # Styling utilities
     Icons, Fore, Style,
+    print_header, print_subheader, print_step,
     print_success, print_error, print_warning, print_info,
+    style_path, style_database, style_command, style_dim,
 )
 
 
@@ -380,7 +382,10 @@ def prompt_connection_info(label: str, existing: dict = None) -> dict:
         Dict with connection info, or None if cancelled
     """
     existing = existing or {}
-    print(f"\n--- {label} Connection ---")
+    print()
+    print_subheader(f"{label} Connection")
+    print(f"  {style_dim(f'Configure the {label.lower()} database server connection.')}")
+    print()
 
     config = {}
 
@@ -439,10 +444,11 @@ def prompt_connection_info(label: str, existing: dict = None) -> dict:
     )
 
     if success:
-        print(f"  {message}")
+        print_success(message)
         return config
     else:
-        print(f"\n  ERROR: {message}")
+        print()
+        print_error(message)
         retry = input("\nRetry connection? [Y/n]: ").strip().lower()
         if retry != 'n':
             return prompt_connection_info(label, config)
@@ -635,14 +641,18 @@ def create_project_wizard():
     Interactive wizard to create a new data transfer project.
     Saves progress after each step.
     """
-    print("\n" + "=" * 50)
-    print("CREATE NEW DATA TRANSFER PROJECT")
-    print("=" * 50)
+    print_subheader("Create New Project")
+    print()
+    print(f"  {style_dim('A project stores source/destination connections and table selections.')}")
+    print(f"  {style_dim('Projects can be run repeatedly to transfer data.')}")
+    print()
 
     # Project name
-    project_name = input("\nProject name: ").strip()
+    print_step(1, "Project Name")
+    print(f"  {style_dim('Use a descriptive name like PROD_TO_DEV or SYBASE_MIGRATION.')}")
+    project_name = input("  Name: ").strip()
     if not project_name:
-        print("Project name is required.")
+        print_warning("Project name is required.")
         return
 
     # Check if exists
@@ -738,16 +748,35 @@ def display_project_summary(project_name: str, project: dict):
 
     total_tables = sum(len(db.get("TABLES", [])) for db in dbs.values())
 
-    print(f"\n=== Project: {project_name} ===")
-    print(f"Source:      {src.get('PLATFORM')} @ {src.get('HOST')}:{src.get('PORT')}")
-    print(f"Destination: {dest.get('PLATFORM')} @ {dest.get('HOST')}:{dest.get('PORT')}")
-    print(f"Mode:        {options.get('MODE', 'TRUNCATE')}")
-    print(f"BCP Batch:   {options.get('BCP_BATCH_SIZE', 1000)} rows/chunk")
-    print(f"\nDatabase mappings:")
+    print()
+    print_subheader(f"Project: {project_name}")
+    print()
+
+    # Source
+    src_platform = src.get('PLATFORM', 'N/A')
+    src_host = src.get('HOST', 'N/A')
+    src_port = src.get('PORT', 'N/A')
+    print(f"  {Icons.DATABASE} Source:      {Fore.CYAN}{src_platform}{Style.RESET_ALL} @ {Fore.GREEN}{src_host}:{src_port}{Style.RESET_ALL}")
+
+    # Destination
+    dest_platform = dest.get('PLATFORM', 'N/A')
+    dest_host = dest.get('HOST', 'N/A')
+    dest_port = dest.get('PORT', 'N/A')
+    print(f"  {Icons.DATABASE} Destination: {Fore.CYAN}{dest_platform}{Style.RESET_ALL} @ {Fore.GREEN}{dest_host}:{dest_port}{Style.RESET_ALL}")
+
+    # Options
+    mode = options.get('MODE', 'TRUNCATE')
+    batch = options.get('BCP_BATCH_SIZE', 1000)
+    print(f"  {Icons.GEAR} Mode:        {Fore.YELLOW}{mode}{Style.RESET_ALL}")
+    print(f"  {Icons.GEAR} BCP Batch:   {batch:,} rows/chunk")
+
+    # Database mappings
+    print()
+    print(f"  {Style.BRIGHT}Database Mappings:{Style.RESET_ALL} {style_dim(f'({total_tables} tables total)')}")
     for src_db, db_config in dbs.items():
         dest_db = db_config.get("DEST_DATABASE", src_db)
         table_count = len(db_config.get("TABLES", []))
-        print(f"  {src_db} -> {dest_db}  ({table_count} tables)")
+        print(f"    {Icons.ARROW} {style_database(src_db)} {Fore.WHITE}->{Style.RESET_ALL} {style_database(dest_db)}  {style_dim(f'({table_count} tables)')}")
 
 
 def run_project(project_name: str):
@@ -776,15 +805,17 @@ def run_project(project_name: str):
 
         # Check for existing BCP files
         existing_bcp_files = [f for f in os.listdir(project_dir) if f.endswith('.bcp')]
-        bcp_info = f"  ({len(existing_bcp_files)} BCP files)" if existing_bcp_files else ""
+        bcp_info = f" {style_dim(f'({len(existing_bcp_files)} BCP files)')}" if existing_bcp_files else ""
 
-        print(f"\n--- Options ---")
-        print(f"  1. Run transfer{bcp_info}")
-        print(f"  2. Edit source connection")
-        print(f"  3. Edit destination connection")
-        print(f"  4. Edit databases and tables")
-        print(f"  5. Edit transfer options")
-        print(f"  6. Exit")
+        print()
+        print(f"{Style.BRIGHT}Options{Style.RESET_ALL}")
+        print()
+        print(f"  {Fore.CYAN}1.{Style.RESET_ALL} {Fore.GREEN}Run transfer{Style.RESET_ALL}{bcp_info}")
+        print(f"  {Fore.CYAN}2.{Style.RESET_ALL} Edit source connection")
+        print(f"  {Fore.CYAN}3.{Style.RESET_ALL} Edit destination connection")
+        print(f"  {Fore.CYAN}4.{Style.RESET_ALL} Edit databases and tables")
+        print(f"  {Fore.CYAN}5.{Style.RESET_ALL} Edit transfer options")
+        print(f"  {Fore.CYAN}6.{Style.RESET_ALL} Exit")
 
         choice = input("\nChoose [1-6]: ").strip()
 
@@ -948,12 +979,15 @@ def _execute_transfer(project_name: str, project: dict, project_dir: str, existi
     total_tables = len(all_tables)
 
     # Run mode selection
-    print(f"\n--- Run Mode ---")
-    print(f"  1. Full transfer (Extract + Insert)")
-    print(f"  2. Extract only")
-    print(f"  3. Insert only")
+    print()
+    print_subheader("Run Mode")
+    print(f"  {style_dim('Select which phase(s) of the transfer to execute.')}")
+    print()
+    print(f"  {Fore.CYAN}1.{Style.RESET_ALL} Full transfer {style_dim('(Extract + Insert)')}")
+    print(f"  {Fore.CYAN}2.{Style.RESET_ALL} Extract only {style_dim('(create BCP files)')}")
+    print(f"  {Fore.CYAN}3.{Style.RESET_ALL} Insert only {style_dim('(import existing BCP files)')}")
     if existing_bcp_files:
-        print(f"\n  ({len(existing_bcp_files)} BCP files found)")
+        print(f"\n  {Icons.INFO} {len(existing_bcp_files)} BCP files found in project directory")
 
     while True:
         run_mode = input("\nChoose [1-3] (or 0 to cancel): ").strip()
@@ -961,7 +995,7 @@ def _execute_transfer(project_name: str, project: dict, project_dir: str, existi
             return
         if run_mode in ('1', '2', '3'):
             break
-        print("Enter 1, 2, or 3.")
+        print_warning("Enter 1, 2, or 3.")
 
     do_extract = run_mode in ('1', '2')
     do_insert = run_mode in ('1', '3')
@@ -1183,12 +1217,13 @@ def delete_project_menu():
     projects = list_data_transfer_projects()
 
     if not projects:
-        print("\nNo projects to delete.")
+        print_warning("No projects to delete.")
         return
 
-    print("\nSelect project to delete:")
+    print()
+    print_subheader("Delete Project")
     for i, name in enumerate(projects, 1):
-        print(f"  {i}. {name}")
+        print(f"  {Fore.CYAN}{i}.{Style.RESET_ALL} {name}")
 
     choice = input("\nChoose (or 0 to cancel): ").strip()
     if choice == '0' or not choice:
@@ -1201,11 +1236,11 @@ def delete_project_menu():
             confirm = input(f"Delete '{project_name}'? [y/N]: ").strip().lower()
             if confirm == 'y':
                 if delete_data_transfer_project(project_name):
-                    print(f"Project '{project_name}' deleted.")
+                    print_success(f"Project '{project_name}' deleted.")
                 else:
-                    print("Failed to delete project.")
+                    print_error("Failed to delete project.")
     except ValueError:
-        print("Invalid selection.")
+        print_warning("Invalid selection.")
 
 
 def run_project_menu():
@@ -1213,10 +1248,11 @@ def run_project_menu():
     projects = list_data_transfer_projects()
 
     if not projects:
-        print("\nNo projects found. Create one first.")
+        print_warning("No projects found. Create one first.")
         return
 
-    print("\nSelect project to run:")
+    print()
+    print_subheader("Select Project")
     for i, name in enumerate(projects, 1):
         project = load_data_transfer_project(name)
         state = project.get("TRANSFER_STATE") if project else None
@@ -1224,9 +1260,9 @@ def run_project_menu():
         if state:
             pending = get_pending_tables(state)
             if pending:
-                status = f" [INCOMPLETE: {len(pending)} pending]"
+                status = f" {Fore.YELLOW}[INCOMPLETE: {len(pending)} pending]{Style.RESET_ALL}"
 
-        print(f"  {i}. {name}{status}")
+        print(f"  {Fore.CYAN}{i}.{Style.RESET_ALL} {Style.BRIGHT}{name}{Style.RESET_ALL}{status}")
 
     choice = input("\nChoose (or 0 to cancel): ").strip()
     if choice == '0' or not choice:
@@ -1237,19 +1273,29 @@ def run_project_menu():
         if 0 <= idx < len(projects):
             run_project(projects[idx])
     except ValueError:
-        print("Invalid selection.")
+        print_warning("Invalid selection.")
 
 
 def main_menu():
     """Main interactive menu."""
+    # Show header on first display
+    print_header("Data Transfer Utility")
+    print()
+    print(f"  {style_dim('Transfer data between Sybase ASE and Microsoft SQL Server databases.')}")
+    print(f"  {style_dim('Projects store connection settings and table selections for reuse.')}")
+
     while True:
-        print("\n" + "=" * 40)
-        print("DATA TRANSFER UTILITY")
-        print("=" * 40)
-        print("\n  1. Create new project")
-        print("  2. Delete a project")
-        print("  3. Run a project")
-        print("  4. Exit")
+        # Get project count
+        projects = list_data_transfer_projects()
+        project_count = len(projects)
+
+        print()
+        print(f"{Style.BRIGHT}Main Menu{Style.RESET_ALL} {style_dim(f'({project_count} projects)')}")
+        print()
+        print(f"  {Fore.CYAN}1.{Style.RESET_ALL} Create new project")
+        print(f"  {Fore.CYAN}2.{Style.RESET_ALL} Delete a project")
+        print(f"  {Fore.CYAN}3.{Style.RESET_ALL} Run a project")
+        print(f"  {Fore.CYAN}4.{Style.RESET_ALL} Exit")
 
         choice = input("\nChoose [1-4]: ").strip()
 
@@ -1260,10 +1306,11 @@ def main_menu():
         elif choice == '3':
             run_project_menu()
         elif choice == '4':
-            print("\nGoodbye!")
+            print()
+            print_info("Goodbye!")
             break
         else:
-            print("Invalid choice. Enter 1-4.")
+            print_warning("Invalid choice. Enter 1-4.")
 
 
 def main():
@@ -1271,19 +1318,23 @@ def main():
     # Check FreeTDS version at startup
     success, message, version = check_freetds_version()
     if not success:
-        print(f"\nERROR: {message}")
+        print()
+        print_error(message)
         print("FreeTDS with freebcp is required for data transfers.")
         sys.exit(1)
 
-    print(f"\n{message}")
+    print()
+    print_success(message)
 
     try:
         main_menu()
     except KeyboardInterrupt:
-        print("\n\nInterrupted. Goodbye!")
+        print()
+        print_info("Interrupted. Goodbye!")
         sys.exit(0)
     except Exception as e:
-        print(f"\nERROR: {e}")
+        print()
+        print_error(str(e))
         sys.exit(1)
 
 
