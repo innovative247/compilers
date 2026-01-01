@@ -17,7 +17,3 @@ nul
 
 # User configuration (contains credentials)
 settings.json
-
-# Claude Code context files
-CLAUDE.md
-claude_docs/
