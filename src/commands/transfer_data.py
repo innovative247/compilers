@@ -306,6 +306,8 @@ from commands.ibs_common import (
     clear_transfer_state,
     get_pending_tables,
     get_completed_tables,
+    # Settings
+    open_settings_in_editor,
 )
 
 
@@ -503,16 +505,20 @@ def prompt_database_selection(config: dict) -> list:
     return matched
 
 
-def prompt_table_selection(config: dict, database: str) -> list:
+def prompt_table_selection(config: dict, database: str,
+                           current_include: list = None, current_exclude: list = None) -> dict:
     """
     Prompt user to select tables with include/exclude patterns.
 
     Args:
         config: Connection config dict
         database: Database name
+        current_include: Current include patterns (for editing existing selection)
+        current_exclude: Current exclude patterns (for editing existing selection)
 
     Returns:
-        List of selected table names
+        Dict with keys: tables, include_patterns, exclude_patterns
+        Or empty dict if cancelled/error
     """
     print(f"\n--- Table Selection for {database} ---")
 
@@ -529,23 +535,29 @@ def prompt_table_selection(config: dict, database: str) -> list:
         print("This may be a permission issue. Check that the user has access to this database.")
         skip = input("Skip this database? [Y/n]: ").strip().lower()
         if skip != 'n':
-            return []
+            return {}
         return None
 
     if not all_tables:
         print(f"No tables found in {database}.")
-        return []
+        return {}
 
     print(f"Found {len(all_tables)} tables.")
 
-    # Include patterns
-    include_input = input("Tables to include (* for all): ").strip()
+    # Include patterns - use current as default
+    default_include = ', '.join(current_include) if current_include else "*"
+    include_prompt = f"Tables to include [{default_include}]: " if current_include else "Tables to include (* for all): "
+    include_input = input(include_prompt).strip()
     if not include_input:
-        include_input = "*"
+        include_input = default_include
     include_patterns = parse_pattern_input(include_input)
 
-    # Exclude patterns
-    exclude_input = input("Tables to exclude (e.g., w#*, srm_*): ").strip()
+    # Exclude patterns - use current as default
+    default_exclude = ', '.join(current_exclude) if current_exclude else ""
+    exclude_prompt = f"Tables to exclude [{default_exclude}]: " if current_exclude else "Tables to exclude (e.g., w#*, srm_*): "
+    exclude_input = input(exclude_prompt).strip()
+    if not exclude_input and current_exclude:
+        exclude_input = default_exclude
     exclude_patterns = parse_pattern_input(exclude_input)
 
     # Filter tables
@@ -553,7 +565,7 @@ def prompt_table_selection(config: dict, database: str) -> list:
 
     if not filtered:
         print("No tables matched after filtering.")
-        return []
+        return {}
 
     print(f"\nFound {len(filtered)} tables after filtering.")
 
@@ -561,9 +573,13 @@ def prompt_table_selection(config: dict, database: str) -> list:
     result = interactive_checkbox(f"Select tables for {database}:", filtered)
 
     if result is None:
-        return []
+        return {}
 
-    return result
+    return {
+        "tables": result,
+        "include_patterns": include_patterns,
+        "exclude_patterns": exclude_patterns
+    }
 
 
 def save_project_progress(project_name: str, project: dict) -> bool:
@@ -707,14 +723,16 @@ def create_project_wizard():
         if not dest_db:
             dest_db = database  # Default to same name
 
-        tables = prompt_table_selection(src_config, database)
-        if tables is None:
+        result = prompt_table_selection(src_config, database)
+        if result is None:
             print("Table selection failed.")
             return
-        if tables:
+        if result and result.get("tables"):
             db_configs[database] = {
                 "DEST_DATABASE": dest_db,
-                "TABLES": tables
+                "TABLES": result["tables"],
+                "INCLUDE_PATTERNS": result.get("include_patterns", ["*"]),
+                "EXCLUDE_PATTERNS": result.get("exclude_patterns", [])
             }
             project["DATABASES"] = db_configs
 
@@ -815,9 +833,9 @@ def run_project(project_name: str):
         print(f"  {Fore.CYAN}3.{Style.RESET_ALL} Edit destination connection")
         print(f"  {Fore.CYAN}4.{Style.RESET_ALL} Edit databases and tables")
         print(f"  {Fore.CYAN}5.{Style.RESET_ALL} Edit transfer options")
-        print(f"  {Fore.CYAN}6.{Style.RESET_ALL} Exit")
+        print(f" {Fore.CYAN}99.{Style.RESET_ALL} Exit")
 
-        choice = input("\nChoose [1-6]: ").strip()
+        choice = input("\nChoose [1-5]: ").strip()
 
         if choice == '1':
             # Run transfer - show mode submenu
@@ -858,11 +876,11 @@ def run_project(project_name: str):
             save_data_transfer_project(project_name, project)
             print("Options updated and saved.")
 
-        elif choice == '6':
+        elif choice == '99':
             return
 
         else:
-            print("Invalid choice. Enter 1-6.")
+            print("Invalid choice.")
 
 
 def _edit_databases(project_name: str, project: dict, src_config: dict):
@@ -880,8 +898,8 @@ def _edit_databases(project_name: str, project: dict, src_config: dict):
         print("  None configured")
         print(f"  1. [Add new database]")
 
-    db_choice = input("\nSelect database (or 0 to cancel): ").strip()
-    if db_choice == '0' or not db_choice:
+    db_choice = input("\nSelect database (or 99 to cancel): ").strip()
+    if db_choice == '99' or not db_choice:
         return
 
     if db_choice.isdigit():
@@ -897,14 +915,16 @@ def _edit_databases(project_name: str, project: dict, src_config: dict):
                         dest_db = input(f"Destination database for '{db}' [{db}]: ").strip()
                         if not dest_db:
                             dest_db = db
-                        tables = prompt_table_selection(src_config, db)
-                        if tables:
+                        result = prompt_table_selection(src_config, db)
+                        if result and result.get("tables"):
                             project["DATABASES"][db] = {
                                 "DEST_DATABASE": dest_db,
-                                "TABLES": tables
+                                "TABLES": result["tables"],
+                                "INCLUDE_PATTERNS": result.get("include_patterns", ["*"]),
+                                "EXCLUDE_PATTERNS": result.get("exclude_patterns", [])
                             }
                             print(f"\n  {db} -> {dest_db}:")
-                            for t in tables:
+                            for t in result["tables"]:
                                 print(f"    - {t}")
                 clear_transfer_state(project_name)
                 save_data_transfer_project(project_name, project)
@@ -934,15 +954,21 @@ def _edit_databases(project_name: str, project: dict, src_config: dict):
                     project["DATABASES"][src_db]["DEST_DATABASE"] = new_dest
                     dest_db = new_dest
 
-                tables = prompt_table_selection(src_config, src_db)
-                if tables:
-                    project["DATABASES"][src_db]["TABLES"] = tables
+                # Get current patterns for editing
+                current_include = project["DATABASES"][src_db].get("INCLUDE_PATTERNS", [])
+                current_exclude = project["DATABASES"][src_db].get("EXCLUDE_PATTERNS", [])
+
+                result = prompt_table_selection(src_config, src_db, current_include, current_exclude)
+                if result and result.get("tables"):
+                    project["DATABASES"][src_db]["TABLES"] = result["tables"]
+                    project["DATABASES"][src_db]["INCLUDE_PATTERNS"] = result.get("include_patterns", ["*"])
+                    project["DATABASES"][src_db]["EXCLUDE_PATTERNS"] = result.get("exclude_patterns", [])
                     clear_transfer_state(project_name)
                     save_data_transfer_project(project_name, project)
                     print(f"\n  {src_db} -> {dest_db} (saved):")
-                    for t in tables:
+                    for t in result["tables"]:
                         print(f"    - {t}")
-                elif tables is not None and len(tables) == 0:
+                elif result is not None and not result.get("tables"):
                     confirm = input(f"No tables selected. Delete {src_db}? [y/N]: ").strip().lower()
                     if confirm == 'y':
                         del project["DATABASES"][src_db]
@@ -986,16 +1012,17 @@ def _execute_transfer(project_name: str, project: dict, project_dir: str, existi
     print(f"  {Fore.CYAN}1.{Style.RESET_ALL} Full transfer {style_dim('(Extract + Insert)')}")
     print(f"  {Fore.CYAN}2.{Style.RESET_ALL} Extract only {style_dim('(create BCP files)')}")
     print(f"  {Fore.CYAN}3.{Style.RESET_ALL} Insert only {style_dim('(import existing BCP files)')}")
+    print(f" {Fore.CYAN}99.{Style.RESET_ALL} Exit")
     if existing_bcp_files:
         print(f"\n  {Icons.INFO} {len(existing_bcp_files)} BCP files found in project directory")
 
     while True:
-        run_mode = input("\nChoose [1-3] (or 0 to cancel): ").strip()
-        if run_mode == '0':
+        run_mode = input("\nChoose [1-3]: ").strip()
+        if run_mode == '99':
             return
         if run_mode in ('1', '2', '3'):
             break
-        print_warning("Enter 1, 2, or 3.")
+        print_warning("Invalid choice.")
 
     do_extract = run_mode in ('1', '2')
     do_insert = run_mode in ('1', '3')
@@ -1224,9 +1251,10 @@ def delete_project_menu():
     print_subheader("Delete Project")
     for i, name in enumerate(projects, 1):
         print(f"  {Fore.CYAN}{i}.{Style.RESET_ALL} {name}")
+    print(f" {Fore.CYAN}99.{Style.RESET_ALL} Exit")
 
-    choice = input("\nChoose (or 0 to cancel): ").strip()
-    if choice == '0' or not choice:
+    choice = input("\nChoose: ").strip()
+    if choice == '99' or not choice:
         return
 
     try:
@@ -1263,9 +1291,10 @@ def run_project_menu():
                 status = f" {Fore.YELLOW}[INCOMPLETE: {len(pending)} pending]{Style.RESET_ALL}"
 
         print(f"  {Fore.CYAN}{i}.{Style.RESET_ALL} {Style.BRIGHT}{name}{Style.RESET_ALL}{status}")
+    print(f" {Fore.CYAN}99.{Style.RESET_ALL} Exit")
 
-    choice = input("\nChoose (or 0 to cancel): ").strip()
-    if choice == '0' or not choice:
+    choice = input("\nChoose: ").strip()
+    if choice == '99' or not choice:
         return
 
     try:
@@ -1295,7 +1324,8 @@ def main_menu():
         print(f"  {Fore.CYAN}1.{Style.RESET_ALL} Create new project")
         print(f"  {Fore.CYAN}2.{Style.RESET_ALL} Delete a project")
         print(f"  {Fore.CYAN}3.{Style.RESET_ALL} Run a project")
-        print(f"  {Fore.CYAN}4.{Style.RESET_ALL} Exit")
+        print(f"  {Fore.CYAN}4.{Style.RESET_ALL} Open settings.json")
+        print(f" {Fore.CYAN}99.{Style.RESET_ALL} Exit")
 
         choice = input("\nChoose [1-4]: ").strip()
 
@@ -1306,11 +1336,13 @@ def main_menu():
         elif choice == '3':
             run_project_menu()
         elif choice == '4':
+            open_settings_in_editor()
+        elif choice == '99':
             print()
             print_info("Goodbye!")
             break
         else:
-            print_warning("Invalid choice. Enter 1-4.")
+            print_warning("Invalid choice.")
 
 
 def main():

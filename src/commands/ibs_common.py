@@ -24,6 +24,7 @@ import datetime
 import re
 import getpass
 import signal
+import platform
 
 # =============================================================================
 # TERMINAL STYLING (Cross-platform colors and icons)
@@ -234,6 +235,30 @@ def find_settings_file() -> Path:
     script_dir = Path(__file__).parent.resolve()  # src/commands/
     project_root = script_dir.parent.parent        # compilers/
     return project_root / "settings.json"
+
+
+def open_settings_in_editor():
+    """
+    Open settings.json using the system's default application.
+
+    Uses native OS commands: start (Windows), open (Mac), xdg-open (Linux)
+    """
+    settings_path = find_settings_file()
+
+    if not settings_path.exists():
+        print_error(f"Settings file not found: {settings_path}")
+        return
+
+    print(f"Opening: {settings_path}")
+
+    system = platform.system()
+    if system == 'Windows':
+        os.startfile(str(settings_path))
+    elif system == 'Darwin':  # Mac
+        subprocess.run(['open', str(settings_path)])
+    else:  # Linux
+        subprocess.run(['xdg-open', str(settings_path)])
+
 
 def load_settings() -> dict:
     """

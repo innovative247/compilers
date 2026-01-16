@@ -25,6 +25,7 @@ from .ibs_common import (
     validate_profile_aliases,
     find_profile_by_name_or_alias,
     create_symbolic_links,
+    open_settings_in_editor,
     # Styling utilities
     Icons, Fore, Style,
     print_header, print_subheader, print_step,
@@ -133,13 +134,11 @@ def prompt_for_aliases(settings: dict, profile_name: str, current_aliases: list 
     while True:
         if current_aliases:
             current_str = ", ".join(current_aliases)
-            print(f"  Current aliases: {current_str}")
-            print("  (Enter new aliases, 'clear' to remove all, or blank to keep current)")
+            print("  (Enter 'clear' to remove all aliases)")
+            aliases_input = input(f"  Aliases [{current_str}]: ").strip()
         else:
             print("  Aliases allow shortcuts for this profile (e.g., 'G' for 'GONZO').")
-            print("  (Enter comma-separated aliases, or blank to skip)")
-
-        aliases_input = input("  Aliases: ").strip()
+            aliases_input = input("  Aliases: ").strip()
 
         # Handle blank input
         if not aliases_input:
@@ -445,13 +444,13 @@ def display_single_profile(name, profile):
         aliases_str = ""
 
     print()
-    print(f"  {Style.BRIGHT}{name}{Style.RESET_ALL}{aliases_str}")
-    print(f"    {Icons.GEAR} Company:    {Fore.WHITE}{company}{Style.RESET_ALL}")
-    print(f"    {Icons.DATABASE} Platform:   {Fore.CYAN}{platform}{Style.RESET_ALL}")
-    print(f"    {Icons.ARROW} Server:     {Fore.GREEN}{host}:{port}{Style.RESET_ALL}")
-    print(f"    {Icons.FOLDER} SQL Source: {style_path(path_append)}")
+    print(f"{Style.BRIGHT}{name}{Style.RESET_ALL}{aliases_str}")
+    print(f"  {Icons.GEAR}  {'Company:':<13}{Fore.WHITE}{company}{Style.RESET_ALL}")
+    print(f"  {Icons.DATABASE}  {'Platform:':<13}{Fore.CYAN}{platform}{Style.RESET_ALL}")
+    print(f"  {Icons.ARROW}  {'Server:':<13}{Fore.GREEN}{host}:{port}{Style.RESET_ALL}")
+    print(f"  {Icons.FOLDER} {'SQL Source:':<13}{style_path(path_append)}")
     if raw_mode:
-        print(f"    {Icons.WARNING} Raw Mode:   {Fore.YELLOW}Yes{Style.RESET_ALL}")
+        print(f"  {Icons.WARNING}  {'Raw Mode:':<13}{Fore.YELLOW}Yes{Style.RESET_ALL}")
 
 
 def list_profiles(settings):
@@ -938,8 +937,8 @@ def test_profile_menu(settings):
             print()
             print(f"  {Fore.CYAN}1.{Style.RESET_ALL} Test SQL Source path")
             print(f"  {Fore.CYAN}2.{Style.RESET_ALL} Test connection")
-            print(f"  {Fore.CYAN}3.{Style.RESET_ALL} Return to main menu")
-            max_choice = 3
+            print(f" {Fore.CYAN}99.{Style.RESET_ALL} Exit")
+            max_choice = 2
         else:
             print()
             print(f"  {Fore.CYAN}1.{Style.RESET_ALL} Test SQL Source path")
@@ -948,8 +947,8 @@ def test_profile_menu(settings):
             print(f"  {Fore.CYAN}4.{Style.RESET_ALL} Test changelog")
             print(f"  {Fore.CYAN}5.{Style.RESET_ALL} Test table locations")
             print(f"  {Fore.CYAN}6.{Style.RESET_ALL} Test symbolic links")
-            print(f"  {Fore.CYAN}7.{Style.RESET_ALL} Return to main menu")
-            max_choice = 7
+            print(f" {Fore.CYAN}99.{Style.RESET_ALL} Exit")
+            max_choice = 6
 
         choice = input(f"\nChoose [1-{max_choice}]: ").strip()
 
@@ -968,7 +967,7 @@ def test_profile_menu(settings):
         elif choice == "2":
             test_connection(profile)
 
-        elif choice == "3" and raw_mode:
+        elif choice == "99":
             return
 
         elif choice == "3" and not raw_mode:
@@ -984,11 +983,8 @@ def test_profile_menu(settings):
             # Test symbolic links
             test_symbolic_links(profile)
 
-        elif choice == "7" and not raw_mode:
-            return
-
         else:
-            print(f"Invalid choice. Please enter 1-{max_choice}.")
+            print("Invalid choice.")
 
 
 def edit_profile_inline(profile, current_name=None):
@@ -1262,6 +1258,8 @@ def edit_profile(settings, settings_path):
     settings["Profiles"][final_name] = profile
     if save_settings(settings, settings_path):
         print_success(f"Profile '{final_name}' saved!")
+        print()
+        display_single_profile(final_name, profile)
         # Check for symbolic links after saving
         check_and_create_symbolic_links(profile)
         return True
@@ -1285,9 +1283,12 @@ def delete_profile(settings):
         print_error(f"Profile '{input_name}' not found.")
         return
 
-    confirm = input(f"Are you sure you want to delete '{profile_name}'? [y/n]: ").strip().lower()
+    print()
+    display_single_profile(profile_name, profile_data)
+    print()
+    confirm = input(f"Type 'delete' to confirm deletion of '{profile_name}': ").strip().lower()
 
-    if confirm == 'y':
+    if confirm == 'delete':
         del settings["Profiles"][profile_name]
         print_success(f"Profile '{profile_name}' deleted.")
     else:
@@ -1465,6 +1466,24 @@ def generate_vscode_tasks_with_prompt(profile_names, default_profile):
     }
 
 
+def add_to_ide_menu(settings):
+    """Submenu for adding profile integration to IDEs."""
+    print()
+    print_subheader("Add to IDE")
+    print()
+    print(f"  {Fore.CYAN}1.{Style.RESET_ALL} VSCode")
+    print(f" {Fore.CYAN}99.{Style.RESET_ALL} Exit")
+
+    choice = input("\nChoose [1]: ").strip()
+
+    if choice == "1":
+        add_to_vscode_menu(settings)
+    elif choice == "99":
+        return
+    else:
+        print("Invalid choice.")
+
+
 def add_to_vscode_menu(settings):
     """Add runsql tasks to VSCode for all profiles."""
     print()
@@ -1602,8 +1621,9 @@ def main_menu():
         print(f"  {Fore.CYAN}3.{Style.RESET_ALL} Delete a profile")
         print(f"  {Fore.CYAN}4.{Style.RESET_ALL} View profile")
         print(f"  {Fore.CYAN}5.{Style.RESET_ALL} Test a profile")
-        print(f"  {Fore.CYAN}6.{Style.RESET_ALL} Add to VSCode")
-        print(f"  {Fore.CYAN}7.{Style.RESET_ALL} Exit")
+        print(f"  {Fore.CYAN}6.{Style.RESET_ALL} Add to IDE")
+        print(f"  {Fore.CYAN}7.{Style.RESET_ALL} Open settings.json")
+        print(f" {Fore.CYAN}99.{Style.RESET_ALL} Exit")
 
         choice = input("\nChoose [1-7]: ").strip()
 
@@ -1615,6 +1635,8 @@ def main_menu():
                 settings.setdefault("Profiles", {})[name] = profile
                 if save_settings(settings, settings_path):
                     print_success(f"Profile '{name}' created!")
+                    print()
+                    display_single_profile(name, profile)
                     # Check for symbolic links after saving
                     check_and_create_symbolic_links(profile)
 
@@ -1636,16 +1658,20 @@ def main_menu():
             test_profile_menu(settings)
 
         elif choice == "6":
-            # Add to VSCode
-            add_to_vscode_menu(settings)
+            # Add to IDE
+            add_to_ide_menu(settings)
 
         elif choice == "7":
+            # Open settings.json
+            open_settings_in_editor()
+
+        elif choice == "99":
             # Exit
             print("\nExiting profile setup wizard.")
             break
 
         else:
-            print("Invalid choice. Please enter 1-7.")
+            print("Invalid choice.")
 
     print("\n" + "=" * 70)
     print_success("Profile configuration complete!")
