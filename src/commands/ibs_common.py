@@ -2793,17 +2793,22 @@ def create_symbolic_links(config: dict, prompt: bool = True) -> bool:
 
 def find_file(filename, config):
     """
-    Simple file lookup - no recursive search.
+    File lookup with different behavior based on RAW_MODE.
 
-    Search order:
-    1. Convert non-linked paths (\\ss\\ba\\ -> \\SQL_Sources\\Basics\\)
-    2. If absolute path, file must exist at that exact location
-    3. If relative path, file must exist in current directory
-    4. Try adding .sql extension if not present
+    RAW MODE (RAW_MODE=True):
+        - File must exist in current directory exactly as specified
+        - No .sql extension auto-append
+        - No recursive search
+
+    NORMAL MODE (RAW_MODE=False or not set):
+        - First check current directory
+        - If not found, search SQL_SOURCE recursively
+        - If multiple matches found, show error and return None
+        - Auto-append .sql if file not found without it
 
     Args:
         filename: File path to search for
-        config: Configuration dictionary (used for path conversion)
+        config: Configuration dictionary (used for path conversion and SQL_SOURCE)
 
     Returns:
         Absolute path to file if found, None if not found
@@ -2812,30 +2817,90 @@ def find_file(filename, config):
     filename = convert_non_linked_paths(filename)
 
     file_path = Path(filename)
+    raw_mode = is_raw_mode(config)
 
-    # Absolute path - must exist at exact location
+    # Absolute path - must exist at exact location (both modes)
     if file_path.is_absolute():
         if file_path.exists():
             return str(file_path)
-        # Try with .sql extension
-        if not filename.endswith('.sql'):
+        # Try with .sql extension (only in normal mode)
+        if not raw_mode and not filename.lower().endswith('.sql'):
             sql_path = Path(filename + '.sql')
             if sql_path.exists():
                 return str(sql_path)
         return None
 
-    # Relative path - must exist in current directory
+    # RAW MODE: File must exist in current directory exactly as specified
+    if raw_mode:
+        cwd_path = Path.cwd() / file_path
+        if cwd_path.exists():
+            return str(cwd_path)
+        return None
+
+    # NORMAL MODE: Search current directory first, then SQL_SOURCE
+
+    # 1. Check current directory for exact match
     cwd_path = Path.cwd() / file_path
     if cwd_path.exists():
         return str(cwd_path)
 
-    # Try with .sql extension
-    if not filename.endswith('.sql'):
+    # 2. Check current directory with .sql extension
+    if not filename.lower().endswith('.sql'):
         sql_path = Path.cwd() / (filename + '.sql')
         if sql_path.exists():
             return str(sql_path)
 
+    # 3. Search SQL_SOURCE recursively
+    sql_source = config.get('SQL_SOURCE', '')
+    if sql_source and Path(sql_source).exists():
+        # Search for exact filename
+        matches = _search_sql_source(sql_source, filename)
+
+        # If no matches and no .sql extension, try with .sql
+        if not matches and not filename.lower().endswith('.sql'):
+            matches = _search_sql_source(sql_source, filename + '.sql')
+
+        if len(matches) == 1:
+            return str(matches[0])
+        elif len(matches) > 1:
+            print(f"{Fore.RED}{Icons.ERROR} Multiple files found matching '{filename}':{Style.RESET_ALL}", file=sys.stderr)
+            for match in matches:
+                # Show path relative to SQL_SOURCE for readability
+                try:
+                    rel_path = match.relative_to(sql_source)
+                    print(f"  {Icons.ARROW} {rel_path}", file=sys.stderr)
+                except ValueError:
+                    print(f"  {Icons.ARROW} {match}", file=sys.stderr)
+            print(f"\nPlease specify the full path or run from the file's directory.", file=sys.stderr)
+            return None
+
     return None
+
+
+def _search_sql_source(sql_source: str, filename: str) -> list:
+    """
+    Recursively search SQL_SOURCE for files matching filename.
+
+    Args:
+        sql_source: Root directory to search
+        filename: Filename to search for (just the name, not path)
+
+    Returns:
+        List of Path objects for matching files
+    """
+    sql_source_path = Path(sql_source)
+    # Extract just the filename in case a partial path was given
+    search_name = Path(filename).name
+
+    matches = []
+    try:
+        for match in sql_source_path.rglob(search_name):
+            if match.is_file():
+                matches.append(match)
+    except (PermissionError, OSError):
+        pass  # Skip directories we can't access
+
+    return matches
 
 # --- UI Utilities ---
 def console_yes_no(prompt_text, default=None):

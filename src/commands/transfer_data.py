@@ -187,7 +187,8 @@ def interactive_checkbox(title: str, items: list, selected: set = None) -> list:
             print(f"\n  ... showing {start+1}-{end} of {total}")
 
         print(f"\nSelected: {len(selected)}/{total}")
-        print(f">>> Press ENTER to confirm <<<")
+        print(f">>> Press SPACE to select/deselect <<<")
+        print(f">>> Press ENTER to confirm         <<<")
 
         # Get keypress
         key = get_key()
@@ -457,29 +458,20 @@ def prompt_connection_info(label: str, existing: dict = None) -> dict:
         return None
 
 
-def prompt_database_selection(config: dict) -> list:
+def prompt_database_selection(config: dict, previous_selected: list = None) -> list:
     """
-    Prompt user to select databases with wildcard support.
+    Prompt user to select databases via interactive checkbox.
 
     Args:
         config: Connection config dict
+        previous_selected: Previously selected databases (for Edit mode)
 
     Returns:
         List of selected database names
     """
     print("\n--- Database Selection ---")
-    print("Enter databases to transfer (wildcards allowed, comma/space separated)")
-    print("Example: ibs, sbn*")
+    print("Querying server for databases...")
 
-    db_input = input("\nDatabases: ").strip()
-    if not db_input:
-        print("At least one database is required.")
-        return []
-
-    patterns = parse_pattern_input(db_input)
-
-    # Get all databases from server
-    print("\nQuerying server for databases...")
     success, all_dbs = get_databases_from_server(
         config["HOST"], config["PORT"],
         config["USERNAME"], config["PASSWORD"],
@@ -490,39 +482,55 @@ def prompt_database_selection(config: dict) -> list:
         print(f"ERROR: Failed to get databases: {all_dbs}")
         return []
 
-    # Match patterns
-    matched = []
-    for db in all_dbs:
-        if match_wildcard_pattern(db, patterns):
-            matched.append(db)
-
-    if not matched:
-        print(f"No databases matched patterns: {patterns}")
+    if not all_dbs:
+        print("No databases found on server.")
         return []
 
-    print(f"Matched databases: {', '.join(matched)}")
+    print(f"Found {len(all_dbs)} databases.")
 
-    return matched
+    # Determine which databases should be pre-selected
+    if previous_selected:
+        # Edit mode - pre-select previously selected databases
+        selected = set(previous_selected) & set(all_dbs)  # Only keep valid ones
+        new_dbs = [db for db in all_dbs if db not in previous_selected]
+        if new_dbs:
+            print(f"{Fore.GREEN}  {len(new_dbs)} new database(s) found{Style.RESET_ALL}")
+    else:
+        # New mode - none selected by default
+        selected = set()
+
+    # Interactive selection
+    result = interactive_checkbox("Select databases to transfer:", all_dbs, selected)
+
+    if result is None:
+        return []
+
+    return result
 
 
 def prompt_table_selection(config: dict, database: str,
-                           current_include: list = None, current_exclude: list = None) -> dict:
+                           previous_tables: list = None, excluded_tables: list = None) -> dict:
     """
-    Prompt user to select tables with include/exclude patterns.
+    Prompt user to select tables via interactive checkbox.
+
+    Shows ALL tables from the database. User deselects tables they don't want.
+    In Edit mode:
+      - Previously excluded tables are pre-deselected
+      - New tables (not in previous list) are auto-selected
 
     Args:
         config: Connection config dict
         database: Database name
-        current_include: Current include patterns (for editing existing selection)
-        current_exclude: Current exclude patterns (for editing existing selection)
+        previous_tables: Previously selected tables (for Edit mode)
+        excluded_tables: Previously excluded tables (for Edit mode)
 
     Returns:
-        Dict with keys: tables, include_patterns, exclude_patterns
+        Dict with keys: tables, excluded_tables
         Or empty dict if cancelled/error
     """
     print(f"\n--- Table Selection for {database} ---")
 
-    # Get all tables
+    # Get all tables from database
     print(f"Querying tables in {database}...")
     success, all_tables = get_tables_from_database(
         config["HOST"], config["PORT"],
@@ -544,41 +552,38 @@ def prompt_table_selection(config: dict, database: str,
 
     print(f"Found {len(all_tables)} tables.")
 
-    # Include patterns - use current as default
-    default_include = ', '.join(current_include) if current_include else "*"
-    include_prompt = f"Tables to include [{default_include}]: " if current_include else "Tables to include (* for all): "
-    include_input = input(include_prompt).strip()
-    if not include_input:
-        include_input = default_include
-    include_patterns = parse_pattern_input(include_input)
+    # Determine which tables should be pre-selected
+    if previous_tables is not None or excluded_tables is not None:
+        # Edit mode - use previous state
+        excluded_set = set(excluded_tables or [])
+        previous_set = set(previous_tables or [])
 
-    # Exclude patterns - use current as default
-    default_exclude = ', '.join(current_exclude) if current_exclude else ""
-    exclude_prompt = f"Tables to exclude [{default_exclude}]: " if current_exclude else "Tables to exclude (e.g., w#*, srm_*): "
-    exclude_input = input(exclude_prompt).strip()
-    if not exclude_input and current_exclude:
-        exclude_input = default_exclude
-    exclude_patterns = parse_pattern_input(exclude_input)
+        # Find new tables (in database but not previously seen)
+        all_known = previous_set | excluded_set
+        new_tables = [t for t in all_tables if t not in all_known]
 
-    # Filter tables
-    filtered = filter_tables_by_patterns(all_tables, include_patterns, exclude_patterns)
+        if new_tables:
+            print(f"{Fore.GREEN}  {len(new_tables)} new table(s) found - auto-selected{Style.RESET_ALL}")
 
-    if not filtered:
-        print("No tables matched after filtering.")
-        return {}
+        # Pre-select: all tables EXCEPT previously excluded ones
+        selected = set(all_tables) - excluded_set
+    else:
+        # New mode - all tables selected by default
+        selected = set(all_tables)
 
-    print(f"\nFound {len(filtered)} tables after filtering.")
-
-    # Interactive selection with arrow keys
-    result = interactive_checkbox(f"Select tables for {database}:", filtered)
+    # Interactive selection
+    result = interactive_checkbox(f"Select tables for {database}:", all_tables, selected)
 
     if result is None:
         return {}
 
+    # Calculate which tables were excluded (deselected)
+    selected_set = set(result)
+    new_excluded = [t for t in all_tables if t not in selected_set]
+
     return {
         "tables": result,
-        "include_patterns": include_patterns,
-        "exclude_patterns": exclude_patterns
+        "excluded_tables": new_excluded
     }
 
 
@@ -688,7 +693,7 @@ def create_project_wizard():
     }
 
     # Step 1: Source connection
-    src_config = prompt_connection_info("Source", "SYBASE")
+    src_config = prompt_connection_info("Source")
     if not src_config:
         print("Source connection cancelled.")
         return
@@ -699,7 +704,7 @@ def create_project_wizard():
         return
 
     # Step 2: Destination connection
-    dest_config = prompt_connection_info("Destination", "MSSQL")
+    dest_config = prompt_connection_info("Destination")
     if not dest_config:
         print("Destination connection cancelled.")
         return
@@ -709,30 +714,42 @@ def create_project_wizard():
     if action == 'exit':
         return
 
-    # Step 3: Database selection
+    # Step 3: Database selection (interactive checkbox)
     databases = prompt_database_selection(src_config)
     if not databases:
         print("No databases selected.")
         return
 
-    # Step 4: Table selection per database (save after each database)
-    db_configs = {}
+    action = prompt_save_continue(project_name, project)
+    if action == 'exit':
+        return
+
+    # Step 4: Destination mapping for each database
+    print("\n--- Destination Database Mapping ---")
+    print(f"Map each source database to its destination:")
+    db_mappings = {}
     for database in databases:
-        # Ask for destination database name
-        dest_db = input(f"\nDestination database for '{database}' [{database}]: ").strip()
+        dest_db = input(f"  {database} -> [{database}]: ").strip()
         if not dest_db:
             dest_db = database  # Default to same name
+        db_mappings[database] = dest_db
 
+    action = prompt_save_continue(project_name, project)
+    if action == 'exit':
+        return
+
+    # Step 5: Table selection per database
+    db_configs = {}
+    for database in databases:
         result = prompt_table_selection(src_config, database)
         if result is None:
             print("Table selection failed.")
             return
         if result and result.get("tables"):
             db_configs[database] = {
-                "DEST_DATABASE": dest_db,
+                "DEST_DATABASE": db_mappings[database],
                 "TABLES": result["tables"],
-                "INCLUDE_PATTERNS": result.get("include_patterns", ["*"]),
-                "EXCLUDE_PATTERNS": result.get("exclude_patterns", [])
+                "EXCLUDED_TABLES": result.get("excluded_tables", [])
             }
             project["DATABASES"] = db_configs
 
@@ -745,16 +762,22 @@ def create_project_wizard():
         print("No tables selected from any database.")
         return
 
-    # Step 5: Transfer options
+    # Step 6: Transfer options
     project["OPTIONS"] = prompt_transfer_options()
 
     # Final save
     total_tables = sum(len(db["TABLES"]) for db in db_configs.values())
+    total_excluded = sum(len(db.get("EXCLUDED_TABLES", [])) for db in db_configs.values())
     if save_data_transfer_project(project_name, project):
-        print(f"\nProject saved: {project_name}")
-        print(f"Total: {len(db_configs)} databases, {total_tables} tables")
+        print()
+        print_success(f"Project '{project_name}' saved!")
+        print()
+        display_project(project_name, project)
+        print()
+        print(f"  {Style.BRIGHT}Summary:{Style.RESET_ALL} {len(db_configs)} database(s), {total_tables} tables selected, {total_excluded} excluded")
     else:
-        print("\nERROR: Failed to save project.")
+        print()
+        print_error("Failed to save project.")
 
 
 def display_project_summary(project_name: str, project: dict):
@@ -774,19 +797,19 @@ def display_project_summary(project_name: str, project: dict):
     src_platform = src.get('PLATFORM', 'N/A')
     src_host = src.get('HOST', 'N/A')
     src_port = src.get('PORT', 'N/A')
-    print(f"  {Icons.DATABASE} Source:      {Fore.CYAN}{src_platform}{Style.RESET_ALL} @ {Fore.GREEN}{src_host}:{src_port}{Style.RESET_ALL}")
+    print(f"  {Icons.DATABASE}  {'Source:':<13}{Fore.CYAN}{src_platform}{Style.RESET_ALL} @ {Fore.GREEN}{src_host}:{src_port}{Style.RESET_ALL}")
 
     # Destination
     dest_platform = dest.get('PLATFORM', 'N/A')
     dest_host = dest.get('HOST', 'N/A')
     dest_port = dest.get('PORT', 'N/A')
-    print(f"  {Icons.DATABASE} Destination: {Fore.CYAN}{dest_platform}{Style.RESET_ALL} @ {Fore.GREEN}{dest_host}:{dest_port}{Style.RESET_ALL}")
+    print(f"  {Icons.DATABASE}  {'Destination:':<13}{Fore.CYAN}{dest_platform}{Style.RESET_ALL} @ {Fore.GREEN}{dest_host}:{dest_port}{Style.RESET_ALL}")
 
     # Options
     mode = options.get('MODE', 'TRUNCATE')
     batch = options.get('BCP_BATCH_SIZE', 1000)
-    print(f"  {Icons.GEAR} Mode:        {Fore.YELLOW}{mode}{Style.RESET_ALL}")
-    print(f"  {Icons.GEAR} BCP Batch:   {batch:,} rows/chunk")
+    print(f"  {Icons.GEAR}  {'Mode:':<13}{Fore.YELLOW}{mode}{Style.RESET_ALL}")
+    print(f"  {Icons.GEAR}  {'BCP Batch:':<13}{batch:,} rows/chunk")
 
     # Database mappings
     print()
@@ -794,7 +817,7 @@ def display_project_summary(project_name: str, project: dict):
     for src_db, db_config in dbs.items():
         dest_db = db_config.get("DEST_DATABASE", src_db)
         table_count = len(db_config.get("TABLES", []))
-        print(f"    {Icons.ARROW} {style_database(src_db)} {Fore.WHITE}->{Style.RESET_ALL} {style_database(dest_db)}  {style_dim(f'({table_count} tables)')}")
+        print(f"  {Icons.ARROW}  {style_database(src_db)} -> {style_database(dest_db)}  {style_dim(f'({table_count} tables)')}")
 
 
 def run_project(project_name: str):
@@ -892,13 +915,14 @@ def _edit_databases(project_name: str, project: dict, src_config: dict):
         for i, src_db in enumerate(current_dbs, 1):
             dest_db = project["DATABASES"][src_db].get("DEST_DATABASE", src_db)
             table_count = len(project["DATABASES"][src_db].get("TABLES", []))
-            print(f"  {i}. {src_db} -> {dest_db}  ({table_count} tables)")
-        print(f"  {len(current_dbs) + 1}. [Add new database]")
+            print(f"  {Fore.CYAN}{i}.{Style.RESET_ALL} {src_db} -> {dest_db}  ({table_count} tables)")
+        print(f"  {Fore.CYAN}{len(current_dbs) + 1}.{Style.RESET_ALL} [Add new database]")
     else:
         print("  None configured")
-        print(f"  1. [Add new database]")
+        print(f"  {Fore.CYAN}1.{Style.RESET_ALL} [Add new database]")
+    print(f" {Fore.CYAN}99.{Style.RESET_ALL} Exit")
 
-    db_choice = input("\nSelect database (or 99 to cancel): ").strip()
+    db_choice = input("\nChoose: ").strip()
     if db_choice == '99' or not db_choice:
         return
 
@@ -907,25 +931,38 @@ def _edit_databases(project_name: str, project: dict, src_config: dict):
         add_new_idx = len(current_dbs)
 
         if idx == add_new_idx:
-            # Add new database
+            # Add new database(s)
             new_dbs = prompt_database_selection(src_config)
             if new_dbs:
+                # Filter out databases already in project
+                new_dbs = [db for db in new_dbs if db not in project["DATABASES"]]
+                if not new_dbs:
+                    print("All selected databases are already in the project.")
+                    return
+
+                # Step 1: Get destination mappings for all selected databases
+                print("\n--- Destination Database Mapping ---")
+                db_mappings = {}
                 for db in new_dbs:
-                    if db not in project["DATABASES"]:
-                        dest_db = input(f"Destination database for '{db}' [{db}]: ").strip()
-                        if not dest_db:
-                            dest_db = db
-                        result = prompt_table_selection(src_config, db)
-                        if result and result.get("tables"):
-                            project["DATABASES"][db] = {
-                                "DEST_DATABASE": dest_db,
-                                "TABLES": result["tables"],
-                                "INCLUDE_PATTERNS": result.get("include_patterns", ["*"]),
-                                "EXCLUDE_PATTERNS": result.get("exclude_patterns", [])
-                            }
-                            print(f"\n  {db} -> {dest_db}:")
-                            for t in result["tables"]:
-                                print(f"    - {t}")
+                    dest_db = input(f"  {db} -> [{db}]: ").strip()
+                    if not dest_db:
+                        dest_db = db
+                    db_mappings[db] = dest_db
+
+                # Step 2: Table selection for each database
+                for db in new_dbs:
+                    result = prompt_table_selection(src_config, db)
+                    if result and result.get("tables"):
+                        project["DATABASES"][db] = {
+                            "DEST_DATABASE": db_mappings[db],
+                            "TABLES": result["tables"],
+                            "EXCLUDED_TABLES": result.get("excluded_tables", [])
+                        }
+                        print(f"\n  {db} -> {db_mappings[db]}:")
+                        print(f"    {len(result['tables'])} tables selected")
+                        if result.get("excluded_tables"):
+                            print(f"    {len(result['excluded_tables'])} tables excluded")
+
                 clear_transfer_state(project_name)
                 save_data_transfer_project(project_name, project)
                 print("\nDatabases added and saved.")
@@ -954,20 +991,23 @@ def _edit_databases(project_name: str, project: dict, src_config: dict):
                     project["DATABASES"][src_db]["DEST_DATABASE"] = new_dest
                     dest_db = new_dest
 
-                # Get current patterns for editing
-                current_include = project["DATABASES"][src_db].get("INCLUDE_PATTERNS", [])
-                current_exclude = project["DATABASES"][src_db].get("EXCLUDE_PATTERNS", [])
+                # Get current tables and excluded tables for editing
+                previous_tables = project["DATABASES"][src_db].get("TABLES", [])
+                excluded_tables = project["DATABASES"][src_db].get("EXCLUDED_TABLES", [])
 
-                result = prompt_table_selection(src_config, src_db, current_include, current_exclude)
+                result = prompt_table_selection(src_config, src_db, previous_tables, excluded_tables)
                 if result and result.get("tables"):
                     project["DATABASES"][src_db]["TABLES"] = result["tables"]
-                    project["DATABASES"][src_db]["INCLUDE_PATTERNS"] = result.get("include_patterns", ["*"])
-                    project["DATABASES"][src_db]["EXCLUDE_PATTERNS"] = result.get("exclude_patterns", [])
+                    project["DATABASES"][src_db]["EXCLUDED_TABLES"] = result.get("excluded_tables", [])
+                    # Remove old pattern fields if they exist
+                    project["DATABASES"][src_db].pop("INCLUDE_PATTERNS", None)
+                    project["DATABASES"][src_db].pop("EXCLUDE_PATTERNS", None)
                     clear_transfer_state(project_name)
                     save_data_transfer_project(project_name, project)
-                    print(f"\n  {src_db} -> {dest_db} (saved):")
-                    for t in result["tables"]:
-                        print(f"    - {t}")
+                    print_success(f"Database '{src_db}' updated!")
+                    print(f"  {len(result['tables'])} tables selected")
+                    if result.get("excluded_tables"):
+                        print(f"  {len(result['excluded_tables'])} tables excluded")
                 elif result is not None and not result.get("tables"):
                     confirm = input(f"No tables selected. Delete {src_db}? [y/N]: ").strip().lower()
                     if confirm == 'y':
@@ -1239,6 +1279,80 @@ def _execute_transfer(project_name: str, project: dict, project_dir: str, existi
     log.close()
 
 
+def display_project(project_name: str, project: dict):
+    """Display a single project's details."""
+    src = project.get("SOURCE", {})
+    dest = project.get("DESTINATION", {})
+    options = project.get("OPTIONS", {})
+    databases = project.get("DATABASES", {})
+
+    # Count total tables
+    total_tables = sum(len(db.get("TABLES", [])) for db in databases.values())
+
+    print()
+    print_subheader(f"Project: {project_name}")
+    print()
+
+    # Source/Destination
+    src_platform = src.get("PLATFORM", "?")
+    src_host = src.get("HOST", "?")
+    src_port = src.get("PORT", "?")
+    dest_platform = dest.get("PLATFORM", "?")
+    dest_host = dest.get("HOST", "?")
+    dest_port = dest.get("PORT", "?")
+
+    print(f"  {Icons.DATABASE}  {'Source:':<13}{Fore.CYAN}{src_platform}{Style.RESET_ALL} @ {Fore.GREEN}{src_host}:{src_port}{Style.RESET_ALL}")
+    print(f"  {Icons.DATABASE}  {'Destination:':<13}{Fore.CYAN}{dest_platform}{Style.RESET_ALL} @ {Fore.GREEN}{dest_host}:{dest_port}{Style.RESET_ALL}")
+
+    # Options
+    mode = options.get("MODE", "TRUNCATE")
+    batch_size = options.get("BCP_BATCH_SIZE", 1000)
+    print(f"  {Icons.GEAR}  {'Mode:':<13}{Fore.YELLOW}{mode}{Style.RESET_ALL}")
+    print(f"  {Icons.GEAR}  {'BCP Batch:':<13}{batch_size:,} rows/chunk")
+
+    # Database mappings
+    total_excluded = sum(len(db.get("EXCLUDED_TABLES", [])) for db in databases.values())
+    print()
+    print(f"  {Style.BRIGHT}Database Mappings:{Style.RESET_ALL} ({total_tables} tables, {total_excluded} excluded)")
+    for src_db, db_config in databases.items():
+        dest_db = db_config.get("DEST_DATABASE", src_db)
+        tables = db_config.get("TABLES", [])
+        excluded = db_config.get("EXCLUDED_TABLES", [])
+        excluded_info = f", {len(excluded)} excluded" if excluded else ""
+        print(f"  {Icons.ARROW}  {Fore.CYAN}{src_db}{Style.RESET_ALL} -> {Fore.GREEN}{dest_db}{Style.RESET_ALL}  ({len(tables)} tables{excluded_info})")
+
+
+def view_project_menu():
+    """View a project's details."""
+    projects = list_data_transfer_projects()
+
+    if not projects:
+        print_warning("No projects found.")
+        return
+
+    print()
+    print_subheader("View Project")
+    for i, name in enumerate(projects, 1):
+        print(f"  {Fore.CYAN}{i}.{Style.RESET_ALL} {name}")
+    print(f" {Fore.CYAN}99.{Style.RESET_ALL} Exit")
+
+    choice = input("\nChoose: ").strip()
+    if choice == '99' or not choice:
+        return
+
+    try:
+        idx = int(choice) - 1
+        if 0 <= idx < len(projects):
+            project_name = projects[idx]
+            project = load_data_transfer_project(project_name)
+            if project:
+                display_project(project_name, project)
+            else:
+                print_error(f"Could not load project '{project_name}'")
+    except ValueError:
+        print_warning("Invalid selection.")
+
+
 def delete_project_menu():
     """Delete a project."""
     projects = list_data_transfer_projects()
@@ -1322,20 +1436,23 @@ def main_menu():
         print(f"{Style.BRIGHT}Main Menu{Style.RESET_ALL} {style_dim(f'({project_count} projects)')}")
         print()
         print(f"  {Fore.CYAN}1.{Style.RESET_ALL} Create new project")
-        print(f"  {Fore.CYAN}2.{Style.RESET_ALL} Delete a project")
-        print(f"  {Fore.CYAN}3.{Style.RESET_ALL} Run a project")
-        print(f"  {Fore.CYAN}4.{Style.RESET_ALL} Open settings.json")
+        print(f"  {Fore.CYAN}2.{Style.RESET_ALL} View a project")
+        print(f"  {Fore.CYAN}3.{Style.RESET_ALL} Delete a project")
+        print(f"  {Fore.CYAN}4.{Style.RESET_ALL} Run a project")
+        print(f"  {Fore.CYAN}5.{Style.RESET_ALL} Open settings.json")
         print(f" {Fore.CYAN}99.{Style.RESET_ALL} Exit")
 
-        choice = input("\nChoose [1-4]: ").strip()
+        choice = input("\nChoose [1-5]: ").strip()
 
         if choice == '1':
             create_project_wizard()
         elif choice == '2':
-            delete_project_menu()
+            view_project_menu()
         elif choice == '3':
-            run_project_menu()
+            delete_project_menu()
         elif choice == '4':
+            run_project_menu()
+        elif choice == '5':
             open_settings_in_editor()
         elif choice == '99':
             print()
