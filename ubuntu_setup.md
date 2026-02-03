@@ -1,5 +1,7 @@
 ## Setting up WSL Ubuntu
 
+# 0. In a Windows Terminal...
+
 # 1. Uninstall (wipe) Ubuntu
 wsl --shutdown
 wsl --unregister Ubuntu

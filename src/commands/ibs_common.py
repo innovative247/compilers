@@ -5448,9 +5448,11 @@ def generate_changelog_sql(sql_command: str, database: str, server: str,
     escaped_cmd = sql_command.replace("'", "''")
 
     lines = [
-        "if exists (select * from &options& where id = 'gclog12' and act_flg = '+')",
-        "if exists (select * from &dbpro&..sysobjects where name = 'ba_gen_chg_log_new')",
-        f"exec &dbpro&..ba_gen_chg_log_new '', 'User `{username}` ran isqlline', 'ISQLLINE', '', 'isqlline {escaped_cmd} {database} {server} {company}', '', 'X'",
+        "if exists (select 1 from &options& where id = 'gclog12' and act_flg = '+')",
+        "begin",
+        "  if exists (select 1 from &dbpro&..sysobjects where name = 'ba_gen_chg_log_new')",
+        f"    exec &dbpro&..ba_gen_chg_log_new '', 'User `{username}` ran isqlline', 'ISQLLINE', '', 'isqlline {escaped_cmd} {database} {server} {company}', '', 'X'",
+        "end",
         "go",
         ""
     ]
@@ -5749,10 +5751,86 @@ def execute_sql_interleaved(host: str, port: int, username: str, password: str,
 
         return batches
 
+    def escape_tsql_metacommands(content: str) -> str:
+        """
+        Escape tsql metacommands that appear inside block comments.
+
+        tsql interprets certain keywords as metacommands even inside /* */ comments.
+        This function prepends -- to these keywords when they appear at the start
+        of a line inside a block comment to prevent tsql from interpreting them.
+
+        Metacommands: reset, quit, bye, version, :r
+        """
+        # Keywords that tsql interprets as metacommands (case-insensitive)
+        metacommands = ['reset', 'quit', 'bye', 'version', ':r']
+
+        lines = content.splitlines(keepends=True)
+        result = []
+        in_block_comment = False
+
+        for line in lines:
+            # Track block comment state
+            # Note: This is simplified and doesn't handle nested comments or
+            # comments inside strings, but should work for typical SQL files
+            temp_line = line
+            check_line = line
+
+            # Process the line to track comment state
+            while True:
+                if not in_block_comment:
+                    # Look for start of block comment
+                    start_pos = check_line.find('/*')
+                    if start_pos == -1:
+                        break
+                    # Check if there's an end before we process further
+                    end_pos = check_line.find('*/', start_pos + 2)
+                    if end_pos != -1:
+                        # Comment opens and closes on same line segment
+                        check_line = check_line[end_pos + 2:]
+                        continue
+                    else:
+                        in_block_comment = True
+                        break
+                else:
+                    # Look for end of block comment
+                    end_pos = check_line.find('*/')
+                    if end_pos != -1:
+                        in_block_comment = False
+                        check_line = check_line[end_pos + 2:]
+                        continue
+                    else:
+                        break
+
+            # If we're inside a block comment, check if line starts with metacommand
+            if in_block_comment or '/*' in line:
+                stripped = line.lstrip()
+                for cmd in metacommands:
+                    # Check if line starts with metacommand (case-insensitive)
+                    if stripped.lower().startswith(cmd.lower()):
+                        # Check it's followed by whitespace, newline, or end of string
+                        rest = stripped[len(cmd):]
+                        if not rest or rest[0].isspace() or rest[0] in '\r\n':
+                            # Prepend -- to escape the metacommand
+                            leading_space = line[:len(line) - len(stripped)]
+                            line = leading_space + '--' + stripped
+                            break
+
+            result.append(line)
+
+            # Update block comment state for lines that might end a comment
+            if '*/' in temp_line and '/*' not in temp_line.split('*/')[-1]:
+                # Line ends a block comment without starting a new one
+                pass  # State already updated in the loop above
+
+        return ''.join(result)
+
     compiler = "tsql"
     if not shutil.which(compiler):
         write_output(f"ERROR: {compiler} command not found. Install FreeTDS.")
         return False
+
+    # Escape tsql metacommands inside block comments to prevent misinterpretation
+    sql_content = escape_tsql_metacommands(sql_content)
 
     # Split into batches for echo purposes
     batches = split_batches(sql_content)
@@ -5853,7 +5931,7 @@ def execute_sql_interleaved(host: str, port: int, username: str, password: str,
         def drain_output_until_idle(max_wait_ms: int = 2000):
             """Drain output until queue is idle for a short period."""
             import time
-            idle_threshold_ms = 50  # Consider idle after 50ms of no output
+            idle_threshold_ms = 200  # Consider idle after 200ms of no output
             last_output_time = time.time()
             deadline = time.time() + (max_wait_ms / 1000.0)
 

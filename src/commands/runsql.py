@@ -382,7 +382,10 @@ Notes:
                     )
 
                     # Print return status to match Unix output
-                    print("(return status = 0)")
+                    if success:
+                        print("(return status = 0)")
+                    else:
+                        print("(return status = 1)")
 
                 current_seq += 1
 
