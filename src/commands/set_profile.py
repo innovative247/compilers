@@ -1220,6 +1220,128 @@ def create_profile():
     return name, profile
 
 
+def copy_profile(settings, settings_path):
+    """Copy an existing profile to a new name and edit its properties."""
+    if not settings.get("Profiles"):
+        print_warning("No profiles to copy.")
+        return False
+
+    list_profiles(settings)
+
+    # Step 1: Select source profile
+    input_name = input("\nEnter profile name to copy from: ").strip().upper()
+
+    # Find profile by name or alias
+    source_name, source_data = find_profile_by_name_or_alias(settings, input_name)
+
+    if source_name is None:
+        print_error(f"Profile '{input_name}' not found.")
+        return False
+
+    print()
+    print(f"  Copying from: {Style.BRIGHT}{source_name}{Style.RESET_ALL}")
+
+    # Step 2: Get new profile name
+    print()
+    while True:
+        new_name = input("  Enter new profile name: ").strip().upper()
+
+        if not new_name:
+            print_warning("  Profile name is required.")
+            continue
+
+        if not validate_profile_name(new_name):
+            print_warning("  Invalid name. Use only letters, numbers, and underscores.")
+            continue
+
+        if new_name in settings["Profiles"]:
+            print_error(f"  Profile '{new_name}' already exists. Choose a different name.")
+            continue
+
+        if new_name == source_name:
+            print_error("  New name must be different from the source profile.")
+            continue
+
+        break
+
+    # Step 3: Make a copy of the profile data
+    profile = source_data.copy()
+
+    # Remove aliases from copy - user will set new ones
+    if "ALIASES" in profile:
+        del profile["ALIASES"]
+
+    # Step 4: Prompt for aliases
+    print()
+    print_step(1, "Aliases (Optional)")
+    new_aliases = prompt_for_aliases(settings, new_name, current_aliases=None)
+    if new_aliases:
+        profile["ALIASES"] = new_aliases
+
+    # Step 5: Run through all properties like edit mode
+    print()
+    print(f"  {style_dim('Review and modify properties (press Enter to keep current value):')}")
+    print()
+
+    # Fields in order: COMPANY, PLATFORM, HOST, PORT, USERNAME, PASSWORD, SQL_SOURCE
+    for key in ["COMPANY", "PLATFORM", "HOST", "PORT", "USERNAME", "PASSWORD", "SQL_SOURCE"]:
+        current = profile.get(key, "")
+
+        if key == "PASSWORD":
+            new_value = getpass.getpass(f"  {key} [****]: ")
+        elif key == "SQL_SOURCE":
+            print(f"  {key} [{current}]")
+            print(f"    (Enter '.' for current directory: {os.getcwd()})")
+            new_value = input(f"    New value: ").strip()
+            if new_value in ['.', './', '.\\']:
+                new_value = os.getcwd()
+                print(f"    Using: {new_value}")
+        else:
+            new_value = input(f"  {key} [{current}]: ").strip()
+
+        if new_value:
+            # Convert to appropriate type
+            if key in ["PORT", "COMPANY", "DEFAULT_LANGUAGE"]:
+                profile[key] = int(new_value) if str(new_value).isdigit() else new_value
+            else:
+                profile[key] = new_value
+
+    # RAW_MODE setting
+    current_raw = profile.get("RAW_MODE", False)
+    current_raw_display = "y" if current_raw else "n"
+    print(f"\n  Raw mode skips SBN-specific preprocessing (options files, symlinks, changelog).")
+    raw_input = input(f"  Raw mode (y/N) [{current_raw_display}]: ").strip().lower()
+    if raw_input == 'y':
+        profile["RAW_MODE"] = True
+    elif raw_input == 'n':
+        profile["RAW_MODE"] = False
+
+    # DATABASE - only ask if RAW_MODE is True
+    is_raw_mode = profile.get("RAW_MODE", False)
+    if is_raw_mode:
+        current_db = profile.get("DATABASE", "")
+        print(f"\n  Default database for raw mode (used when -D not specified).")
+        new_db = input(f"  DATABASE [{current_db}]: ").strip()
+        if new_db:
+            profile["DATABASE"] = new_db
+    else:
+        # Remove DATABASE if not in raw mode
+        if "DATABASE" in profile:
+            del profile["DATABASE"]
+
+    # Save
+    settings["Profiles"][new_name] = profile
+    if save_settings(settings, settings_path):
+        print()
+        print_success(f"Profile '{new_name}' created (copied from '{source_name}')!")
+        print()
+        display_single_profile(new_name, profile)
+        # Check for symbolic links after saving
+        check_and_create_symbolic_links(profile)
+        return True
+    return False
+
+
 def edit_profile(settings, settings_path):
     """Edit existing profile and save."""
     if not settings.get("Profiles"):
@@ -1618,14 +1740,15 @@ def main_menu():
         print()
         print(f"  {Fore.CYAN}1.{Style.RESET_ALL} Create a new profile")
         print(f"  {Fore.CYAN}2.{Style.RESET_ALL} Edit existing profile")
-        print(f"  {Fore.CYAN}3.{Style.RESET_ALL} Delete a profile")
-        print(f"  {Fore.CYAN}4.{Style.RESET_ALL} View profile")
-        print(f"  {Fore.CYAN}5.{Style.RESET_ALL} Test a profile")
-        print(f"  {Fore.CYAN}6.{Style.RESET_ALL} Add to IDE")
-        print(f"  {Fore.CYAN}7.{Style.RESET_ALL} Open settings.json")
+        print(f"  {Fore.CYAN}3.{Style.RESET_ALL} Copy a profile")
+        print(f"  {Fore.CYAN}4.{Style.RESET_ALL} Delete a profile")
+        print(f"  {Fore.CYAN}5.{Style.RESET_ALL} View profile")
+        print(f"  {Fore.CYAN}6.{Style.RESET_ALL} Test a profile")
+        print(f"  {Fore.CYAN}7.{Style.RESET_ALL} Add to IDE")
+        print(f"  {Fore.CYAN}8.{Style.RESET_ALL} Open settings.json")
         print(f" {Fore.CYAN}99.{Style.RESET_ALL} Exit")
 
-        choice = input("\nChoose [1-7]: ").strip()
+        choice = input("\nChoose [1-8]: ").strip()
 
         if choice == "1":
             # Create new profile
@@ -1645,23 +1768,27 @@ def main_menu():
             edit_profile(settings, settings_path)
 
         elif choice == "3":
+            # Copy profile
+            copy_profile(settings, settings_path)
+
+        elif choice == "4":
             # Delete profile
             delete_profile(settings)
             save_settings(settings, settings_path)
 
-        elif choice == "4":
+        elif choice == "5":
             # View profile(s)
             view_profile(settings)
 
-        elif choice == "5":
+        elif choice == "6":
             # Test a profile
             test_profile_menu(settings)
 
-        elif choice == "6":
+        elif choice == "7":
             # Add to IDE
             add_to_ide_menu(settings)
 
-        elif choice == "7":
+        elif choice == "8":
             # Open settings.json
             open_settings_in_editor()
 
