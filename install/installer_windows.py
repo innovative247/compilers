@@ -37,7 +37,7 @@ SRC_DIR = PROJECT_ROOT / "src"
 LOG_FILE = SCRIPT_DIR / "installer.log"
 
 # Windows-specific paths
-WINDOWS_MSYS2_PATH = Path("C:/msys64")
+WINDOWS_MSYS2_PATH = Path(os.environ.get("LOCALAPPDATA", "C:/msys64")) / "msys64"
 WINDOWS_MSYS2_BIN = WINDOWS_MSYS2_PATH / "ucrt64/bin"
 WINDOWS_MSYS2_USR_BIN = WINDOWS_MSYS2_PATH / "usr/bin"  # For tail, grep, etc.
 
@@ -233,7 +233,7 @@ def install_msys2() -> bool:
         print("  MANUAL INSTALLATION REQUIRED:")
         print("  1. Download from: https://www.msys2.org/")
         print("  2. Run the installer")
-        print("  3. Install to C:\\msys64 (default location)")
+        print(f"  3. Install to {WINDOWS_MSYS2_PATH}")
         print("  4. Re-run this installer")
         print()
         print("  If download fails repeatedly, check:")
@@ -248,16 +248,16 @@ def install_msys2() -> bool:
 
         return False
 
-    log.log("Installing MSYS2 (silent install to C:\\msys64)...", "STEP")
+    log.log(f"Installing MSYS2 (silent install to {WINDOWS_MSYS2_PATH})...", "STEP")
     print()
     print("  This may take several minutes. Please wait...")
     print()
 
     try:
-        # Silent install to default location
+        # Silent install to LOCALAPPDATA
         # See: https://www.msys2.org/docs/installer/
         result = subprocess.run(
-            [str(installer_path), "install", "--root", "C:\\msys64", "--confirm-command"],
+            [str(installer_path), "install", "--root", str(WINDOWS_MSYS2_PATH), "--confirm-command"],
             capture_output=True,
             text=True,
             timeout=600  # 10 minute timeout
@@ -280,7 +280,7 @@ def install_msys2() -> bool:
         print()
         print("  MANUAL INSTALLATION REQUIRED:")
         print(f"  1. Run the installer manually: {installer_path}")
-        print("  2. Install to C:\\msys64")
+        print(f"  2. Install to {WINDOWS_MSYS2_PATH}")
         print("  3. Re-run this installer")
         print()
         return False
@@ -290,7 +290,7 @@ def install_msys2() -> bool:
         print()
         print("  MANUAL INSTALLATION REQUIRED:")
         print(f"  1. Run the installer manually: {installer_path}")
-        print("  2. Install to C:\\msys64")
+        print(f"  2. Install to {WINDOWS_MSYS2_PATH}")
         print("  3. Re-run this installer")
         print()
         print("  Common issues:")
@@ -307,7 +307,7 @@ def install_msys2() -> bool:
         log.log(f"MSYS2 not found at {WINDOWS_MSYS2_PATH} after installation", "ERROR")
         print()
         print("  Installation may have succeeded but to a different location.")
-        print("  This installer expects MSYS2 at C:\\msys64")
+        print(f"  This installer expects MSYS2 at {WINDOWS_MSYS2_PATH}")
         print()
         return False
 
@@ -681,11 +681,11 @@ def configure_vim_path() -> bool:
         print()
         return False
 
-    log.log("Installing vim via MSYS2 (will be available in C:\\msys64\\usr\\bin)...", "STEP")
+    log.log(f"Installing vim via MSYS2 (will be available in {WINDOWS_MSYS2_USR_BIN})...", "STEP")
 
     if install_vim_via_msys2():
         log.log("vim installed successfully via MSYS2", "SUCCESS")
-        log.log("vim will be available via C:\\msys64\\usr\\bin (already in PATH)", "INFO")
+        log.log(f"vim will be available via {WINDOWS_MSYS2_USR_BIN} (already in PATH)", "INFO")
         return True
     else:
         log.log("vim installation via MSYS2 failed", "ERROR")
@@ -963,7 +963,7 @@ def show_summary():
         if not vim_available:
             print("  Missing: VIM - Install vim or add its directory to PATH")
         if not tail_available:
-            print("  Missing: tail - Ensure C:\\msys64\\usr\\bin is in PATH")
+            print(f"  Missing: tail - Ensure {WINDOWS_MSYS2_USR_BIN} is in PATH")
 
 
 # =============================================================================
