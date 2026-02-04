@@ -24,6 +24,7 @@ import platform
 import shutil
 import subprocess
 import sys
+import urllib.request
 from pathlib import Path
 
 # =============================================================================
@@ -193,21 +194,54 @@ def check_msys2_installed() -> bool:
 
 
 def install_msys2() -> bool:
-    """Install MSYS2 on Windows."""
+    """Install MSYS2 on Windows via direct download."""
     log.section("MSYS2 Installation")
 
     if check_msys2_installed():
         log.log(f"MSYS2 already installed at {WINDOWS_MSYS2_PATH}", "SUCCESS")
         return True
 
-    if not command_exists("winget"):
-        log.log("winget not found - manual installation required", "WARN")
+    # MSYS2 installer release date (update as needed for newer versions)
+    msys2_date = "20250111"
+    installer_filename = f"msys2-x86_64-{msys2_date}.exe"
+    installer_url = f"https://github.com/msys2/msys2-installer/releases/download/2025-01-11/{installer_filename}"
+    installer_path = Path(os.environ.get("TEMP", ".")) / installer_filename
+
+    log.log(f"Downloading MSYS2 from GitHub...", "STEP")
+    print()
+    print(f"  URL: {installer_url}")
+    print()
+
+    try:
+        # Download with progress indicator
+        def report_progress(block_num, block_size, total_size):
+            if total_size > 0:
+                percent = min(100, (block_num * block_size * 100) // total_size)
+                if block_num % 100 == 0:  # Update every 100 blocks
+                    print(f"\r  Downloading: {percent}%", end="", flush=True)
+
+        urllib.request.urlretrieve(installer_url, installer_path, report_progress)
+        print()  # Newline after progress
+
+        if not installer_path.exists():
+            raise FileNotFoundError(f"Download completed but file not found at {installer_path}")
+
+        file_size_mb = installer_path.stat().st_size / (1024 * 1024)
+        log.log(f"Downloaded: {file_size_mb:.2f} MB", "SUCCESS")
+
+    except Exception as e:
+        log.log(f"Failed to download MSYS2 installer: {e}", "ERROR")
         print()
-        print("  Please install MSYS2 manually:")
+        print("  MANUAL INSTALLATION REQUIRED:")
         print("  1. Download from: https://www.msys2.org/")
         print("  2. Run the installer")
-        print("  3. Install to C:\\msys64 (default)")
+        print("  3. Install to C:\\msys64 (default location)")
         print("  4. Re-run this installer")
+        print()
+        print("  If download fails repeatedly, check:")
+        print("  - Network connectivity to github.com")
+        print("  - Firewall/proxy settings")
+        print("  - Try downloading manually in a browser")
         print()
 
         if prompt_yes_no("Open MSYS2 download page in browser?"):
@@ -216,32 +250,67 @@ def install_msys2() -> bool:
 
         return False
 
-    log.log("Installing MSYS2 via winget...", "INFO")
+    log.log("Installing MSYS2 (silent install to C:\\msys64)...", "STEP")
     print()
-    print("  This will open the MSYS2 installer.")
-    print("  Please complete the installation wizard.")
-    print("  Use default settings (install to C:\\msys64)")
+    print("  This may take several minutes. Please wait...")
     print()
-
-    if not prompt_yes_no("Ready to install MSYS2?"):
-        log.log("User cancelled MSYS2 installation", "WARN")
-        return False
 
     try:
-        # Use -i for interactive installation
-        run_command(
-            ["winget", "install", "-i", "MSYS2.MSYS2", "--accept-source-agreements"],
-            check=False  # Don't fail if user cancels
+        # Silent install to default location
+        # See: https://www.msys2.org/docs/installer/
+        result = subprocess.run(
+            [str(installer_path), "install", "--root", "C:\\msys64", "--confirm-command"],
+            capture_output=True,
+            text=True,
+            timeout=600  # 10 minute timeout
         )
+
+        if result.returncode != 0:
+            log.log(f"MSYS2 installer exited with code {result.returncode}", "ERROR")
+            if result.stderr:
+                log.log(f"Error output: {result.stderr[:500]}", "ERROR")
+            raise RuntimeError(f"Installer failed with exit code {result.returncode}")
+
+        # Clean up installer
+        try:
+            installer_path.unlink()
+        except Exception:
+            pass
+
+    except subprocess.TimeoutExpired:
+        log.log("MSYS2 installation timed out after 10 minutes", "ERROR")
+        print()
+        print("  MANUAL INSTALLATION REQUIRED:")
+        print(f"  1. Run the installer manually: {installer_path}")
+        print("  2. Install to C:\\msys64")
+        print("  3. Re-run this installer")
+        print()
+        return False
+
     except Exception as e:
         log.log(f"MSYS2 installation failed: {e}", "ERROR")
+        print()
+        print("  MANUAL INSTALLATION REQUIRED:")
+        print(f"  1. Run the installer manually: {installer_path}")
+        print("  2. Install to C:\\msys64")
+        print("  3. Re-run this installer")
+        print()
+        print("  Common issues:")
+        print("  - Run as Administrator")
+        print("  - Antivirus may block the installer")
+        print("  - Insufficient disk space (needs ~2GB)")
+        print()
         return False
 
     if check_msys2_installed():
         log.log("MSYS2 installation verified", "SUCCESS")
         return True
     else:
-        log.log(f"MSYS2 not found at {WINDOWS_MSYS2_PATH}", "ERROR")
+        log.log(f"MSYS2 not found at {WINDOWS_MSYS2_PATH} after installation", "ERROR")
+        print()
+        print("  Installation may have succeeded but to a different location.")
+        print("  This installer expects MSYS2 at C:\\msys64")
+        print()
         return False
 
 
@@ -262,48 +331,61 @@ def install_freetds_windows() -> bool:
 
     if not check_msys2_installed():
         log.log("MSYS2 not installed - cannot install FreeTDS", "ERROR")
+        print()
+        print("  MANUAL INSTALLATION REQUIRED:")
+        print("  1. Install MSYS2 first from https://www.msys2.org/")
+        print("  2. Re-run this installer")
+        print()
         return False
 
     msys2_shell = WINDOWS_MSYS2_PATH / "msys2_shell.cmd"
 
     if not msys2_shell.exists():
         log.log(f"MSYS2 shell not found at {msys2_shell}", "ERROR")
+        print()
+        print("  MSYS2 appears to be installed but shell script is missing.")
+        print("  Try reinstalling MSYS2 from https://www.msys2.org/")
+        print()
         return False
 
-    print()
-    print("  FreeTDS will be installed from MSYS2 UCRT64.")
-    print()
-    print("  Option 1: Automatic (recommended)")
-    print("  Option 2: Manual - run in MSYS2 UCRT64 terminal:")
-    print("            pacman -S mingw-w64-ucrt-x86_64-freetds")
-    print()
+    log.log("Installing FreeTDS via pacman (automatic)...", "INFO")
 
-    if prompt_yes_no("Try automatic installation?"):
-        log.log("Attempting automatic FreeTDS installation...", "INFO")
+    try:
+        pacman_cmd = "pacman -S --noconfirm mingw-w64-ucrt-x86_64-freetds"
 
-        try:
-            pacman_cmd = "pacman -S --noconfirm mingw-w64-ucrt-x86_64-freetds"
+        result = subprocess.run(
+            [str(msys2_shell), "-ucrt64", "-defterm", "-no-start", "-c", pacman_cmd],
+            capture_output=True,
+            text=True,
+            timeout=300  # 5 minute timeout
+        )
 
-            result = subprocess.run(
-                [str(msys2_shell), "-ucrt64", "-defterm", "-no-start", "-c", pacman_cmd],
-                capture_output=False,
-                text=True
-            )
+        log.log(f"pacman exited with code: {result.returncode}", "INFO")
 
-            log.log(f"pacman exited with code: {result.returncode}", "INFO")
+        if result.returncode != 0:
+            log.log("pacman command failed", "WARN")
+            if result.stderr:
+                log.log(f"Error: {result.stderr[:300]}", "ERROR")
 
-        except Exception as e:
-            log.log(f"Automatic installation failed: {e}", "ERROR")
-            print()
-            print("  Please install manually:")
-            print("  1. Open 'MSYS2 UCRT64' from Start Menu")
-            print("  2. Run: pacman -S mingw-w64-ucrt-x86_64-freetds")
-            print()
-            input("Press Enter after installing FreeTDS...")
-    else:
+    except subprocess.TimeoutExpired:
+        log.log("FreeTDS installation timed out after 5 minutes", "ERROR")
         print()
-        print("  Please install FreeTDS manually, then continue.")
-        input("Press Enter after installing FreeTDS...")
+        print("  MANUAL INSTALLATION REQUIRED:")
+        print("  1. Open 'MSYS2 UCRT64' from Start Menu")
+        print("  2. Run: pacman -S mingw-w64-ucrt-x86_64-freetds")
+        print("  3. Re-run this installer")
+        print()
+        return False
+
+    except Exception as e:
+        log.log(f"FreeTDS installation failed: {e}", "ERROR")
+        print()
+        print("  MANUAL INSTALLATION REQUIRED:")
+        print("  1. Open 'MSYS2 UCRT64' from Start Menu")
+        print("  2. Run: pacman -S mingw-w64-ucrt-x86_64-freetds")
+        print("  3. Re-run this installer")
+        print()
+        return False
 
     return check_freetds_installed()
 
@@ -466,34 +548,44 @@ def add_scripts_to_path(scripts_dir: Path) -> bool:
         return False
 
 
-def install_vim_via_winget() -> bool:
-    """Install vim using winget package manager."""
-    log.log("Checking for winget package manager", "INFO")
-
-    winget_path = shutil.which("winget")
-    if not winget_path:
-        log.log("winget not found - cannot auto-install vim", "ERROR")
-        log.log("Install manually from: https://www.vim.org/download.php", "INFO")
+def install_vim_via_msys2() -> bool:
+    """Install vim using MSYS2 pacman."""
+    if not check_msys2_installed():
+        log.log("MSYS2 not installed - cannot install vim via pacman", "ERROR")
         return False
 
-    log.log(f"winget found at: {winget_path}", "SUCCESS")
-    log.log("Installing vim via winget...", "STEP")
+    msys2_shell = WINDOWS_MSYS2_PATH / "msys2_shell.cmd"
+    if not msys2_shell.exists():
+        log.log(f"MSYS2 shell not found at {msys2_shell}", "ERROR")
+        return False
+
+    log.log("Installing vim via MSYS2 pacman...", "STEP")
 
     try:
+        # Install vim to usr/bin (available system-wide via MSYS2)
+        pacman_cmd = "pacman -S --noconfirm vim"
+
         result = subprocess.run(
-            ["winget", "install", "-e", "--id", "vim.vim",
-             "--accept-source-agreements", "--accept-package-agreements"],
+            [str(msys2_shell), "-ucrt64", "-defterm", "-no-start", "-c", pacman_cmd],
             capture_output=True,
-            text=True
+            text=True,
+            timeout=300  # 5 minute timeout
         )
 
-        if result.returncode == 0:
-            log.log("vim installation completed", "SUCCESS")
+        log.log(f"pacman exited with code: {result.returncode}", "INFO")
+
+        # Check if vim is now available in MSYS2 usr/bin
+        vim_path = WINDOWS_MSYS2_USR_BIN / "vim.exe"
+        if vim_path.exists():
+            log.log(f"vim installed at {vim_path}", "SUCCESS")
             return True
         else:
-            log.log(f"vim installation failed: {result.stderr}", "ERROR")
+            log.log("vim not found after pacman install", "WARN")
             return False
 
+    except subprocess.TimeoutExpired:
+        log.log("vim installation timed out", "ERROR")
+        return False
     except Exception as e:
         log.log(f"vim installation failed: {e}", "ERROR")
         return False
@@ -503,7 +595,9 @@ def configure_vim_path() -> bool:
     """
     Ensure vim.exe is available in PATH on Windows.
 
-    Checks common installation locations and adds to PATH if found but not already accessible.
+    Checks common installation locations. If not found, installs via MSYS2 pacman.
+    MSYS2's usr/bin is already added to PATH by configure_path(), so vim will
+    be available once installed there.
     """
     log.section("VIM Installation")
 
@@ -513,7 +607,14 @@ def configure_vim_path() -> bool:
         log.log(f"vim already in PATH: {vim_path}", "SUCCESS")
         return True
 
-    # Common vim installation locations on Windows
+    # Check if vim exists in MSYS2 usr/bin (may not be in PATH yet)
+    msys2_vim = WINDOWS_MSYS2_USR_BIN / "vim.exe"
+    if msys2_vim.exists():
+        log.log(f"vim found at {msys2_vim}", "SUCCESS")
+        log.log("vim will be available after PATH is configured", "INFO")
+        return True
+
+    # Common vim installation locations on Windows (check before installing)
     vim_locations = [
         # Standard Vim installations (check multiple versions)
         Path("C:/Program Files/Vim/vim91"),
@@ -527,93 +628,74 @@ def configure_vim_path() -> bool:
         # Git for Windows includes vim
         Path("C:/Program Files/Git/usr/bin"),
         Path("C:/Program Files (x86)/Git/usr/bin"),
-        # MSYS2 vim
-        Path("C:/msys64/usr/bin"),
         # User-local installations
         Path(os.environ.get("LOCALAPPDATA", ""), "Programs/Git/usr/bin"),
     ]
 
     # Find vim.exe in known locations
-    vim_dir = None
     for location in vim_locations:
         if not location.exists():
             continue
         vim_exe = location / "vim.exe"
         if vim_exe.exists():
-            vim_dir = location
             log.log(f"Found vim at: {vim_exe}", "SUCCESS")
-            break
+            # Add this directory to PATH
+            vim_dir_str = str(location)
+            current_path = os.environ.get("PATH", "")
 
-    if not vim_dir:
-        log.log("vim.exe not found in common locations", "WARN")
+            if vim_dir_str.lower() not in current_path.lower():
+                os.environ["PATH"] = f"{vim_dir_str};{current_path}"
+                log.log(f"Added to current session PATH: {vim_dir_str}", "SUCCESS")
 
-        # Offer to install via winget
-        if prompt_yes_no("vim not found. Install vim via winget?", default=False):
-            if install_vim_via_winget():
-                # Re-search after installation
-                for location in vim_locations:
-                    if not location.exists():
-                        continue
-                    vim_exe = location / "vim.exe"
-                    if vim_exe.exists():
-                        vim_dir = location
-                        log.log(f"Found vim at: {vim_exe}", "SUCCESS")
-                        break
+                # Add to user PATH permanently
+                try:
+                    import winreg
+                    with winreg.OpenKey(
+                        winreg.HKEY_CURRENT_USER,
+                        r"Environment",
+                        0,
+                        winreg.KEY_READ | winreg.KEY_WRITE
+                    ) as key:
+                        try:
+                            user_path, _ = winreg.QueryValueEx(key, "Path")
+                        except FileNotFoundError:
+                            user_path = ""
 
-                if not vim_dir:
-                    log.log("vim installed but not found in expected locations", "WARN")
-                    log.log("You may need to restart your terminal", "INFO")
-                    return False
-            else:
-                return False
-        else:
-            log.log("Skipping vim installation", "INFO")
-            return False
+                        if vim_dir_str.lower() not in user_path.lower():
+                            new_path = f"{user_path};{vim_dir_str}" if user_path else vim_dir_str
+                            winreg.SetValueEx(key, "Path", 0, winreg.REG_EXPAND_SZ, new_path)
+                            log.log(f"Added to User PATH (permanent): {vim_dir_str}", "SUCCESS")
+                except Exception as e:
+                    log.log(f"Could not modify user PATH: {e}", "WARN")
 
-    vim_dir_str = str(vim_dir)
+            return True
 
-    # Check if this directory is already in PATH
-    current_path = os.environ.get("PATH", "")
-    if vim_dir_str.lower() in current_path.lower():
-        log.log(f"vim directory already in PATH: {vim_dir_str}", "SUCCESS")
-        return True
+    # vim not found anywhere - install via MSYS2 pacman
+    log.log("vim not found in common locations", "INFO")
 
-    # Prompt user before modifying PATH
-    if not prompt_yes_no(f"Add vim directory to PATH?\n   {vim_dir_str}"):
-        log.log("User declined to add vim to PATH", "INFO")
+    if not check_msys2_installed():
+        log.log("MSYS2 not installed - cannot auto-install vim", "ERROR")
+        print()
+        print("  MANUAL INSTALLATION REQUIRED:")
+        print("  Option 1: Install vim from https://www.vim.org/download.php")
+        print("  Option 2: Install Git for Windows (includes vim)")
+        print("            https://git-scm.com/download/win")
+        print()
         return False
 
-    # Add to current session PATH
-    os.environ["PATH"] = f"{vim_dir_str};{current_path}"
-    log.log(f"Added to current session PATH: {vim_dir_str}", "SUCCESS")
+    log.log("Installing vim via MSYS2 (will be available in C:\\msys64\\usr\\bin)...", "STEP")
 
-    # Add to user PATH permanently
-    try:
-        import winreg
-
-        with winreg.OpenKey(
-            winreg.HKEY_CURRENT_USER,
-            r"Environment",
-            0,
-            winreg.KEY_READ | winreg.KEY_WRITE
-        ) as key:
-            try:
-                user_path, _ = winreg.QueryValueEx(key, "Path")
-            except FileNotFoundError:
-                user_path = ""
-
-            if vim_dir_str.lower() not in user_path.lower():
-                new_path = f"{user_path};{vim_dir_str}" if user_path else vim_dir_str
-                winreg.SetValueEx(key, "Path", 0, winreg.REG_EXPAND_SZ, new_path)
-                log.log(f"Added to User PATH (permanent): {vim_dir_str}", "SUCCESS")
-            else:
-                log.log("vim directory already in User PATH", "SUCCESS")
-
+    if install_vim_via_msys2():
+        log.log("vim installed successfully via MSYS2", "SUCCESS")
+        log.log("vim will be available via C:\\msys64\\usr\\bin (already in PATH)", "INFO")
         return True
-
-    except Exception as e:
-        log.log(f"Could not modify user PATH: {e}", "WARN")
-        log.log(f"Please manually add to PATH: {vim_dir_str}", "WARN")
+    else:
+        log.log("vim installation via MSYS2 failed", "ERROR")
+        print()
+        print("  MANUAL INSTALLATION REQUIRED:")
+        print("  Open MSYS2 terminal and run: pacman -S vim")
+        print("  Or install from: https://www.vim.org/download.php")
+        print()
         return False
 
 
@@ -703,30 +785,39 @@ def initialize_settings_json(force: bool = False) -> bool:
     log.section("Settings Configuration")
 
     settings_file = PROJECT_ROOT / "settings.json"
+    needs_creation = False
 
-    if settings_file.exists() and not force:
-        log.log(f"Settings file exists: {settings_file}", "SUCCESS")
+    if settings_file.exists():
+        if force:
+            log.log("Force flag set - will recreate settings.json", "INFO")
+            needs_creation = True
+        else:
+            # Validate existing file
+            log.log(f"Settings file exists: {settings_file}", "SUCCESS")
+            try:
+                import json
+                with open(settings_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
 
-        # Validate it's valid JSON
-        try:
-            import json
-            with open(settings_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-
-            if "Profiles" in data:
-                profile_count = len(data["Profiles"])
-                log.log(f"Found {profile_count} profile(s) in settings.json", "SUCCESS")
-                return True
-            else:
-                log.log("settings.json missing 'Profiles' key", "WARN")
-                log.log("File may need to be recreated", "WARN")
-        except json.JSONDecodeError as e:
-            log.log(f"settings.json is not valid JSON: {e}", "ERROR")
-            if not prompt_yes_no("Recreate settings.json with sample data?", default=False):
+                if "Profiles" in data:
+                    profile_count = len(data["Profiles"])
+                    log.log(f"Found {profile_count} profile(s) in settings.json", "SUCCESS")
+                    return True
+                else:
+                    log.log("settings.json missing 'Profiles' key - will recreate", "WARN")
+                    needs_creation = True
+            except json.JSONDecodeError as e:
+                log.log(f"settings.json is not valid JSON: {e}", "ERROR")
+                log.log("Backing up invalid file and creating new one", "INFO")
+                needs_creation = True
+            except Exception as e:
+                log.log(f"Could not read settings.json: {e}", "ERROR")
                 return False
-        except Exception as e:
-            log.log(f"Could not read settings.json: {e}", "ERROR")
-            return False
+    else:
+        needs_creation = True
+
+    if not needs_creation:
+        return True
 
     # Create sample settings.json
     log.subsection("Creating sample settings.json")
@@ -762,10 +853,6 @@ def initialize_settings_json(force: bool = False) -> bool:
 """
 
     if settings_file.exists():
-        if not prompt_yes_no("Overwrite existing settings.json?", default=False):
-            log.log("Keeping existing settings.json", "SKIP")
-            return True
-
         # Backup existing
         backup_path = settings_file.with_suffix(".json.backup")
         try:
@@ -923,22 +1010,20 @@ def main():
     print(f"  Log file: {LOG_FILE}")
     print()
 
-    if not prompt_yes_no("Continue with installation?"):
-        log.log("User cancelled installation", "INFO")
-        return 1
-
     # Step 1: MSYS2
-    if not install_msys2():
-        if not prompt_yes_no("MSYS2 installation had issues. Continue anyway?"):
-            show_summary()
-            return 1
+    msys2_ok = install_msys2()
+    if not msys2_ok:
+        log.log("MSYS2 installation failed - continuing with remaining steps", "WARN")
 
-    # Step 2: FreeTDS
+    # Step 2: FreeTDS (requires MSYS2)
+    freetds_ok = False
     if not args.skip_freetds:
-        if not install_freetds(args.force):
-            if not prompt_yes_no("FreeTDS installation had issues. Continue anyway?"):
-                show_summary()
-                return 1
+        if msys2_ok:
+            freetds_ok = install_freetds(args.force)
+            if not freetds_ok:
+                log.log("FreeTDS installation failed - continuing with remaining steps", "WARN")
+        else:
+            log.log("Skipping FreeTDS - MSYS2 not available", "SKIP")
     else:
         log.log("Skipping FreeTDS installation (user flag)", "SKIP")
 

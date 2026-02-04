@@ -8,7 +8,7 @@
 
     This script only handles:
     - Python version verification
-    - Python installation via winget (if needed)
+    - Python installation via direct download (if needed)
     - Launching installer_windows.py
 
 .NOTES
@@ -169,40 +169,102 @@ function Test-PythonVersion {
     return $Version -ge $Script:RequiredPythonVersion
 }
 
-function Install-PythonViaWinget {
+function Install-PythonDirect {
     <#
     .SYNOPSIS
-        Install Python using winget.
+        Install Python via direct download from python.org.
+    .DESCRIPTION
+        Downloads and silently installs Python 3.11. Works on Windows Server 2022
+        and other environments where WinGet is not available.
     #>
 
-    Write-Status "Checking for winget package manager" "Info"
-    $winget = Get-Command winget -ErrorAction SilentlyContinue
-    if ($null -eq $winget) {
-        Write-Status "winget not found - cannot auto-install Python" "Error"
+    $pythonVersion = "3.11.9"
+    $installerUrl = "https://www.python.org/ftp/python/$pythonVersion/python-$pythonVersion-amd64.exe"
+    $installerPath = "$env:TEMP\python-$pythonVersion-amd64.exe"
+
+    Write-Status "Downloading Python $pythonVersion from python.org..." "Step"
+    Write-Host ""
+    Write-Host "  URL: $installerUrl" -ForegroundColor Gray
+    Write-Host ""
+
+    try {
+        # Download with progress
+        $ProgressPreference = 'SilentlyContinue'  # Speeds up Invoke-WebRequest
+        Invoke-WebRequest -Uri $installerUrl -OutFile $installerPath -UseBasicParsing
+        $ProgressPreference = 'Continue'
+
+        if (-not (Test-Path $installerPath)) {
+            throw "Download completed but installer file not found at $installerPath"
+        }
+
+        $fileSize = (Get-Item $installerPath).Length / 1MB
+        Write-Status "Downloaded: $([math]::Round($fileSize, 2)) MB" "Success"
+
+    } catch {
+        Write-Status "Failed to download Python installer: $_" "Error"
         Write-Host ""
-        Write-Host "  Please install Python manually:" -ForegroundColor White
-        Write-Host "  1. Download from: https://www.python.org/downloads/" -ForegroundColor Yellow
+        Write-Host "  MANUAL INSTALLATION REQUIRED:" -ForegroundColor Red
+        Write-Host "  1. Download Python from: https://www.python.org/downloads/" -ForegroundColor Yellow
         Write-Host "  2. Run the installer" -ForegroundColor Yellow
         Write-Host "  3. CHECK 'Add Python to PATH' during installation!" -ForegroundColor Red
         Write-Host "  4. Re-run this bootstrap script" -ForegroundColor Yellow
         Write-Host ""
+        Write-Host "  If download fails repeatedly, check:" -ForegroundColor White
+        Write-Host "  - Network connectivity to python.org" -ForegroundColor Gray
+        Write-Host "  - Firewall/proxy settings" -ForegroundColor Gray
+        Write-Host "  - TLS 1.2 support: [Net.ServicePointManager]::SecurityProtocol" -ForegroundColor Gray
+        Write-Host ""
         return $false
     }
 
-    Write-Status "winget found at: $($winget.Source)" "Success"
-    Write-Status "Installing Python 3.11 via winget..." "Step"
+    Write-Status "Installing Python $pythonVersion (silent install)..." "Step"
     Write-Host ""
-    Write-Host "  This will download and install Python." -ForegroundColor White
-    Write-Host "  Please wait for the installation to complete." -ForegroundColor White
+    Write-Host "  This may take a few minutes. Please wait..." -ForegroundColor White
     Write-Host ""
 
     try {
-        Write-Status "Running: winget install -e --id Python.Python.3.11" "Info"
-        $null = winget install -e --id Python.Python.3.11 --accept-source-agreements --accept-package-agreements
-        Write-Status "Python installation completed" "Success"
+        # Silent install with PATH modification
+        # InstallAllUsers=1: Install for all users (requires admin)
+        # PrependPath=1: Add Python to PATH
+        # Include_pip=1: Include pip
+        # Include_test=0: Skip test suite to save space
+        $installArgs = @(
+            "/quiet",
+            "InstallAllUsers=1",
+            "PrependPath=1",
+            "Include_pip=1",
+            "Include_test=0"
+        )
+
+        $process = Start-Process -FilePath $installerPath -ArgumentList $installArgs -Wait -PassThru
+
+        if ($process.ExitCode -ne 0) {
+            throw "Python installer exited with code $($process.ExitCode)"
+        }
+
+        Write-Status "Python $pythonVersion installation completed" "Success"
+
+        # Clean up installer
+        Remove-Item -Path $installerPath -Force -ErrorAction SilentlyContinue
+
+        # Refresh PATH
+        $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
+
         return $true
+
     } catch {
         Write-Status "Python installation failed: $_" "Error"
+        Write-Host ""
+        Write-Host "  MANUAL INSTALLATION REQUIRED:" -ForegroundColor Red
+        Write-Host "  1. Run the installer manually: $installerPath" -ForegroundColor Yellow
+        Write-Host "  2. CHECK 'Add Python to PATH' during installation!" -ForegroundColor Red
+        Write-Host "  3. Re-run this bootstrap script" -ForegroundColor Yellow
+        Write-Host ""
+        Write-Host "  Common issues:" -ForegroundColor White
+        Write-Host "  - Run PowerShell as Administrator for system-wide install" -ForegroundColor Gray
+        Write-Host "  - Antivirus may block the installer" -ForegroundColor Gray
+        Write-Host "  - Existing Python installation may conflict" -ForegroundColor Gray
+        Write-Host ""
         return $false
     }
 }
@@ -301,9 +363,9 @@ function Main {
             return
         }
 
-        if (Get-UserConfirmation "Python is required. Install Python 3.11 via winget?") {
+        if (Get-UserConfirmation "Python is required. Install Python 3.11?") {
             Write-Status "User approved Python installation" "Info"
-            if (-not (Install-PythonViaWinget)) {
+            if (-not (Install-PythonDirect)) {
                 Write-Status "Python installation failed" "Error"
                 Write-Host ""
                 Write-Host "  Please install Python manually and re-run this script." -ForegroundColor Yellow
@@ -349,8 +411,8 @@ function Main {
             return
         }
 
-        if (Get-UserConfirmation "Install Python 3.11 via winget? (Your current version will remain installed)") {
-            if (-not (Install-PythonViaWinget)) {
+        if (Get-UserConfirmation "Install Python 3.11? (Your current version will remain installed)") {
+            if (-not (Install-PythonDirect)) {
                 Write-Host ""
                 Write-Host "  Please upgrade Python manually and re-run this script." -ForegroundColor Yellow
                 Write-Host ""
