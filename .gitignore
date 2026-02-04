@@ -17,3 +17,4 @@ nul
 
 # User configuration (contains credentials)
 settings.json
+install/installer.log
