@@ -201,11 +201,9 @@ def install_msys2() -> bool:
         log.log(f"MSYS2 already installed at {WINDOWS_MSYS2_PATH}", "SUCCESS")
         return True
 
-    # MSYS2 installer release date (update as needed for newer versions)
-    msys2_date = "20250111"
-    installer_filename = f"msys2-x86_64-{msys2_date}.exe"
-    installer_url = f"https://github.com/msys2/msys2-installer/releases/download/2025-01-11/{installer_filename}"
-    installer_path = Path(os.environ.get("TEMP", ".")) / installer_filename
+    # MSYS2 latest installer URL (always points to current version)
+    installer_url = "https://github.com/msys2/msys2-installer/releases/download/nightly-x86_64/msys2-x86_64-latest.exe"
+    installer_path = Path(os.environ.get("TEMP", ".")) / "msys2-x86_64-latest.exe"
 
     log.log(f"Downloading MSYS2 from GitHub...", "STEP")
     print()
