@@ -1,9 +1,0 @@
-Metadata-Version: 2.4
-Name: ibs_compilers
-Version: 1.0.0
-Summary: A collection of command-line tools for managing and deploying IBS databases.
-Requires-Dist: pyodbc
-Requires-Dist: colorama
-Provides-Extra: dev
-Requires-Dist: pytest>=7.0; extra == "dev"
-Requires-Dist: pytest-cov>=4.0; extra == "dev"
