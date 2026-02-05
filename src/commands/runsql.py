@@ -334,13 +334,13 @@ Notes:
                     enabled, msg = is_changelog_enabled(config, force_check=args.force_changelog_check)
                     if enabled:
                         logging.info("Change logging enabled. Injecting audit trail SQL...")
-                        username = config.get('USERNAME', os.environ.get('USERNAME', 'unknown'))
+                        changelog_user = os.environ.get('USERNAME', os.environ.get('USER', 'unknown'))
                         changelog_lines = generate_changelog_sql(
-                            sql_command=args.script_file,
+                            sql_command=script_path,
                             database=database,
                             server=config.get('PROFILE_NAME', host),
                             company=str(config.get('COMPANY', '')),
-                            username=username,
+                            username=changelog_user,
                             changelog_enabled=True
                         )
                         changelog_sql = '\n'.join(changelog_lines)

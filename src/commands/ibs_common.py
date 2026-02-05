@@ -3771,19 +3771,19 @@ def insert_changelog_entry(config: dict, command_type: str, command: str,
         config: Configuration dictionary with database connection info
         command_type: Type of command (e.g., 'RUNSQL', 'ISQLLINE', 'TEST')
         command: The command that was executed
-        description: Optional description (defaults to 'User `username` ...')
+        description: Optional description (defaults to 'User username ...')
         upgrade_no: Optional upgrade reference number
 
     Returns:
         Tuple of (success: bool, message: str)
     """
     try:
-        # Get username
-        username = config.get('USERNAME', os.environ.get('USERNAME', 'unknown'))
+        # Get OS username for changelog (not database username)
+        username = os.environ.get('USERNAME', os.environ.get('USER', 'unknown'))
 
         # Build description if not provided
         if description is None:
-            description = f"User `{username}` executed {command_type.lower()}"
+            description = f"User {username} executed {command_type.lower()}"
 
         # Escape single quotes
         command_escaped = command.replace("'", "''")
@@ -5451,7 +5451,7 @@ def generate_changelog_sql(sql_command: str, database: str, server: str,
         "if exists (select 1 from &options& where id = 'gclog12' and act_flg = '+')",
         "begin",
         "  if exists (select 1 from &dbpro&..sysobjects where name = 'ba_gen_chg_log_new')",
-        f"    exec &dbpro&..ba_gen_chg_log_new '', 'User `{username}` ran isqlline', 'ISQLLINE', '', 'isqlline {escaped_cmd} {database} {server} {company}', '', 'X'",
+        f"    exec &dbpro&..ba_gen_chg_log_new '', 'User {username} recompiled sproc or ran sql', 'RUNSQL', '', 'runsql {escaped_cmd} {database} {server} {company}', '', 'X'",
         "end",
         "go",
         ""

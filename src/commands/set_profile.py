@@ -721,7 +721,7 @@ def test_changelog(profile, profile_name):
         config=config,
         command_type='TEST',
         command='set_profile changelog test',
-        description=f"User `{config.get('USERNAME', 'unknown')}` tested changelog from set_profile"
+        description=f"User {os.environ.get('USERNAME', os.environ.get('USER', 'unknown'))} tested changelog from set_profile"
     )
 
     if success:
@@ -918,7 +918,12 @@ def test_profile_menu(settings):
 
     list_profiles(settings)
 
-    input_name = input("\nEnter profile name to test: ").strip().upper()
+    input_name = input("\nEnter profile name to test (leave blank to cancel): ").strip()
+
+    if not input_name:
+        return
+
+    input_name = input_name.upper()
 
     # Find profile by name or alias
     profile_name, profile = find_profile_by_name_or_alias(settings, input_name)
@@ -937,6 +942,7 @@ def test_profile_menu(settings):
             print()
             print(f"  {Fore.CYAN}1.{Style.RESET_ALL} Test SQL Source path")
             print(f"  {Fore.CYAN}2.{Style.RESET_ALL} Test connection")
+            print(f" {Fore.CYAN}98.{Style.RESET_ALL} Back")
             print(f" {Fore.CYAN}99.{Style.RESET_ALL} Exit")
             max_choice = 2
         else:
@@ -947,6 +953,7 @@ def test_profile_menu(settings):
             print(f"  {Fore.CYAN}4.{Style.RESET_ALL} Test changelog")
             print(f"  {Fore.CYAN}5.{Style.RESET_ALL} Test table locations")
             print(f"  {Fore.CYAN}6.{Style.RESET_ALL} Test symbolic links")
+            print(f" {Fore.CYAN}98.{Style.RESET_ALL} Back")
             print(f" {Fore.CYAN}99.{Style.RESET_ALL} Exit")
             max_choice = 6
 
@@ -967,8 +974,11 @@ def test_profile_menu(settings):
         elif choice == "2":
             test_connection(profile)
 
-        elif choice == "99":
+        elif choice == "98":
             return
+
+        elif choice == "99":
+            sys.exit(0)
 
         elif choice == "3" and not raw_mode:
             test_option_value(profile, profile_name)
@@ -1023,6 +1033,8 @@ def edit_profile_inline(profile, current_name=None):
 
         if key == "PASSWORD":
             new_value = getpass.getpass(f"  {key} [****]: ")
+        elif key == "HOST":
+            new_value = input(f"  {key} [{current}] (do not include port): ").strip()
         elif key == "SQL_SOURCE":
             print(f"  {key} [{current}]")
             print(f"    (Enter '.' for current directory: {os.getcwd()})")
@@ -1127,7 +1139,7 @@ def create_profile():
     # Host (required)
     print()
     print_step(5, "Server Connection")
-    print(f"  {style_dim('Enter the hostname or IP address of your database server.')}")
+    print(f"  {style_dim('Enter the hostname or IP address of your database server (do not include port).')}")
     while True:
         host = input("  Hostname or IP: ").strip()
         if host:
@@ -1229,7 +1241,12 @@ def copy_profile(settings, settings_path):
     list_profiles(settings)
 
     # Step 1: Select source profile
-    input_name = input("\nEnter profile name to copy from: ").strip().upper()
+    input_name = input("\nEnter profile name to copy from (leave blank to cancel): ").strip()
+
+    if not input_name:
+        return False
+
+    input_name = input_name.upper()
 
     # Find profile by name or alias
     source_name, source_data = find_profile_by_name_or_alias(settings, input_name)
@@ -1289,6 +1306,8 @@ def copy_profile(settings, settings_path):
 
         if key == "PASSWORD":
             new_value = getpass.getpass(f"  {key} [****]: ")
+        elif key == "HOST":
+            new_value = input(f"  {key} [{current}] (do not include port): ").strip()
         elif key == "SQL_SOURCE":
             print(f"  {key} [{current}]")
             print(f"    (Enter '.' for current directory: {os.getcwd()})")
@@ -1350,7 +1369,12 @@ def edit_profile(settings, settings_path):
 
     list_profiles(settings)
 
-    input_name = input("\nEnter profile name to edit: ").strip().upper()
+    input_name = input("\nEnter profile name to edit (leave blank to cancel): ").strip()
+
+    if not input_name:
+        return False
+
+    input_name = input_name.upper()
 
     # Find profile by name or alias
     profile_name, profile_data = find_profile_by_name_or_alias(settings, input_name)
@@ -1396,7 +1420,12 @@ def delete_profile(settings):
 
     list_profiles(settings)
 
-    input_name = input("\nEnter profile name to delete: ").strip().upper()
+    input_name = input("\nEnter profile name to delete (leave blank to cancel): ").strip()
+
+    if not input_name:
+        return
+
+    input_name = input_name.upper()
 
     # Find profile by name or alias
     profile_name, profile_data = find_profile_by_name_or_alias(settings, input_name)
@@ -1594,14 +1623,17 @@ def add_to_ide_menu(settings):
     print_subheader("Add to IDE")
     print()
     print(f"  {Fore.CYAN}1.{Style.RESET_ALL} VSCode")
+    print(f" {Fore.CYAN}98.{Style.RESET_ALL} Back")
     print(f" {Fore.CYAN}99.{Style.RESET_ALL} Exit")
 
     choice = input("\nChoose [1]: ").strip()
 
     if choice == "1":
         add_to_vscode_menu(settings)
-    elif choice == "99":
+    elif choice == "98":
         return
+    elif choice == "99":
+        sys.exit(0)
     else:
         print("Invalid choice.")
 

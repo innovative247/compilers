@@ -856,6 +856,7 @@ def run_project(project_name: str):
         print(f"  {Fore.CYAN}3.{Style.RESET_ALL} Edit destination connection")
         print(f"  {Fore.CYAN}4.{Style.RESET_ALL} Edit databases and tables")
         print(f"  {Fore.CYAN}5.{Style.RESET_ALL} Edit transfer options")
+        print(f" {Fore.CYAN}98.{Style.RESET_ALL} Back")
         print(f" {Fore.CYAN}99.{Style.RESET_ALL} Exit")
 
         choice = input("\nChoose [1-5]: ").strip()
@@ -899,8 +900,11 @@ def run_project(project_name: str):
             save_data_transfer_project(project_name, project)
             print("Options updated and saved.")
 
-        elif choice == '99':
+        elif choice == '98':
             return
+
+        elif choice == '99':
+            sys.exit(0)
 
         else:
             print("Invalid choice.")
@@ -920,11 +924,14 @@ def _edit_databases(project_name: str, project: dict, src_config: dict):
     else:
         print("  None configured")
         print(f"  {Fore.CYAN}1.{Style.RESET_ALL} [Add new database]")
+    print(f" {Fore.CYAN}98.{Style.RESET_ALL} Back")
     print(f" {Fore.CYAN}99.{Style.RESET_ALL} Exit")
 
     db_choice = input("\nChoose: ").strip()
-    if db_choice == '99' or not db_choice:
+    if db_choice == '98' or not db_choice:
         return
+    if db_choice == '99':
+        sys.exit(0)
 
     if db_choice.isdigit():
         idx = int(db_choice) - 1
@@ -1052,14 +1059,17 @@ def _execute_transfer(project_name: str, project: dict, project_dir: str, existi
     print(f"  {Fore.CYAN}1.{Style.RESET_ALL} Full transfer {style_dim('(Extract + Insert)')}")
     print(f"  {Fore.CYAN}2.{Style.RESET_ALL} Extract only {style_dim('(create BCP files)')}")
     print(f"  {Fore.CYAN}3.{Style.RESET_ALL} Insert only {style_dim('(import existing BCP files)')}")
+    print(f" {Fore.CYAN}98.{Style.RESET_ALL} Back")
     print(f" {Fore.CYAN}99.{Style.RESET_ALL} Exit")
     if existing_bcp_files:
         print(f"\n  {Icons.INFO} {len(existing_bcp_files)} BCP files found in project directory")
 
     while True:
         run_mode = input("\nChoose [1-3]: ").strip()
-        if run_mode == '99':
+        if run_mode == '98':
             return
+        if run_mode == '99':
+            sys.exit(0)
         if run_mode in ('1', '2', '3'):
             break
         print_warning("Invalid choice.")
@@ -1334,11 +1344,14 @@ def view_project_menu():
     print_subheader("View Project")
     for i, name in enumerate(projects, 1):
         print(f"  {Fore.CYAN}{i}.{Style.RESET_ALL} {name}")
+    print(f" {Fore.CYAN}98.{Style.RESET_ALL} Back")
     print(f" {Fore.CYAN}99.{Style.RESET_ALL} Exit")
 
     choice = input("\nChoose: ").strip()
-    if choice == '99' or not choice:
+    if choice == '98' or not choice:
         return
+    if choice == '99':
+        sys.exit(0)
 
     try:
         idx = int(choice) - 1
@@ -1365,11 +1378,14 @@ def delete_project_menu():
     print_subheader("Delete Project")
     for i, name in enumerate(projects, 1):
         print(f"  {Fore.CYAN}{i}.{Style.RESET_ALL} {name}")
+    print(f" {Fore.CYAN}98.{Style.RESET_ALL} Back")
     print(f" {Fore.CYAN}99.{Style.RESET_ALL} Exit")
 
     choice = input("\nChoose: ").strip()
-    if choice == '99' or not choice:
+    if choice == '98' or not choice:
         return
+    if choice == '99':
+        sys.exit(0)
 
     try:
         idx = int(choice) - 1
@@ -1405,11 +1421,14 @@ def run_project_menu():
                 status = f" {Fore.YELLOW}[INCOMPLETE: {len(pending)} pending]{Style.RESET_ALL}"
 
         print(f"  {Fore.CYAN}{i}.{Style.RESET_ALL} {Style.BRIGHT}{name}{Style.RESET_ALL}{status}")
+    print(f" {Fore.CYAN}98.{Style.RESET_ALL} Back")
     print(f" {Fore.CYAN}99.{Style.RESET_ALL} Exit")
 
     choice = input("\nChoose: ").strip()
-    if choice == '99' or not choice:
+    if choice == '98' or not choice:
         return
+    if choice == '99':
+        sys.exit(0)
 
     try:
         idx = int(choice) - 1
