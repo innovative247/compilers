@@ -192,29 +192,6 @@ def _perform_upgrade() -> Tuple[bool, str]:
         return False, f"Upgrade failed: {str(e)}"
 
 
-def _restart_command() -> None:
-    """
-    Restart the current command to use the new version.
-    Uses os.execv to replace the current process.
-    """
-    try:
-        # Get the current executable and arguments
-        executable = sys.executable
-        args = sys.argv
-
-        # On Windows, we need to handle this differently
-        if sys.platform == 'win32':
-            # Use subprocess to start a new process and exit
-            subprocess.Popen([executable] + args)
-            sys.exit(0)
-        else:
-            # On Unix, use execv to replace the current process
-            os.execv(executable, [executable] + args)
-    except Exception as e:
-        print(f"  Warning: Could not auto-restart: {e}")
-        print("  Please re-run your command manually.")
-
-
 def check_for_updates(command_name: str = "command") -> bool:
     """
     Check for updates if this is the first command of the day.
@@ -284,13 +261,10 @@ def check_for_updates(command_name: str = "command") -> bool:
                 print(f"  {message}")
 
             if 'Already up to date' not in message:
-                # Automatically restart the command with the new version
                 print()
-                print("  Restarting command with new version...")
+                print("  Upgrade complete. Please re-run your command.")
                 print()
-                _restart_command()
-                # If restart fails, fall through and exit
-                return False
+                return False  # Cancel the user's command
         else:
             if has_colorama:
                 print(f"  {Fore.RED}{message}{Style.RESET_ALL}")
