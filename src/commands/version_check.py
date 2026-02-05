@@ -133,10 +133,12 @@ def _compare_versions(current: str, remote: str) -> int:
 
 def _perform_upgrade() -> Tuple[bool, str]:
     """
-    Perform the upgrade by pulling latest from git.
+    Perform the upgrade by pulling latest from git and reinstalling.
     Returns: (success, message)
     """
     compilers_dir = _get_compilers_dir()
+    src_dir = compilers_dir / 'src'
+    messages = []
 
     try:
         # Check if it's a git repository
@@ -144,7 +146,7 @@ def _perform_upgrade() -> Tuple[bool, str]:
         if not git_dir.exists():
             return False, "Not a git repository. Manual upgrade required."
 
-        # Perform git pull
+        # Step 1: Perform git pull
         result = subprocess.run(
             ['git', 'pull', 'origin', 'main'],
             cwd=str(compilers_dir),
@@ -153,13 +155,34 @@ def _perform_upgrade() -> Tuple[bool, str]:
             timeout=60
         )
 
-        if result.returncode == 0:
-            output = result.stdout.strip()
-            if 'Already up to date' in output:
-                return True, "Already up to date."
-            return True, f"Upgrade successful!\n{output}"
-        else:
+        if result.returncode != 0:
             return False, f"Git pull failed:\n{result.stderr}"
+
+        git_output = result.stdout.strip()
+        if 'Already up to date' in git_output:
+            return True, "Already up to date."
+
+        messages.append(f"Git pull: {git_output}")
+
+        # Step 2: Reinstall package to update entry points and dependencies
+        # Use pip install -e . for editable install from src/ directory
+        if src_dir.exists() and (src_dir / 'pyproject.toml').exists():
+            pip_result = subprocess.run(
+                [sys.executable, '-m', 'pip', 'install', '-e', '.', '--quiet'],
+                cwd=str(src_dir),
+                capture_output=True,
+                text=True,
+                timeout=120
+            )
+
+            if pip_result.returncode == 0:
+                messages.append("Package reinstalled successfully.")
+            else:
+                # pip install failed, but git pull succeeded
+                messages.append(f"Warning: pip install failed: {pip_result.stderr.strip()}")
+                messages.append("You may need to run: pip install -e . (in the src/ directory)")
+
+        return True, "Upgrade successful!\n" + "\n".join(messages)
 
     except subprocess.TimeoutExpired:
         return False, "Upgrade timed out."
