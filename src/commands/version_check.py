@@ -223,7 +223,7 @@ def check_for_updates(command_name: str = "command") -> bool:
         print(f"  Latest version:  {remote_version}")
     print()
 
-    choice = input("  Would you like to upgrade now? [Y/n]: ").strip().lower()
+    choice = input("  There is a new version of the compilers available. Would you like to upgrade now? [Y/n]: ").strip().lower()
 
     if choice in ('', 'y', 'yes'):
         print()
