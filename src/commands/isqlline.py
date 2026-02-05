@@ -57,6 +57,10 @@ from .ibs_common import (
 
 def main():
     """Main entry point for isqlline."""
+    # Check for updates (once per day)
+    from .version_check import check_for_updates
+    if not check_for_updates("isqlline"):
+        sys.exit(0)
 
     # Show help if no arguments provided
     if len(sys.argv) == 1:

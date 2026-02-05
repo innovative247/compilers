@@ -1483,6 +1483,11 @@ def main_menu():
 
 def main():
     """Entry point."""
+    # Check for updates (once per day)
+    from .version_check import check_for_updates
+    if not check_for_updates("transfer_data"):
+        sys.exit(0)
+
     # Check FreeTDS version at startup
     success, message, version = check_freetds_version()
     if not success:

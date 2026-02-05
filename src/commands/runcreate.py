@@ -642,6 +642,11 @@ def run_create_file(config: dict, options: Options, create_file_path: str,
 
 def main(args_list=None):
     """Main entry point for runcreate."""
+    # Check for updates (once per day)
+    from .version_check import check_for_updates
+    if not check_for_updates("runcreate"):
+        sys.exit(0)
+
     if args_list is None:
         args_list = sys.argv[1:]
 

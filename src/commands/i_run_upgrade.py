@@ -144,6 +144,11 @@ def write_output(message: str, output_file: str = None):
 
 def main(args_list=None):
     """Main entry point for i_run_upgrade."""
+    # Check for updates (once per day)
+    from .version_check import check_for_updates
+    if not check_for_updates("i_run_upgrade"):
+        sys.exit(0)
+
     if args_list is None:
         args_list = sys.argv[1:]
 

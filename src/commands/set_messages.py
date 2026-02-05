@@ -119,6 +119,11 @@ def main(args_list=None):
     Args:
         args_list: Command line arguments (defaults to sys.argv[1:])
     """
+    # Check for updates (once per day)
+    from .version_check import check_for_updates
+    if not check_for_updates("compile_msg"):
+        sys.exit(0)
+
     if args_list is None:
         args_list = sys.argv[1:]
 

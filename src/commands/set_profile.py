@@ -1840,6 +1840,11 @@ def main_menu():
 
 def main():
     """Entry point for the set_profile command."""
+    # Check for updates (once per day)
+    from .version_check import check_for_updates
+    if not check_for_updates("set_profile"):
+        sys.exit(0)
+
     try:
         main_menu()
     except KeyboardInterrupt:
