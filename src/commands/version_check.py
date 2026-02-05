@@ -167,8 +167,13 @@ def _perform_upgrade() -> Tuple[bool, str]:
         # Step 2: Reinstall package to update entry points and dependencies
         # Use pip install -e . for editable install from src/ directory
         if src_dir.exists() and (src_dir / 'pyproject.toml').exists():
+            # Build pip command - add --break-system-packages for Linux (PEP 668)
+            pip_cmd = [sys.executable, '-m', 'pip', 'install', '-e', '.', '--quiet']
+            if sys.platform.startswith('linux'):
+                pip_cmd.append('--break-system-packages')
+
             pip_result = subprocess.run(
-                [sys.executable, '-m', 'pip', 'install', '-e', '.', '--quiet'],
+                pip_cmd,
                 cwd=str(src_dir),
                 capture_output=True,
                 text=True,
