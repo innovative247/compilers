@@ -1840,6 +1840,12 @@ def main_menu():
 
 def main():
     """Entry point for the set_profile command."""
+    # Handle --version / -v
+    if len(sys.argv) > 1 and sys.argv[1] in ('--version', '-v'):
+        from .version import __version__
+        print(f"set_profile {__version__}")
+        sys.exit(0)
+
     # Check for updates (once per day)
     from .version_check import check_for_updates
     if not check_for_updates("set_profile"):

@@ -1483,6 +1483,12 @@ def main_menu():
 
 def main():
     """Entry point."""
+    # Handle --version / -v
+    if len(sys.argv) > 1 and sys.argv[1] in ('--version', '-v'):
+        from .version import __version__
+        print(f"transfer_data {__version__}")
+        sys.exit(0)
+
     # Check for updates (once per day)
     from .version_check import check_for_updates
     if not check_for_updates("transfer_data"):

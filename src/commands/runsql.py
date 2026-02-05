@@ -77,6 +77,7 @@ def main():
     if len(sys.argv) == 1:
         sys.argv.append('-h')
 
+    from .version import __version__
     parser = argparse.ArgumentParser(
         description="Execute SQL scripts with sequence and placeholder replacement.",
         epilog="""
@@ -94,6 +95,7 @@ Notes:
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
+    parser.add_argument('--version', '-v', action='version', version=f'%(prog)s {__version__}')
 
     # Positional arguments
     parser.add_argument("script_file", nargs="?", help="Path to the SQL script file")

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ibs_compilers"
-version = "1.0.2"
+dynamic = ["version"]
 description = "A collection of command-line tools for managing and deploying IBS databases."
 dependencies = [
     "pyodbc",
@@ -28,6 +28,9 @@ python_functions = ["test_*"]
 # Explicitly declare the package
 # ibs_common.py is now inside the commands package, not a separate module
 packages = ["commands"]
+
+[tool.setuptools.dynamic]
+version = {attr = "commands.version.__version__"}
 
 [project.scripts]
 isqlline = "commands.isqlline:main"

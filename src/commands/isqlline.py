@@ -66,6 +66,7 @@ def main():
     if len(sys.argv) == 1:
         sys.argv.append('-h')
 
+    from .version import __version__
     parser = argparse.ArgumentParser(
         description="Execute a single SQL command against a database using native SQL tools.",
         epilog="""
@@ -84,6 +85,7 @@ Notes:
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
+    parser.add_argument('--version', '-v', action='version', version=f'%(prog)s {__version__}')
 
     # Positional arguments
     parser.add_argument("sql_command", nargs="?", help="SQL command to execute")
