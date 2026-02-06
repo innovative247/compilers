@@ -3714,9 +3714,15 @@ def is_changelog_enabled(config: dict, force_check: bool = False) -> tuple:
             os.environ['IBS_CHANGELOG_STATUS'] = '0'
             return False, "&dbpro& placeholder not resolved"
 
-        # Check 1: Is gclog12 enabled?
-        # Query the options table in &dbpro& database
-        query1 = options.replace_options("select act_flg from &options& where id = 'gclog12'")
+        # Check both conditions in a single query (single connection):
+        # 1. gclog12 option act_flg = '+' in options table
+        # 2. ba_gen_chg_log_new stored procedure exists
+        combined_query = options.replace_options(
+            "select 'OPT=' + act_flg from &options& where id = 'gclog12'\n"
+            "go\n"
+            "select 'PROC=' + convert(varchar, count(*)) from sysobjects "
+            "where name = 'ba_gen_chg_log_new' and type = 'P'"
+        )
 
         success, output = execute_sql_native(
             host=config.get('HOST', ''),
@@ -3725,31 +3731,18 @@ def is_changelog_enabled(config: dict, force_check: bool = False) -> tuple:
             password=config.get('PASSWORD', ''),
             database=dbpro,  # Query against &dbpro& database
             platform=config.get('PLATFORM', 'SYBASE'),
-            sql_content=query1
+            sql_content=combined_query
         )
 
         if not success:
             os.environ['IBS_CHANGELOG_STATUS'] = '0'
-            return False, "Could not query options table (may not exist)"
+            return False, "Could not query changelog status (table may not exist)"
 
-        if '+' not in output:
+        if 'OPT=+' not in output:
             os.environ['IBS_CHANGELOG_STATUS'] = '0'
             return False, "gclog12 option is disabled (act_flg != '+')"
 
-        # Check 2: Does ba_gen_chg_log_new exist?
-        query2 = "select 1 from sysobjects where name = 'ba_gen_chg_log_new' and type = 'P'"
-
-        success, output = execute_sql_native(
-            host=config.get('HOST', ''),
-            port=config.get('PORT', 5000),
-            username=config.get('USERNAME', ''),
-            password=config.get('PASSWORD', ''),
-            database=dbpro,  # Query against &dbpro& database
-            platform=config.get('PLATFORM', 'SYBASE'),
-            sql_content=query2
-        )
-
-        if not success or '1' not in output:
+        if 'PROC=1' not in output:
             os.environ['IBS_CHANGELOG_STATUS'] = '0'
             return False, "ba_gen_chg_log_new stored procedure not found in " + dbpro
 
@@ -5505,6 +5498,47 @@ def build_sql_script(sql_command: str, config: dict = None,
 # NATIVE SQL COMPILER EXECUTION (tsql)
 # =============================================================================
 
+
+def get_mssql_init_sql() -> str:
+    """
+    Load MSSQL init SQL from MSSQL_INIT environment variable.
+
+    Similar to SQLCMDINI for sqlcmd.exe - if the MSSQL_INIT environment variable
+    is set and points to a readable file, return its contents to be prepended
+    before every MSSQL command execution.
+
+    Returns:
+        Init SQL content with trailing GO, or empty string if not configured.
+    """
+    init_file = os.environ.get('MSSQL_INIT', '').strip()
+    if not init_file:
+        return ""
+
+    try:
+        init_path = Path(init_file)
+        if not init_path.is_file():
+            logging.warning(f"MSSQL_INIT file not found: {init_file}")
+            return ""
+
+        with open(init_path, 'r', encoding='utf-8') as f:
+            init_content = f.read().strip()
+
+        if not init_content:
+            return ""
+
+        logging.debug(f"Loaded MSSQL init SQL from: {init_file}")
+
+        # Ensure it ends with GO for proper batch separation
+        if not init_content.lower().endswith('go'):
+            init_content += "\ngo"
+
+        return init_content + "\n"
+
+    except Exception as e:
+        logging.warning(f"Failed to read MSSQL_INIT file '{init_file}': {e}")
+        return ""
+
+
 def execute_sql_native(host: str, port: int, username: str, password: str,
                        database: str, platform: str, sql_content: str,
                        output_file: str = None, echo_input: bool = False) -> tuple[bool, str]:
@@ -5549,6 +5583,12 @@ def execute_sql_native(host: str, port: int, username: str, password: str,
     logging.debug(f"Using FreeTDS tsql for {platform}")
 
     try:
+        # Prepend MSSQL init SQL if configured (similar to SQLCMDINI for sqlcmd.exe)
+        if platform.upper() == "MSSQL":
+            init_sql = get_mssql_init_sql()
+            if init_sql:
+                sql_content = init_sql + sql_content
+
         # Ensure SQL ends with go and exit for proper termination
         script_content = sql_content.strip()
         if not script_content.lower().endswith('go'):
@@ -5828,6 +5868,12 @@ def execute_sql_interleaved(host: str, port: int, username: str, password: str,
     if not shutil.which(compiler):
         write_output(f"ERROR: {compiler} command not found. Install FreeTDS.")
         return False
+
+    # Prepend MSSQL init SQL if configured (similar to SQLCMDINI for sqlcmd.exe)
+    if platform.upper() == "MSSQL":
+        init_sql = get_mssql_init_sql()
+        if init_sql:
+            sql_content = init_sql + sql_content
 
     # Escape tsql metacommands inside block comments to prevent misinterpretation
     sql_content = escape_tsql_metacommands(sql_content)
