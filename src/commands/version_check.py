@@ -233,9 +233,9 @@ def force_upgrade(command_name: str = "command") -> bool:
     if comparison >= 0:
         print()
         if has_colorama:
-            print(f"  {Fore.GREEN}compilers is up to date (version {__version__}){Style.RESET_ALL}")
+            print(f"  {Fore.GREEN}Innovative247 Compilers {__version__} is up to date.{Style.RESET_ALL}")
         else:
-            print(f"  compilers is up to date (version {__version__})")
+            print(f"  Innovative247 Compilers {__version__} is up to date.")
         print()
         return False
 

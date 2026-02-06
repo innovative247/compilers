@@ -57,6 +57,12 @@ from .ibs_common import (
 
 def main():
     """Main entry point for isqlline."""
+    # Handle --version / -v
+    if len(sys.argv) > 1 and sys.argv[1] in ('--version', '-v'):
+        from .version import __version__
+        print(f"{Fore.GREEN}Innovative247 Compilers {__version__}{Style.RESET_ALL}")
+        sys.exit(0)
+
     # Check for updates (once per day)
     from .version_check import check_for_updates
     if not check_for_updates("isqlline"):
@@ -85,7 +91,7 @@ Notes:
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument('--version', '-v', action='version', version=f'%(prog)s {__version__}')
+    parser.add_argument('--version', '-v', action='version', version=f'{__version__}')
 
     # Positional arguments
     parser.add_argument("sql_command", nargs="?", help="SQL command to execute")
