@@ -248,8 +248,21 @@ Examples:
                 host, port, username, password, database, platform,
                 sql_proc, output_file=None, echo_input=False
             )
+            # Check if we got actual data rows (not just column headers)
+            has_data = False
             if success and output and output.strip():
+                lines = [l for l in output.strip().splitlines() if l.strip()]
+                # More than 1 line means we have header + data rows
+                has_data = len(lines) > 1
+
+            if has_data:
                 f.write(output + "\n")
+            else:
+                msg = f"There is no active server process for the specified spid value '{spid}'.  Possibly the user connection has terminated."
+                f.write(msg + "\n")
+                if not success and output:
+                    f.write(output + "\n")
+                f.write("(return status = 1)\n")
 
             # Query 2: SQL Text
             if platform == "MSSQL":
@@ -282,6 +295,9 @@ Examples:
                         f.write(filtered + "\n")
                 else:
                     f.write(output + "\n")
+            else:
+                if not success and output:
+                    f.write(output + "\n")
 
             # Query 3: Execution Plan
             if platform == "MSSQL":
@@ -307,6 +323,9 @@ Examples:
             )
             if success and output and output.strip():
                 f.write(output + "\n")
+            else:
+                if not success and output:
+                    f.write(output + "\n")
 
         # Display the file (matches original: cat $tmpname)
         with open(tmp_path, 'r', encoding='utf-8') as f:
