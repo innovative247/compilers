@@ -144,7 +144,7 @@ def main(args_list=None):
 
     # Compile: parse source files and insert into database
     output("Compiling actions...")
-    success, message = compile_actions(config)
+    success, message, _count = compile_actions(config)
 
     if success:
         output(message)

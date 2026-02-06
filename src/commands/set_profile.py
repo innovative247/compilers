@@ -664,12 +664,14 @@ def test_option_value(profile, profile_name):
             result = options.replace_options(option_input)
             if result != option_input:
                 source_file = options.get_option_source(option_input)
-                print_success(f"\n  {option_input} -> {result}")
+                print(f"")  # blank line
+                print_success(f"  {option_input} -> {result}")
                 if source_file:
                     print(f"  Source: {source_file}")
             else:
                 # Check if this might be a dynamic option (V: or C:)
-                print_error(f"\n  Option '{option_input}' was not resolved")
+                print(f"")  # blank line
+                print_error(f"  Option '{option_input}' was not resolved")
                 print(f"\n  Note: If this is a V: or C: option, it is DYNAMIC and")
                 print(f"  queried from the &options& database table at runtime,")
                 print(f"  not compiled into SQL. Only v: and c: options are static.")

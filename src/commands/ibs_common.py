@@ -2931,22 +2931,52 @@ def console_yes_no(prompt_text, default=None):
 
 def launch_editor(file_path):
     """
-    Launches vim to edit the given file and waits for it to close.
+    Launches an editor to edit the given file and waits for it to close.
 
-    On Windows: Uses vim.exe from src/commands/ directory
-    On macOS/Linux: Uses system vim (pre-installed)
+    Resolution order (matches Unix eact which uses $EDITOR):
+        1. $EDITOR environment variable
+        2. $VISUAL environment variable
+        3. vim on PATH
+        4. vi on PATH
+        5. notepad on Windows (last resort)
     """
-    if sys.platform == "win32":
-        # Use vim.exe from the same directory as this script
-        script_dir = Path(__file__).parent.resolve()
-        editor = str(script_dir / "vim.exe")
-        if not os.path.exists(editor):
-            logging.error(f"vim.exe not found at {editor}")
-            print(f"ERROR: vim.exe not found at {editor}")
-            return
-    else:
-        # macOS and Linux have vim pre-installed
-        editor = 'vim'
+    editor = None
+
+    # 1. Check EDITOR env var (matches Unix: $EDITOR $file)
+    env_editor = os.environ.get('EDITOR', '').strip()
+    if env_editor:
+        # Could be a full path or just a command name
+        if os.path.isfile(env_editor) or shutil.which(env_editor):
+            editor = env_editor
+
+    # 2. Check VISUAL env var
+    if not editor:
+        env_visual = os.environ.get('VISUAL', '').strip()
+        if env_visual:
+            if os.path.isfile(env_visual) or shutil.which(env_visual):
+                editor = env_visual
+
+    # 3. Try vim on PATH
+    if not editor:
+        vim_path = shutil.which('vim')
+        if vim_path:
+            editor = vim_path
+
+    # 4. Try vi on PATH
+    if not editor:
+        vi_path = shutil.which('vi')
+        if vi_path:
+            editor = vi_path
+
+    # 5. Windows fallback: notepad
+    if not editor and sys.platform == "win32":
+        notepad_path = shutil.which('notepad')
+        if notepad_path:
+            editor = notepad_path
+
+    if not editor:
+        print("ERROR: No editor found. Set the EDITOR environment variable.")
+        return
 
     logging.info(f"Launching '{editor}' for {file_path}")
     try:
