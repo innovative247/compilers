@@ -30,7 +30,7 @@ PROCESS:
     3. Prompt to compile into database (default: Yes)
     4. Parse the source file, resolving &placeholders& using current options
     5. Truncate the target table_locations table
-    6. Insert all rows using SQL INSERT statements
+    6. Load all rows via BCP (freebcp)
 
 USAGE:
     eloc PROFILE [-O output_file]
@@ -46,9 +46,6 @@ EXAMPLES:
 RELATED:
     eopt - Edit and compile options (also updates table_locations)
 
-NOTE:
-    This command uses SQL INSERT statements instead of BCP (Bulk Copy Program)
-    to avoid the 255 character limit in freebcp.
 """
 
 import argparse

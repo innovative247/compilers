@@ -3973,14 +3973,14 @@ def compile_table_locations(config: dict, options: 'Options' = None, output_hand
     Compile table_locations source file into the database.
 
     This function reads the table_locations source file, parses the table-to-database
-    mappings, and inserts them into the table_locations table using SQL INSERT statements.
+    mappings, and loads them into the table_locations table via BCP (freebcp).
 
     PROCESS:
         1. Load options (if not provided) to resolve &placeholder& values
         2. Parse {SQL_SOURCE}/CSS/Setup/table_locations source file
         3. Resolve all &db_placeholder& references to actual database names
         4. Truncate the target table_locations table
-        5. Insert all rows using SQL INSERT statements
+        5. Load all rows via BCP (freebcp)
 
     SOURCE FILE:
         {SQL_SOURCE}/CSS/Setup/table_locations
@@ -3997,10 +3997,6 @@ def compile_table_locations(config: dict, options: 'Options' = None, output_hand
             physical_db  varchar(32)   - Resolved database name (e.g., "sbnmaster")
             db_table     varchar(100)  - Full path (e.g., "sbnmaster..users")
 
-    NOTE:
-        This function uses SQL INSERT statements instead of BCP (Bulk Copy Program)
-        to avoid the 255 character limit in freebcp.
-
     Args:
         config: Configuration dictionary with connection info (HOST, PORT, USERNAME,
                 PASSWORD, SQL_SOURCE, PLATFORM)
@@ -4010,7 +4006,7 @@ def compile_table_locations(config: dict, options: 'Options' = None, output_hand
 
     Returns:
         Tuple of (success: bool, message: str, row_count: int)
-        - success: True if all rows were inserted successfully
+        - success: True if all rows were loaded successfully
         - message: Status message or error description
         - row_count: Number of rows inserted (0 on failure)
     """
@@ -4059,44 +4055,48 @@ def compile_table_locations(config: dict, options: 'Options' = None, output_hand
     if not success:
         return False, f"Failed to truncate table: {output}", 0
 
-    # Insert using SQL INSERT statements
+    # BCP load table_locations
     # Rows are tab-delimited: table_name\topt_name\tdb_name\tfull_name
-    sql_lines = []
+    bcp_rows = []
     for row in rows:
         parts = row.split('\t')
         if len(parts) != 4:
             continue
-        table_name, opt_name, db_name, full_name = parts
-        # Escape single quotes
-        table_name = table_name.replace("'", "''")
-        opt_name = opt_name.replace("'", "''")
-        db_name = db_name.replace("'", "''")
-        full_name = full_name.replace("'", "''")
-        sql_lines.append(f"insert {target_table} (table_name, logical_db, physical_db, db_table) values ('{table_name}', '{opt_name}', '{db_name}', '{full_name}')")
+        bcp_rows.append(tuple(parts))
 
-    log(f"Inserting {len(sql_lines)} rows into {target_table}...")
-
-    # Execute in batches of 1000
+    temp_dir = tempfile.gettempdir()
+    bcp_file = os.path.join(temp_dir, f"bcp_table_locations_{os.getpid()}.dat")
     batch_size = 1000
-    total = len(sql_lines)
-    for i in range(0, total, batch_size):
-        batch = sql_lines[i:i + batch_size]
-        end_idx = min(i + batch_size, total)
-        log(f"  Inserting {i + 1}-{end_idx}")
-        sql_content = "\n".join(batch)
-        success, output = execute_sql_native(
-            host=config.get('HOST'),
-            port=config.get('PORT'),
-            username=config.get('USERNAME'),
-            password=config.get('PASSWORD'),
-            database=target_db,
-            platform=config.get('PLATFORM', 'SYBASE'),
-            sql_content=sql_content
-        )
-        if not success:
-            return False, f"Insert failed: {output}", 0
+    total = len(bcp_rows)
+    total_loaded = 0
 
-    return True, f"Compiled into {target_table}", len(rows)
+    try:
+        for i in range(0, total, batch_size):
+            batch = bcp_rows[i:i + batch_size]
+            end_idx = min(i + batch_size, total)
+            written = write_bcp_data_file(batch, bcp_file)
+            log(f"  BCP loading {i + 1}-{end_idx} into {target_table}...")
+            success, output = execute_bcp(
+                host=config.get('HOST'),
+                port=int(config.get('PORT')),
+                username=config.get('USERNAME'),
+                password=config.get('PASSWORD'),
+                table=target_table,
+                direction="in",
+                file_path=bcp_file,
+                platform=config.get('PLATFORM', 'SYBASE')
+            )
+            if not success:
+                return False, f"BCP load failed: {output}", 0
+            rows_loaded = int(output) if output.isdigit() else 0
+            total_loaded += rows_loaded
+        if total_loaded != total:
+            log(f"  WARNING: expected {total} rows, BCP reported {total_loaded}")
+    finally:
+        if os.path.exists(bcp_file):
+            os.remove(bcp_file)
+
+    return True, f"Compiled into {target_table}", len(bcp_rows)
 
 
 # =============================================================================
@@ -5283,8 +5283,8 @@ def compile_options(config: dict, options: 'Options' = None, output_handle=None)
     Compile options source files into the database.
 
     This function reads company and profile options files, converts them to the
-    :> format, inserts them into the w#options work table, and executes the
-    i_import_options stored procedure to populate the final options table.
+    :> format, loads them into the w#options work table via BCP (freebcp), and
+    executes the i_import_options stored procedure to populate the final options table.
 
     PROCESS:
         1. Load options (if not provided) for placeholder resolution
@@ -5293,7 +5293,7 @@ def compile_options(config: dict, options: 'Options' = None, output_handle=None)
         4. Convert both to :> format using generate_import_option_file()
         5. Combine options (profile overrides company for same option name)
         6. Delete from w#options work table
-        7. Insert all options using SQL INSERT statements
+        7. Load all options via BCP (freebcp)
         8. Execute i_import_options stored procedure to populate final table
         9. Delete options cache file to force rebuild
         10. Also compile table_locations (options may affect database mappings)
@@ -5310,11 +5310,6 @@ def compile_options(config: dict, options: 'Options' = None, output_handle=None)
         options (final table, via i_import_options):
             - id, act_flg, if_flg, val_flg, value, dyn_flg, description
             - Populated by parsing w#options lines
-
-    NOTE:
-        This function uses SQL INSERT statements instead of BCP (Bulk Copy Program)
-        to avoid the 255 character limit in freebcp. This allows option values
-        up to 2000 characters (the w#options.line column width).
 
     Args:
         config: Configuration dictionary with connection info (HOST, PORT, USERNAME,
@@ -5392,35 +5387,39 @@ def compile_options(config: dict, options: 'Options' = None, output_handle=None)
     # Filter out empty lines
     filtered_options = [opt for opt in combined_options if opt and opt.strip()]
 
-    # Insert options using SQL INSERT statements (BCP has 255 char limit)
-    log(f"Inserting {len(filtered_options)} options into {work_table}...")
-
-    # Build SQL with all INSERT statements
-    sql_lines = []
-    for opt in filtered_options:
-        # Escape single quotes
-        escaped_opt = opt.replace("'", "''")
-        sql_lines.append(f"insert {work_table} (line) values ('{escaped_opt}')")
-
-    # Execute in batches of 1000
+    # BCP load options into work table in batches of 1000
+    temp_dir = tempfile.gettempdir()
+    bcp_file = os.path.join(temp_dir, f"bcp_w_options_{os.getpid()}.dat")
+    bcp_rows = [(opt,) for opt in filtered_options]
     batch_size = 1000
-    total = len(sql_lines)
-    for i in range(0, total, batch_size):
-        batch = sql_lines[i:i + batch_size]
-        end_idx = min(i + batch_size, total)
-        log(f"  Inserting {i + 1}-{end_idx}")
-        sql_content = "\n".join(batch)
-        success, output = execute_sql_native(
-            host=config.get('HOST'),
-            port=config.get('PORT'),
-            username=config.get('USERNAME'),
-            password=config.get('PASSWORD'),
-            database=work_db,
-            platform=config.get('PLATFORM', 'SYBASE'),
-            sql_content=sql_content
-        )
-        if not success:
-            return False, f"Failed to insert options: {output}", 0
+    total = len(bcp_rows)
+    total_loaded = 0
+
+    try:
+        for i in range(0, total, batch_size):
+            batch = bcp_rows[i:i + batch_size]
+            end_idx = min(i + batch_size, total)
+            written = write_bcp_data_file(batch, bcp_file)
+            log(f"  BCP loading {i + 1}-{end_idx} into {work_table}...")
+            success, output = execute_bcp(
+                host=config.get('HOST'),
+                port=int(config.get('PORT')),
+                username=config.get('USERNAME'),
+                password=config.get('PASSWORD'),
+                table=work_table,
+                direction="in",
+                file_path=bcp_file,
+                platform=config.get('PLATFORM', 'SYBASE')
+            )
+            if not success:
+                return False, f"Failed to BCP load options: {output}", 0
+            rows_loaded = int(output) if output.isdigit() else 0
+            total_loaded += rows_loaded
+        if total_loaded != total:
+            log(f"  WARNING: expected {total} rows, BCP reported {total_loaded}")
+    finally:
+        if os.path.exists(bcp_file):
+            os.remove(bcp_file)
 
     # Execute i_import_options stored procedure
     dbpro = options.replace_options("&dbpro&")

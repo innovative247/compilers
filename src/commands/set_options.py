@@ -77,7 +77,7 @@ PROCESS:
     4. Parse company and profile options files
     5. Convert to :> format for database import
     6. Delete from w#options work table
-    7. Insert all options using SQL INSERT statements
+    7. Load all options via BCP (freebcp)
     8. Execute i_import_options stored procedure
     9. Also update table_locations (since options may affect database mappings)
 
@@ -97,10 +97,6 @@ EXAMPLES:
 RELATED:
     eloc - Edit and compile table_locations only
 
-NOTE:
-    This command uses SQL INSERT statements instead of BCP (Bulk Copy Program)
-    to avoid the 255 character limit in freebcp. This allows option values
-    up to 2000 characters (the w#options.line column width).
 """
 
 import argparse
@@ -1167,16 +1163,13 @@ def main(args_list=None):
         print("\nWhat do you want to do?")
         print("  1. Add new options (create in options.def)")
         print("  2. Edit existing options")
-        print("  3. Merge new options (from options.def into company/profile)")
 
-        choice = input("\nChoose [1-3]: ").strip()
+        choice = input("\nChoose [1-2]: ").strip()
 
         if choice == "1":
             run_add_mode(config, company_file, profile_file)
         elif choice == "2":
             run_edit_mode(config, company_file, profile_file)
-        elif choice == "3":
-            run_merge_mode(config, company_file, profile_file)
         else:
             print("Invalid choice.")
             sys.exit(1)
