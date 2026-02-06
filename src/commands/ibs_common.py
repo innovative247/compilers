@@ -2154,6 +2154,9 @@ def write_bcp_data_file(rows: list, file_path: str) -> int:
       - Field separator: 0x1E (Record Separator, char 30)
       - Row terminator:  0x00 (null byte)
 
+    Encodes text as iso-8859-1 (Sybase iso_1) to match the -J iso_1 flag
+    passed to freebcp. Characters outside iso-8859-1 are replaced with '?'.
+
     Args:
         rows: List of tuples/lists of string values. Each element is one field.
         file_path: Path to write the data file.
@@ -2166,7 +2169,7 @@ def write_bcp_data_file(rows: list, file_path: str) -> int:
     count = 0
     with open(file_path, 'wb') as f:
         for row in rows:
-            f.write(field_sep.join(str(v).encode('utf-8') for v in row) + row_term)
+            f.write(field_sep.join(str(v).encode('iso-8859-1', errors='replace') for v in row) + row_term)
             count += 1
     return count
 
@@ -2305,6 +2308,7 @@ def execute_bcp(host: str, port: int, username: str, password: str,
         "-U", username,
         "-P", password,
         "-c",  # Character mode
+        "-J", "iso_1",  # Client charset (iso-8859-1) for extended characters
     ]
 
     # Add field terminator (default to Record Separator char(30) to handle embedded tabs in text fields)
