@@ -197,6 +197,79 @@ def _perform_upgrade() -> Tuple[bool, str]:
         return False, f"Upgrade failed: {str(e)}"
 
 
+def force_upgrade(command_name: str = "command") -> bool:
+    """
+    Force an update check and upgrade, bypassing the daily check.
+    Called when user runs "<command> update".
+
+    Returns:
+        Always False (command should exit after update attempt)
+    """
+    try:
+        from colorama import Fore, Style
+        has_colorama = True
+    except ImportError:
+        has_colorama = False
+
+    print()
+    if has_colorama:
+        print(f"  {Style.BRIGHT}Checking for updates...{Style.RESET_ALL}")
+    else:
+        print("  Checking for updates...")
+
+    remote_version = _fetch_remote_version()
+
+    if remote_version is None:
+        print()
+        if has_colorama:
+            print(f"  {Fore.RED}Could not reach update server.{Style.RESET_ALL}")
+        else:
+            print("  Could not reach update server.")
+        print()
+        return False
+
+    comparison = _compare_versions(__version__, remote_version)
+
+    if comparison >= 0:
+        print()
+        if has_colorama:
+            print(f"  {Fore.GREEN}compilers is up to date (version {__version__}){Style.RESET_ALL}")
+        else:
+            print(f"  compilers is up to date (version {__version__})")
+        print()
+        return False
+
+    # Newer version available - upgrade without prompting (user explicitly asked)
+    if has_colorama:
+        print(f"  Current version: {Fore.RED}{__version__}{Style.RESET_ALL}")
+        print(f"  Latest version:  {Fore.GREEN}{remote_version}{Style.RESET_ALL}")
+    else:
+        print(f"  Current version: {__version__}")
+        print(f"  Latest version:  {remote_version}")
+    print()
+    print("  Upgrading...")
+
+    success, message = _perform_upgrade()
+    print()
+
+    if success:
+        if has_colorama:
+            print(f"  {Fore.GREEN}{message}{Style.RESET_ALL}")
+        else:
+            print(f"  {message}")
+        if 'Already up to date' not in message:
+            print()
+            print("  Upgrade complete. Please re-run your command.")
+    else:
+        if has_colorama:
+            print(f"  {Fore.RED}{message}{Style.RESET_ALL}")
+        else:
+            print(f"  {message}")
+
+    print()
+    return False
+
+
 def check_for_updates(command_name: str = "command") -> bool:
     """
     Check for updates if this is the first command of the day.
@@ -208,6 +281,10 @@ def check_for_updates(command_name: str = "command") -> bool:
         True if the command should proceed, False if it should exit
         (e.g., after an upgrade that requires restart)
     """
+    # Check for explicit update/install flag (e.g., "runsql update" or "runsql install")
+    if sys.argv[1:] in (['update'], ['install']):
+        return force_upgrade(command_name)
+
     # Skip if not the first check of the day
     if not _needs_check():
         return True
