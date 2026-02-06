@@ -2,5 +2,5 @@
 Version information for the compilers package.
 """
 
-__version__ = "1.0.3"
-__version_date__ = "2025-02-05"
+__version__ = "1.0.4"
+__version_date__ = "2026-02-06"
