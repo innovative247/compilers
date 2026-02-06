@@ -2146,6 +2146,31 @@ def _diagnose_bcp_failure(chunk_data: bytes, chunk_start_line: int,
         return "No obvious data issues detected - failure may be due to server-side constraints"
 
 
+def write_bcp_data_file(rows: list, file_path: str) -> int:
+    """
+    Write rows to a BCP-compatible data file.
+
+    Uses the same delimiters as execute_bcp defaults:
+      - Field separator: 0x1E (Record Separator, char 30)
+      - Row terminator:  0x00 (null byte)
+
+    Args:
+        rows: List of tuples/lists of string values. Each element is one field.
+        file_path: Path to write the data file.
+
+    Returns:
+        Number of rows written.
+    """
+    field_sep = b'\x1e'
+    row_term = b'\x00'
+    count = 0
+    with open(file_path, 'wb') as f:
+        for row in rows:
+            f.write(field_sep.join(str(v).encode('utf-8') for v in row) + row_term)
+            count += 1
+    return count
+
+
 def execute_bcp(host: str, port: int, username: str, password: str,
                 table: str, direction: str, file_path: str,
                 platform: str = "SYBASE",
@@ -4111,7 +4136,7 @@ def compile_actions(config: dict, options: 'Options' = None, output_handle=None)
     Compile actions source files into the database.
 
     This function reads the actions and actions_dtl source files, parses them,
-    and inserts them into work tables using SQL INSERT statements. Then it
+    and loads them into work tables using BCP (freebcp). Then it
     executes the ba_compile_actions stored procedure to move data to final tables.
 
     PROCESS:
@@ -4119,7 +4144,7 @@ def compile_actions(config: dict, options: 'Options' = None, output_handle=None)
         2. Parse {SQL_SOURCE}/CSS/Setup/actions source file
         3. Parse {SQL_SOURCE}/CSS/Setup/actions_dtl source file
         4. Truncate work tables (w#actions, w#actions_dtl)
-        5. Insert all rows using SQL INSERT statements
+        5. Load all rows via BCP (freebcp)
         6. Execute ba_compile_actions stored procedure
 
     SOURCE FILES:
@@ -4259,67 +4284,61 @@ def compile_actions(config: dict, options: 'Options' = None, output_handle=None)
     if not success:
         return False, f"Failed to truncate {w_actions_dtl}: {output}", 0
 
-    # Insert action headers
-    if header_rows:
-        log(f"Inserting {len(header_rows)} rows into {w_actions}...")
-        sql_lines = []
-        for row_num, line in header_rows:
-            escaped_line = line.replace("'", "''")
-            sql_lines.append(f"insert {w_actions} (lineix, message) values ({row_num}, '{escaped_line}')")
+    # BCP load action headers and details into work tables
+    temp_dir = tempfile.gettempdir()
+    pid = os.getpid()
+    hdr_file = os.path.join(temp_dir, f"bcp_w_actions_{pid}.dat")
+    dtl_file = os.path.join(temp_dir, f"bcp_w_actions_dtl_{pid}.dat")
 
-        # Execute in batches of 1000
-        batch_size = 1000
-        total = len(sql_lines)
-        for i in range(0, total, batch_size):
-            batch = sql_lines[i:i + batch_size]
-            end_idx = min(i + batch_size, total)
-            log(f"  Inserting {i + 1}-{end_idx}")
-            sql_content = "\n".join(batch)
-            success, output = execute_sql_native(
+    try:
+        # Write and BCP-in action headers
+        if header_rows:
+            hdr_bcp_rows = [(str(row_num), line) for row_num, line in header_rows]
+            written = write_bcp_data_file(hdr_bcp_rows, hdr_file)
+            log(f"BCP loading {written} rows into {w_actions}...")
+            success, output = execute_bcp(
                 host=config.get('HOST'),
-                port=config.get('PORT'),
+                port=int(config.get('PORT')),
                 username=config.get('USERNAME'),
                 password=config.get('PASSWORD'),
-                database=work_db,
-                platform=config.get('PLATFORM', 'SYBASE'),
-                sql_content=sql_content
+                table=w_actions,
+                direction="in",
+                file_path=hdr_file,
+                platform=config.get('PLATFORM', 'SYBASE')
             )
             if not success:
-                return False, f"Failed to insert action headers: {output}", 0
+                return False, f"Failed to BCP load action headers: {output}", 0
+            rows_loaded = int(output) if output.isdigit() else 0
+            if rows_loaded != len(header_rows):
+                log(f"  WARNING: expected {len(header_rows)} header rows, BCP reported {rows_loaded}")
 
-    # Insert action details
-    if detail_rows:
-        log(f"Inserting {len(detail_rows)} rows into {w_actions_dtl}...")
-        sql_lines = []
-        for col1, col2, col3, col4, col5, col6 in detail_rows:
-            # Escape single quotes
-            col1 = col1.replace("'", "''")
-            col2 = col2.replace("'", "''")
-            col3 = col3.replace("'", "''")
-            col4 = col4.replace("'", "''")
-            col5 = col5.replace("'", "''")
-            col6 = col6.replace("'", "''")
-            sql_lines.append(f"insert {w_actions_dtl} ([s#act], typ, ix, [s#msgno], shix, text) values ({col1}, {col2}, {col3}, {col4}, {col5}, '{col6}')")
-
-        # Execute in batches of 1000
-        batch_size = 1000
-        total = len(sql_lines)
-        for i in range(0, total, batch_size):
-            batch = sql_lines[i:i + batch_size]
-            end_idx = min(i + batch_size, total)
-            log(f"  Inserting {i + 1}-{end_idx}")
-            sql_content = "\n".join(batch)
-            success, output = execute_sql_native(
+        # Write and BCP-in action details
+        if detail_rows:
+            dtl_bcp_rows = [(col1, col2, col3, col4, col5, col6)
+                            for col1, col2, col3, col4, col5, col6 in detail_rows]
+            written = write_bcp_data_file(dtl_bcp_rows, dtl_file)
+            log(f"BCP loading {written} rows into {w_actions_dtl}...")
+            success, output = execute_bcp(
                 host=config.get('HOST'),
-                port=config.get('PORT'),
+                port=int(config.get('PORT')),
                 username=config.get('USERNAME'),
                 password=config.get('PASSWORD'),
-                database=work_db,
-                platform=config.get('PLATFORM', 'SYBASE'),
-                sql_content=sql_content
+                table=w_actions_dtl,
+                direction="in",
+                file_path=dtl_file,
+                platform=config.get('PLATFORM', 'SYBASE')
             )
             if not success:
-                return False, f"Failed to insert action details: {output}", 0
+                return False, f"Failed to BCP load action details: {output}", 0
+            rows_loaded = int(output) if output.isdigit() else 0
+            if rows_loaded != len(detail_rows):
+                log(f"  WARNING: expected {len(detail_rows)} detail rows, BCP reported {rows_loaded}")
+
+    finally:
+        # Clean up temp files
+        for f in (hdr_file, dtl_file):
+            if os.path.exists(f):
+                os.remove(f)
 
     # Execute ba_compile_actions stored procedure
     log(f"Executing {dbpro}..ba_compile_actions...")

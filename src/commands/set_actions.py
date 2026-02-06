@@ -34,7 +34,7 @@ PROCESS:
     3. Prompt to compile into database (default: Yes)
     4. Parse source files, resolving &placeholders&
     5. Truncate work tables
-    6. Insert data via SQL INSERT statements
+    6. Load data via BCP (freebcp)
     7. Execute ba_compile_actions stored procedure
 
 USAGE:
