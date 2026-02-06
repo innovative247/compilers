@@ -28,13 +28,11 @@ FILE FORMATS:
 
 IMPORT PROCESS:
     1. Validate all source files exist
-    2. Preserve translated messages (ba_compile_gui_messages_save)
-    3. Truncate work tables
-    4. Insert all rows via SQL INSERT
-    5. Execute compile stored procedures:
-       - i_compile_messages (which calls i_compile_gui_messages to restore translations)
-       - i_compile_jam_messages
-       - i_compile_jrw_messages
+    2. Check for saved translations from a prior failed compile (prompt user)
+    3. Preserve translated messages (unless already saved)
+    4. Truncate work tables
+    5. Load all rows via BCP (freebcp)
+    6. Execute compile stored procedures (translations restored at the end)
 
 EXPORT PROCESS:
     Export messages from the database to flat files. GONZO (or G) is the
@@ -76,8 +74,8 @@ def prompt_mode():
     """
     print()
     print("Select operation:")
-    print("  1) Import - Push messages from files into the database")
-    print("  2) Export - Export messages from database to files")
+    print("  1) Import messages from files into the database")
+    print("  2) Export messages from the database into the files")
     print()
 
     while True:

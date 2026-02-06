@@ -4633,16 +4633,17 @@ def compile_messages(config: dict, options: 'Options' = None, output_handle=None
     """
     Compile message source files into the database (Import mode).
 
-    This function reads the message flat files, parses them, and inserts them
-    into work tables using SQL INSERT statements. Then it executes stored
-    procedures to move data to final tables.
+    This function reads the message flat files, parses them, and loads them
+    into work tables via BCP (freebcp). Then it executes stored procedures
+    to move data to final tables.
 
     PROCESS:
         1. Validate all source files exist
-        2. Preserve translated messages via ba_compile_gui_messages_save proc
-        3. Truncate work tables
-        4. Insert all rows via SQL INSERT
-        5. Execute compile stored procedures (i_compile_messages handles restore)
+        2. Check gui_messages_save (detect prior failed compile, prompt user)
+        3. Preserve translated messages (unless save table already has them)
+        4. Truncate work tables
+        5. Load all rows via BCP (freebcp) in batches of 1000
+        6. Execute compile stored procedures (translations restored at the end)
 
     MESSAGE TYPES:
         ibs - IBS framework messages
@@ -4707,23 +4708,79 @@ def compile_messages(config: dict, options: 'Options' = None, output_handle=None
     dbpro = options.replace_options("&dbpro&")
     dbwrk = options.replace_options("&dbwrk&")
 
-    # Step 1: Preserve translated messages via stored procedure
-    # This copies user translations from gui_messages to gui_messages_save
-    log("Preserving translated messages into table gui_messages_save...")
-    ba_compile_gui_messages_save = options.replace_options("&dbpro&..ba_compile_gui_messages_save")
+    # Step 1: Pre-check gui_messages_save table
+    # If not empty, a prior compile failed after saving translations but before restoring them.
+    gui_messages_save = options.replace_options("&gui_messages_save&")
+    db_gui_save = gui_messages_save.split('..')[0] if '..' in gui_messages_save else dbpro
+
     success, output = execute_sql_native(
         host=config.get('HOST'),
         port=config.get('PORT'),
         username=config.get('USERNAME'),
         password=config.get('PASSWORD'),
-        database=dbpro,
+        database=db_gui_save,
         platform=config.get('PLATFORM', 'SYBASE'),
-        sql_content=f"exec {ba_compile_gui_messages_save}"
+        sql_content=f"select count(*) from {gui_messages_save}"
     )
-    if not success:
-        return False, f"ba_compile_gui_messages_save failed: {output}", 0
 
-    # Step 2: Truncate work tables and insert from flat files
+    save_count = 0
+    if success and output:
+        # Parse count from isql output (may have header/dashes lines)
+        for line in output.strip().splitlines():
+            line = line.strip()
+            if line.isdigit():
+                save_count = int(line)
+                break
+
+    skip_save = False
+    if save_count > 0:
+        log(f"\nWARNING: gui_messages_save contains {save_count} rows.")
+        log("This means a previous message compile did not complete successfully.")
+        log("Translated messages were saved but never restored.\n")
+        log("How do you want to proceed?")
+        log("  1. Continue, keep saved translations (compile will restore them at the end)")
+        log("  2. Discard saved translations, re-save from current database (use if database is correct)")
+        log("  3. Cancel (investigate and fix manually)")
+
+        choice = input("\nChoose [1-3]: ").strip()
+
+        if choice == "1":
+            log("Continuing with existing saved translations (skipping save step)...")
+            skip_save = True
+        elif choice == "2":
+            log("Clearing saved translations and re-saving from current database...")
+            success, output = execute_sql_native(
+                host=config.get('HOST'),
+                port=config.get('PORT'),
+                username=config.get('USERNAME'),
+                password=config.get('PASSWORD'),
+                database=db_gui_save,
+                platform=config.get('PLATFORM', 'SYBASE'),
+                sql_content=f"delete {gui_messages_save}"
+            )
+            if not success:
+                return False, f"Failed to clear gui_messages_save: {output}", 0
+        else:
+            return False, "Cancelled by user — gui_messages_save needs manual attention", 0
+
+    # Step 2: Preserve translated messages
+    # Copies current gui_messages to gui_messages_save so they can be restored after compile
+    if not skip_save:
+        log("Preserving translated messages...")
+        ba_compile_gui_messages_save = options.replace_options("&dbpro&..ba_compile_gui_messages_save")
+        success, output = execute_sql_native(
+            host=config.get('HOST'),
+            port=config.get('PORT'),
+            username=config.get('USERNAME'),
+            password=config.get('PASSWORD'),
+            database=dbpro,
+            platform=config.get('PLATFORM', 'SYBASE'),
+            sql_content=f"exec {ba_compile_gui_messages_save}"
+        )
+        if not success:
+            return False, f"Failed to preserve translated messages: {output}", 0
+
+    # Step 3: Truncate work tables and BCP load from flat files
     total_msg_rows = 0
     total_grp_rows = 0
 
@@ -4762,7 +4819,7 @@ def compile_messages(config: dict, options: 'Options' = None, output_handle=None
         if not success:
             return False, f"Failed to truncate {w_grp}: {output}"
 
-        # Parse and insert message file (7 columns)
+        # Parse message file (7 columns, tab-delimited)
         # Columns: s#msgno (int), lang (int), cmpy (int), grp (varchar), upd_flg (char), chg_tm (int), message (varchar)
         log(f"Importing {msg_type.upper()} Messages...")
         msg_rows = []
@@ -4773,46 +4830,47 @@ def compile_messages(config: dict, options: 'Options' = None, output_handle=None
                     continue
                 parts = line.split('\t')
                 if len(parts) >= 7:
-                    msg_rows.append(parts[:7])
+                    # freebcp treats empty fields as NULL — use space for NOT NULL cols
+                    if not parts[4].strip():  # upd_flg char(1)
+                        parts[4] = ' '
+                    if not parts[6]:          # message varchar(255)
+                        parts[6] = ' '
+                    msg_rows.append(tuple(parts[:7]))
 
         if msg_rows:
-            log(f"  Inserting {len(msg_rows)} rows into {w_msg}...")
-            # Build SQL statements
-            sql_lines = []
-            for row in msg_rows:
-                # Numeric: 0 (s#msgno), 1 (lang), 2 (cmpy), 5 (chg_tm)
-                # String: 3 (grp), 4 (upd_flg), 6 (message)
-                c0 = row[0].strip() or '0'
-                c1 = row[1].strip() or '0'
-                c2 = row[2].strip() or '0'
-                c3 = row[3].replace("'", "''")
-                c4 = row[4].replace("'", "''")
-                c5 = row[5].strip() or '0'
-                c6 = row[6].replace("'", "''")
-                sql_lines.append(f"insert {w_msg} values ({c0}, {c1}, {c2}, '{c3}', '{c4}', {c5}, '{c6}')")
-
-            # Execute in batches of 1000
+            temp_dir = tempfile.gettempdir()
+            bcp_file = os.path.join(temp_dir, f"bcp_{msg_type}_msg_{os.getpid()}.dat")
             batch_size = 1000
-            total = len(sql_lines)
-            for i in range(0, total, batch_size):
-                batch = sql_lines[i:i + batch_size]
-                end_idx = min(i + batch_size, total)
-                log(f"    Inserting {i + 1}-{end_idx}")
-                sql_content = "\n".join(batch)
-                success, output = execute_sql_native(
-                    host=config.get('HOST'),
-                    port=config.get('PORT'),
-                    username=config.get('USERNAME'),
-                    password=config.get('PASSWORD'),
-                    database=dbwrk,
-                    platform=config.get('PLATFORM', 'SYBASE'),
-                    sql_content=sql_content
-                )
-                if not success:
-                    return False, f"Failed to insert {msg_type} messages: {output}"
-            total_msg_rows += len(msg_rows)
+            total = len(msg_rows)
+            total_loaded = 0
+            try:
+                for i in range(0, total, batch_size):
+                    batch = msg_rows[i:i + batch_size]
+                    end_idx = min(i + batch_size, total)
+                    write_bcp_data_file(batch, bcp_file)
+                    log(f"  BCP loading {i + 1}-{end_idx} into {w_msg}...")
+                    success, output = execute_bcp(
+                        host=config.get('HOST'),
+                        port=int(config.get('PORT')),
+                        username=config.get('USERNAME'),
+                        password=config.get('PASSWORD'),
+                        table=w_msg,
+                        direction="in",
+                        file_path=bcp_file,
+                        platform=config.get('PLATFORM', 'SYBASE')
+                    )
+                    if not success:
+                        return False, f"Failed to BCP load {msg_type} messages: {output}"
+                    rows_loaded = int(output) if output.isdigit() else 0
+                    total_loaded += rows_loaded
+                if total_loaded != total:
+                    log(f"  WARNING: expected {total} {msg_type} msg rows, BCP reported {total_loaded}")
+            finally:
+                if os.path.exists(bcp_file):
+                    os.remove(bcp_file)
+            total_msg_rows += total
 
-        # Parse and insert message group file (3 columns)
+        # Parse message group file (3 columns, tab-delimited)
         # Columns: grp (varchar), s#minmsg (int), description (varchar)
         grp_rows = []
         with open(grp_file, 'r', encoding='utf-8', errors='replace') as f:
@@ -4822,41 +4880,57 @@ def compile_messages(config: dict, options: 'Options' = None, output_handle=None
                     continue
                 parts = line.split('\t')
                 if len(parts) >= 3:
-                    grp_rows.append(parts[:3])
+                    grp_rows.append(tuple(parts[:3]))
 
         if grp_rows:
-            log(f"  Inserting {len(grp_rows)} rows into {w_grp}...")
-            # Build SQL statements
-            sql_lines = []
-            for row in grp_rows:
-                # String: 0 (grp), 2 (description); Numeric: 1 (s#minmsg)
-                c0 = row[0].replace("'", "''")
-                c1 = row[1].strip() or '0'
-                c2 = row[2].replace("'", "''")
-                sql_lines.append(f"insert {w_grp} values ('{c0}', {c1}, '{c2}')")
-
-            # Execute in batches of 1000
+            temp_dir = tempfile.gettempdir()
+            bcp_file = os.path.join(temp_dir, f"bcp_{msg_type}_msgrp_{os.getpid()}.dat")
             batch_size = 1000
-            total = len(sql_lines)
-            for i in range(0, total, batch_size):
-                batch = sql_lines[i:i + batch_size]
-                end_idx = min(i + batch_size, total)
-                log(f"    Inserting {i + 1}-{end_idx}")
-                sql_content = "\n".join(batch)
-                success, output = execute_sql_native(
-                    host=config.get('HOST'),
-                    port=config.get('PORT'),
-                    username=config.get('USERNAME'),
-                    password=config.get('PASSWORD'),
-                    database=dbwrk,
-                    platform=config.get('PLATFORM', 'SYBASE'),
-                    sql_content=sql_content
-                )
-                if not success:
-                    return False, f"Failed to insert {msg_type} message groups: {output}"
-            total_grp_rows += len(grp_rows)
+            total = len(grp_rows)
+            total_loaded = 0
+            try:
+                for i in range(0, total, batch_size):
+                    batch = grp_rows[i:i + batch_size]
+                    end_idx = min(i + batch_size, total)
+                    write_bcp_data_file(batch, bcp_file)
+                    log(f"  BCP loading {i + 1}-{end_idx} into {w_grp}...")
+                    success, output = execute_bcp(
+                        host=config.get('HOST'),
+                        port=int(config.get('PORT')),
+                        username=config.get('USERNAME'),
+                        password=config.get('PASSWORD'),
+                        table=w_grp,
+                        direction="in",
+                        file_path=bcp_file,
+                        platform=config.get('PLATFORM', 'SYBASE')
+                    )
+                    if not success:
+                        return False, f"Failed to BCP load {msg_type} message groups: {output}"
+                    rows_loaded = int(output) if output.isdigit() else 0
+                    total_loaded += rows_loaded
+                if total_loaded != total:
+                    log(f"  WARNING: expected {total} {msg_type} grp rows, BCP reported {total_loaded}")
+            finally:
+                if os.path.exists(bcp_file):
+                    os.remove(bcp_file)
+            total_grp_rows += total
 
-    # Step 3: Execute compile stored procedures
+    # Step 4: Update statistics on final message tables (matches Unix install_msg)
+    log("Updating statistics...")
+    stats_tables = ['ibs_messages', 'jam_messages', 'sqr_messages', 'sql_messages', 'gui_messages']
+    dbtbl = options.replace_options("&dbtbl&")
+    for tbl in stats_tables:
+        execute_sql_native(
+            host=config.get('HOST'),
+            port=config.get('PORT'),
+            username=config.get('USERNAME'),
+            password=config.get('PASSWORD'),
+            database=dbtbl,
+            platform=config.get('PLATFORM', 'SYBASE'),
+            sql_content=f"update statistics {dbtbl}..{tbl}"
+        )
+
+    # Step 5: Execute compile stored procedures
     # i_compile_messages moves work tables to final tables and calls i_compile_gui_messages
     # i_compile_gui_messages restores translations from gui_messages_save
     log(f"Running i_compile_messages...")
