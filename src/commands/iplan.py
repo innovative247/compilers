@@ -209,15 +209,24 @@ Examples:
         else:
             sql = f"sp_showplan {spid}, NULL, NULL, NULL"
 
-        # Execute
+        # Execute - include_info_messages needed for sp_showplan which sends
+        # plan output as PRINT messages (severity 10 in tsql stderr)
         success, output = execute_sql_native(
             host, port, username, password, database, platform,
-            sql, output_file=None, echo_input=False
+            sql, output_file=None, echo_input=False,
+            include_info_messages=True
         )
 
         if success:
             if output and output.strip():
-                print(output)
+                lines = [l for l in output.strip().splitlines() if l.strip()]
+                # For MSSQL SELECT queries, header-only = no active query for that SPID
+                if platform == "MSSQL" and len(lines) <= 1:
+                    print(f"There is no active server process for the specified spid value '{spid}'.  Possibly the user connection has terminated.")
+                else:
+                    print(output)
+            else:
+                print(f"There is no active server process for the specified spid value '{spid}'.  Possibly the user connection has terminated.")
         else:
             print(f"ERROR: {output}", file=sys.stderr)
 

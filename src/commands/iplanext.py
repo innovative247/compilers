@@ -286,14 +286,14 @@ Examples:
                 sql_text, output_file=None, echo_input=False
             )
             if success and output and output.strip():
+                lines = [l for l in output.strip().splitlines() if l.strip()]
                 if platform != "MSSQL":
                     # Sybase: filter for lines containing "SQL" (matches original: | grep SQL)
-                    filtered = "\n".join(
-                        line for line in output.splitlines() if "SQL" in line
-                    )
+                    filtered = "\n".join(line for line in lines if "SQL" in line)
                     if filtered:
                         f.write(filtered + "\n")
-                else:
+                elif len(lines) > 1:
+                    # MSSQL: only write if we have data rows (not just headers)
                     f.write(output + "\n")
             else:
                 if not success and output:
@@ -319,10 +319,14 @@ Examples:
 
             success, output = execute_sql_native(
                 host, port, username, password, database, platform,
-                sql_plan, output_file=None, echo_input=False
+                sql_plan, output_file=None, echo_input=False,
+                include_info_messages=True
             )
             if success and output and output.strip():
-                f.write(output + "\n")
+                lines = [l for l in output.strip().splitlines() if l.strip()]
+                # For MSSQL SELECT queries, skip header-only results
+                if platform != "MSSQL" or len(lines) > 1:
+                    f.write(output + "\n")
             else:
                 if not success and output:
                     f.write(output + "\n")

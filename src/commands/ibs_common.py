@@ -5541,7 +5541,8 @@ def get_mssql_init_sql() -> str:
 
 def execute_sql_native(host: str, port: int, username: str, password: str,
                        database: str, platform: str, sql_content: str,
-                       output_file: str = None, echo_input: bool = False) -> tuple[bool, str]:
+                       output_file: str = None, echo_input: bool = False,
+                       include_info_messages: bool = False) -> tuple[bool, str]:
     """
     Execute SQL using FreeTDS tsql via subprocess.
 
@@ -5563,6 +5564,9 @@ def execute_sql_native(host: str, port: int, username: str, password: str,
         sql_content: SQL content to execute (can be single command or full script)
         output_file: Optional output file path
         echo_input: Whether to echo input (maps to -v for tsql)
+        include_info_messages: If True, include severity <= 10 messages from stderr
+            in the output. Used by sp_showplan which sends plan output as PRINT
+            messages (severity 10). Default False to preserve existing behavior.
 
     Returns:
         Tuple of (success: bool, output: str)
@@ -5671,38 +5675,51 @@ def execute_sql_native(host: str, port: int, username: str, password: str,
         #         "
         # Severity 10 = informational, 11+ = actual errors
         sql_error = None
+        info_lines = []
         if stderr:
             # Look for ALL error messages and check if any have severity > 10
             error_matches = re.findall(r'Msg (\d+) \(severity (\d+)', stderr)
             has_real_error = any(int(sev) > 10 for msg_num, sev in error_matches)
 
+            # Process stderr lines
+            error_lines = []
+            in_error_block = False
+            in_info_block = False
+            for line in stderr.splitlines():
+                header_match = re.match(r'Msg (\d+) \(severity (\d+)', line)
+                if header_match:
+                    sev = int(header_match.group(2))
+                    if sev > 10:
+                        in_error_block = True
+                        in_info_block = False
+                        error_lines.append(line)
+                    else:
+                        in_error_block = False
+                        in_info_block = include_info_messages
+                    continue
+
+                cleaned = line.strip().strip('\t').strip('"').strip()
+
+                if in_error_block and cleaned:
+                    error_lines.append(cleaned)
+                elif in_info_block and cleaned:
+                    # Skip tsql noise that appears as info messages
+                    if not cleaned.startswith("Changed client character set"):
+                        info_lines.append(cleaned)
+
             if has_real_error:
-                # Extract error details - collect lines after error headers
-                error_lines = []
-                in_error_block = False
-                for line in stderr.splitlines():
-                    # Check if this is an error header line (severity > 10)
-                    header_match = re.match(r'Msg (\d+) \(severity (\d+)', line)
-                    if header_match:
-                        sev = int(header_match.group(2))
-                        if sev > 10:
-                            in_error_block = True
-                            error_lines.append(line)
-                        else:
-                            in_error_block = False
-                        continue
-
-                    # If we're in an error block, collect the message lines
-                    if in_error_block:
-                        # Clean up the line - remove tabs and quotes
-                        cleaned = line.strip().strip('\t').strip('"').strip()
-                        if cleaned:
-                            error_lines.append(cleaned)
-
                 sql_error = "\n".join(error_lines) if error_lines else stderr[:500]
 
         if sql_error:
             return False, sql_error
+
+        # Append informational messages to output (e.g., sp_showplan PRINT output)
+        if info_lines:
+            info_output = "\n".join(info_lines)
+            if clean_output:
+                clean_output = clean_output + "\n" + info_output
+            else:
+                clean_output = info_output
 
         # Write to output file if specified
         if output_file:
