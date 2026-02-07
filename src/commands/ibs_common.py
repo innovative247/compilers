@@ -2308,7 +2308,6 @@ def execute_bcp(host: str, port: int, username: str, password: str,
         "-U", username,
         "-P", password,
         "-c",  # Character mode
-        "-J", "iso_1",  # Client charset (iso-8859-1) for extended characters
     ]
 
     # Add field terminator (default to Record Separator char(30) to handle embedded tabs in text fields)
@@ -4808,7 +4807,7 @@ def compile_messages(config: dict, options: 'Options' = None, output_handle=None
             sql_content=f"truncate table {w_msg}"
         )
         if not success:
-            return False, f"Failed to truncate {w_msg}: {output}"
+            return False, f"Failed to truncate {w_msg}: {output}", 0
 
         log(f"Truncating {w_grp}...")
         success, output = execute_sql_native(
@@ -4821,7 +4820,7 @@ def compile_messages(config: dict, options: 'Options' = None, output_handle=None
             sql_content=f"truncate table {w_grp}"
         )
         if not success:
-            return False, f"Failed to truncate {w_grp}: {output}"
+            return False, f"Failed to truncate {w_grp}: {output}", 0
 
         # Parse message file (7 columns, tab-delimited)
         # Columns: s#msgno (int), lang (int), cmpy (int), grp (varchar), upd_flg (char), chg_tm (int), message (varchar)
@@ -4864,7 +4863,7 @@ def compile_messages(config: dict, options: 'Options' = None, output_handle=None
                         platform=config.get('PLATFORM', 'SYBASE')
                     )
                     if not success:
-                        return False, f"Failed to BCP load {msg_type} messages: {output}"
+                        return False, f"Failed to BCP load {msg_type} messages: {output}", 0
                     rows_loaded = int(output) if output.isdigit() else 0
                     total_loaded += rows_loaded
                 if total_loaded != total:
@@ -4909,7 +4908,7 @@ def compile_messages(config: dict, options: 'Options' = None, output_handle=None
                         platform=config.get('PLATFORM', 'SYBASE')
                     )
                     if not success:
-                        return False, f"Failed to BCP load {msg_type} message groups: {output}"
+                        return False, f"Failed to BCP load {msg_type} message groups: {output}", 0
                     rows_loaded = int(output) if output.isdigit() else 0
                     total_loaded += rows_loaded
                 if total_loaded != total:
