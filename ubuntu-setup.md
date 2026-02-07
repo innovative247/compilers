@@ -34,7 +34,7 @@ sudo bash -c "echo \"export PS1='\\[\\e[31m\\]\\u\\[\\e[0m\\]# '\" >> /root/.bas
 echo "cd ~" >> ~/.bashrc
 source ~/.bashrc
 
-# 5. Install Node.js (reopen Ubuntu first)
+# 5. Install Node.js (restart Ubuntu first)
 curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
 sudo apt install -y nodejs
 
@@ -56,9 +56,10 @@ mkdir -p ~/ir_local
 cd ~/ir_local
 svn checkout http://10.130.61.10/work2/svn/repos/SBN_IR/trunk .
 
-# 11. Install Claude CLI (Optional)
-sudo npm install -g @anthropic-ai/claude-code
-
+# 10a. Setup shortcut (optional) 
+vim ~/.bashrc
+export ir="$HOME/ir_local"
+. ~/.bashrc
 
 # FINAL. Install compiler 
 Follow readme.md where ever you installed the compilers (Step 8).
