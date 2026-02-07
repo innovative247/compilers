@@ -74,7 +74,7 @@ def prompt_mode():
     """
     print()
     print("Select operation:")
-    print("  1) Import messages from files into the database")
+    print("  1) Import messages from the files into the database")
     print("  2) Export messages from the database into the files")
     print()
 
