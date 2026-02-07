@@ -2166,7 +2166,7 @@ def write_bcp_data_file(rows: list, file_path: str) -> int:
     count = 0
     with open(file_path, 'wb') as f:
         for row in rows:
-            f.write(field_sep.join(str(v).encode('utf-8') for v in row) + row_term)
+            f.write(field_sep.join(str(v).encode('cp1252', errors='replace') for v in row) + row_term)
             count += 1
     return count
 
@@ -2335,14 +2335,9 @@ def execute_bcp(host: str, port: int, username: str, password: str,
     safe_cmd[pw_idx] = "****"
     logging.debug(f"BCP command: {' '.join(safe_cmd)}")
 
-    # Set BCPJ env var for Sybase charset handling (matches yoda convention: BCPJ=-Jutf8)
-    bcp_env = os.environ.copy()
-    if platform.upper() == "SYBASE":
-        bcp_env.setdefault("BCPJ", "-Jutf8")
-
     try:
         # Note: Do NOT use text=True as it can cause freebcp to fail on large files
-        result = subprocess.run(bcp_command, capture_output=True, check=False, env=bcp_env)
+        result = subprocess.run(bcp_command, capture_output=True, check=False)
 
         # Decode output as text, ignoring encoding errors
         stdout_text = result.stdout.decode('utf-8', errors='replace') if result.stdout else ''
