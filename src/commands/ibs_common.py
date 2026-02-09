@@ -1898,13 +1898,20 @@ def test_connection(host: str, port: int, username: str, password: str,
     test_query = "SELECT 1\nGO\nexit\n"
 
     try:
+        # Build environment with TDSVER for MSSQL (Azure SQL requires TDS 7.3+)
+        env = None
+        if platform.upper() == "MSSQL":
+            env = os.environ.copy()
+            env["TDSVER"] = "7.4"
+
         # Run tsql with the test query
         result = subprocess.run(
             tsql_cmd,
             input=test_query,
             capture_output=True,
             text=True,
-            timeout=10  # 10 second timeout
+            timeout=10,  # 10 second timeout
+            env=env
         )
 
         output = result.stdout + result.stderr
@@ -5749,6 +5756,12 @@ def execute_sql_native(host: str, port: int, username: str, password: str,
 
         logging.debug(f"Executing: {compiler} -H {host} -p {port} -U {username} ... (credentials hidden)")
 
+        # Build environment with TDSVER for MSSQL (Azure SQL requires TDS 7.3+)
+        env = None
+        if platform.upper() == "MSSQL":
+            env = os.environ.copy()
+            env["TDSVER"] = "7.4"
+
         # Execute tsql, piping SQL via stdin
         # Always use cp1252 for tsql communication - FreeTDS doesn't handle UTF-8 multi-byte
         # sequences properly in its line parser (e.g., UTF-8 Æ = C3 86 confuses it).
@@ -5760,7 +5773,8 @@ def execute_sql_native(host: str, port: int, username: str, password: str,
             text=True,
             encoding='cp1252',
             errors='replace',
-            timeout=300
+            timeout=300,
+            env=env
         )
 
         # Process output - filter out tsql noise
@@ -6033,6 +6047,12 @@ def execute_sql_interleaved(host: str, port: int, username: str, password: str,
         if database:
             cmd.extend(["-D", database])
 
+        # Build environment with TDSVER for MSSQL (Azure SQL requires TDS 7.3+)
+        env = None
+        if platform.upper() == "MSSQL":
+            env = os.environ.copy()
+            env["TDSVER"] = "7.4"
+
         # Start tsql process with persistent connection
         # Use cp1252 encoding - FreeTDS doesn't handle UTF-8 multi-byte sequences properly
         process = subprocess.Popen(
@@ -6042,7 +6062,8 @@ def execute_sql_interleaved(host: str, port: int, username: str, password: str,
             stderr=subprocess.PIPE,
             text=True,
             encoding='cp1252',
-            errors='replace'
+            errors='replace',
+            env=env
         )
 
         # Queue for collecting output from threads
