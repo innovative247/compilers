@@ -38,6 +38,7 @@ import getpass
 import logging
 import os
 import sys
+import time
 
 # Import shared functions from ibs_common (relative import within commands package)
 from .ibs_common import (
@@ -118,6 +119,8 @@ Notes:
     parser.add_argument("--test-connection", action="store_true",
                         help="Test connection before executing SQL")
     parser.add_argument("--debug", action="store_true", help="Enable debug output")
+    parser.add_argument("-t", "--timer", type=int, metavar="SEC",
+                        help="Repeat every SEC seconds after completion")
 
     args = parser.parse_args()
 
@@ -232,89 +235,94 @@ Notes:
                 return 1
             print(f"Connection test successful: {msg}", file=sys.stderr)
 
-        # Build SQL script with placeholder replacement (no changelog for isqlline)
-        sql_script = build_sql_script(
-            args.sql_command,
-            config=config,
-            changelog_enabled=False,
-            database=database,
-            host=host
-        )
+        while True:
+            # Build SQL script with placeholder replacement (no changelog for isqlline)
+            sql_script = build_sql_script(
+                args.sql_command,
+                config=config,
+                changelog_enabled=False,
+                database=database,
+                host=host
+            )
 
-        # ==========================================================================
-        # OPTIONS FILE HANDLING
-        # ==========================================================================
-        # Load/create options file ONCE per isqlline execution.
-        # Options are cached in {SQL_SOURCE}/CSS/Setup/temp/{profile}.options.tmp
-        # and reused for 24 hours. All processing is done by Options class in ibs_common.py.
-        #
-        # When -e (echo) is used, the options file path is logged.
-        # ==========================================================================
-        options = None
-        options_log_line = None
-        if not is_raw_mode(config) and profile_name and config.get('COMPANY'):
-            options = Options(config)
-            if options.generate_option_files():
-                # Log options file path when echo is enabled
-                if args.echo:
-                    cache_file = options.get_cache_filepath()
-                    options_log_line = f"-- Options: {cache_file}"
-                    if not args.output:
-                        # Print to console only if not writing to file
-                        print(options_log_line)
-                # Apply placeholder resolution
-                sql_script = options.replace_options(sql_script)
+            # ==========================================================================
+            # OPTIONS FILE HANDLING
+            # ==========================================================================
+            # Load/create options file ONCE per isqlline execution.
+            # Options are cached in {SQL_SOURCE}/CSS/Setup/temp/{profile}.options.tmp
+            # and reused for 24 hours. All processing is done by Options class in ibs_common.py.
+            #
+            # When -e (echo) is used, the options file path is logged.
+            # ==========================================================================
+            options = None
+            options_log_line = None
+            if not is_raw_mode(config) and profile_name and config.get('COMPANY'):
+                options = Options(config)
+                if options.generate_option_files():
+                    # Log options file path when echo is enabled
+                    if args.echo:
+                        cache_file = options.get_cache_filepath()
+                        options_log_line = f"-- Options: {cache_file}"
+                        if not args.output:
+                            # Print to console only if not writing to file
+                            print(options_log_line)
+                    # Apply placeholder resolution
+                    sql_script = options.replace_options(sql_script)
 
-        # Collect output parts
-        output_parts = []
+            # Collect output parts
+            output_parts = []
 
-        # Add options file path to output if -O and -e are both used
-        if args.output and options_log_line:
-            output_parts.append(options_log_line)
+            # Add options file path to output if -O and -e are both used
+            if args.output and options_log_line:
+                output_parts.append(options_log_line)
 
-        # Echo input if requested (print resolved SQL before execution)
-        if args.echo:
-            echo_footer = "--"
-            if args.output:
-                # Write to output file only (no console output)
-                output_parts.append(sql_script)
-                output_parts.append(echo_footer)
-            else:
-                # Print to console only
-                print(sql_script)
-                print(echo_footer)
+            # Echo input if requested (print resolved SQL before execution)
+            if args.echo:
+                echo_footer = "--"
+                if args.output:
+                    # Write to output file only (no console output)
+                    output_parts.append(sql_script)
+                    output_parts.append(echo_footer)
+                else:
+                    # Print to console only
+                    print(sql_script)
+                    print(echo_footer)
 
-        # Execute the SQL command via native compiler (tsql)
-        success, output = execute_sql_native(
-            host, port, username, password, database, platform,
-            sql_script,
-            output_file=None,  # We handle output ourselves
-            echo_input=False   # We handle echo ourselves
-        )
+            # Execute the SQL command via native compiler (tsql)
+            success, output = execute_sql_native(
+                host, port, username, password, database, platform,
+                sql_script,
+                output_file=None,  # We handle output ourselves
+                echo_input=False   # We handle echo ourselves
+            )
 
-        if success:
-            if output and output.strip():
-                output_parts.append(output)
-        else:
-            # Append error to output
-            output_parts.append(f"ERROR: {output}")
-
-        # Write output to file or console
-        if args.output:
-            # Write all output to file
-            try:
-                with open(args.output, 'w', encoding='utf-8') as f:
-                    f.write("\n".join(output_parts) + "\n")
-            except IOError as e:
-                print(f"ERROR: Failed to write output file: {e}", file=sys.stderr)
-                return 1
-        else:
-            # Print to console
             if success:
                 if output and output.strip():
-                    print(output)
+                    output_parts.append(output)
             else:
-                print(f"ERROR: {output}", file=sys.stderr)
+                # Append error to output
+                output_parts.append(f"ERROR: {output}")
+
+            # Write output to file or console
+            if args.output:
+                # Write all output to file
+                try:
+                    with open(args.output, 'w', encoding='utf-8') as f:
+                        f.write("\n".join(output_parts) + "\n")
+                except IOError as e:
+                    print(f"ERROR: Failed to write output file: {e}", file=sys.stderr)
+                    return 1
+            else:
+                # Print to console
+                if success:
+                    if output and output.strip():
+                        print(output)
+                else:
+                    print(f"ERROR: {output}", file=sys.stderr)
+
+            if not args.timer:
+                break
+            time.sleep(args.timer)
 
         return 0 if success else 1
 

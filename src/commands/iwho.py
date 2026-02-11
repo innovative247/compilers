@@ -19,6 +19,7 @@ import argparse
 import getpass
 import logging
 import sys
+import time
 
 from .ibs_common import (
     load_profile,
@@ -141,6 +142,8 @@ Examples:
     parser.add_argument("--platform", choices=["SYBASE", "MSSQL"], default="SYBASE",
                         help="Database platform (default: SYBASE)")
     parser.add_argument("--debug", action="store_true", help="Enable debug output")
+    parser.add_argument("-t", "--timer", type=int, metavar="SEC",
+                        help="Repeat every SEC seconds after completion")
 
     args = parser.parse_args()
 
@@ -216,20 +219,26 @@ Examples:
         # Always query master
         database = "master"
 
-        # Build SQL
-        sql = build_sql(platform, filter_type, filter_value)
+        while True:
+            # Build SQL
+            sql = build_sql(platform, filter_type, filter_value)
 
-        # Execute
-        success, output = execute_sql_native(
-            host, port, username, password, database, platform,
-            sql, output_file=None, echo_input=False
-        )
+            # Execute
+            success, output = execute_sql_native(
+                host, port, username, password, database, platform,
+                sql, output_file=None, echo_input=False
+            )
 
-        if success:
-            if output and output.strip():
-                print(output)
-        else:
-            print(f"ERROR: {output}", file=sys.stderr)
+            if success:
+                if output and output.strip():
+                    print(output)
+            else:
+                print(f"ERROR: {output}", file=sys.stderr)
+
+            if not args.timer:
+                break
+            print()
+            time.sleep(args.timer)
 
         return 0 if success else 1
 
