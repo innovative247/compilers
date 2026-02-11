@@ -214,9 +214,22 @@ def version_at_least(current: str, minimum: str) -> bool:
         return False
 
 
+def remove_apt_freetds() -> None:
+    """Remove apt-installed FreeTDS packages."""
+    log.log("Removing apt-installed FreeTDS...", "STEP")
+    try:
+        run_command(["sudo", "apt", "remove", "-y", "freetds-bin", "freetds-dev", "freetds-common"], check=False)
+        run_command(["sudo", "apt", "autoremove", "-y"], check=False)
+    except Exception as e:
+        log.log(f"apt remove failed (continuing): {e}", "WARN")
+
+
 def install_freetds_from_source() -> bool:
     """Build and install FreeTDS from source for Azure SQL redirect support."""
     log.subsection(f"Building FreeTDS {FREETDS_SOURCE_VERSION} from source")
+
+    # Remove apt version first to avoid conflicts
+    remove_apt_freetds()
 
     import tempfile
     build_dir = Path(tempfile.mkdtemp(prefix="freetds-build-"))
@@ -226,7 +239,7 @@ def install_freetds_from_source() -> bool:
     try:
         # Install build dependencies
         log.log("Installing build dependencies...", "STEP")
-        run_command(["sudo", "apt", "install", "-y", "build-essential", "libssl-dev", "unixodbc-dev"])
+        run_command(["sudo", "apt", "install", "-y", "build-essential", "libssl-dev"])
 
         # Download source
         log.log(f"Downloading FreeTDS {FREETDS_SOURCE_VERSION}...", "STEP")
@@ -249,26 +262,26 @@ def install_freetds_from_source() -> bool:
         log.log("Building...", "STEP")
         run_command(["make"], cwd=str(source_dir))
 
-        # Install
+        # Install to /usr/local/
         log.log("Installing...", "STEP")
         run_command(["sudo", "make", "install"], cwd=str(source_dir))
 
-        # Ensure /usr/local/bin/tsql takes priority over /usr/bin/tsql
-        if Path("/usr/bin/tsql").exists() and Path("/usr/local/bin/tsql").exists():
-            log.log("Replacing apt tsql with source-built version...", "STEP")
-            run_command(["sudo", "ln", "-sf", "/usr/local/bin/tsql", "/usr/bin/tsql"])
+        # Update shared library cache
+        run_command(["sudo", "ldconfig"], check=False)
 
-        # Also link bsqldb and other tools if present
+        # Symlink into /usr/bin/ so tsql is always on PATH
         for tool in ["tsql", "bsqldb", "freebcp"]:
             local_path = Path(f"/usr/local/bin/{tool}")
-            system_path = Path(f"/usr/bin/{tool}")
-            if local_path.exists() and system_path.exists():
-                run_command(["sudo", "ln", "-sf", str(local_path), str(system_path)])
+            if local_path.exists():
+                log.log(f"Linking {local_path} -> /usr/bin/{tool}", "INFO")
+                run_command(["sudo", "ln", "-sf", str(local_path), f"/usr/bin/{tool}"])
 
         # Verify
         version = parse_freetds_version()
         if version and version_at_least(version, FREETDS_MIN_VERSION):
             log.log(f"FreeTDS {version} installed from source", "SUCCESS")
+            version_info = get_freetds_version()
+            log.log(f"FreeTDS version info:\n{version_info}", "INFO")
             return True
         else:
             log.log(f"Source build completed but version check failed: {version}", "WARN")
@@ -290,18 +303,21 @@ def install_freetds(force: bool = False) -> bool:
     """Install FreeTDS. Uses apt first, then builds from source if version is too old."""
     log.section("FreeTDS Installation")
 
-    # Check if already installed
-    if check_freetds_installed() and not force:
+    # Always check version, even if already installed
+    if check_freetds_installed():
         version = parse_freetds_version()
         version_info = get_freetds_version()
 
         if version and version_at_least(version, FREETDS_MIN_VERSION):
-            log.log(f"FreeTDS {version} already installed (>= {FREETDS_MIN_VERSION})", "SUCCESS")
-            log.log(f"FreeTDS version info:\n{version_info}", "INFO")
-            return True
+            if not force:
+                log.log(f"FreeTDS {version} already installed (>= {FREETDS_MIN_VERSION})", "SUCCESS")
+                log.log(f"FreeTDS version info:\n{version_info}", "INFO")
+                return True
+            else:
+                log.log(f"FreeTDS {version} installed but --force specified, rebuilding...", "INFO")
+                return install_freetds_from_source()
         else:
             log.log(f"FreeTDS {version} is too old (need >= {FREETDS_MIN_VERSION} for Azure SQL support)", "WARN")
-            log.log(f"Building FreeTDS {FREETDS_SOURCE_VERSION} from source...", "STEP")
             return install_freetds_from_source()
 
     # Not installed — try apt first
