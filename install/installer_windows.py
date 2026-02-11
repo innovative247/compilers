@@ -332,7 +332,8 @@ def get_tsql_path() -> str:
 
 def check_freetds_installed() -> bool:
     """Check if FreeTDS is installed on Windows."""
-    return bool(get_tsql_path())
+    freebcp_path = WINDOWS_MSYS2_BIN / "freebcp.exe"
+    return bool(get_tsql_path()) and freebcp_path.exists()
 
 
 def get_freetds_version_output(tsql_path: str = "") -> str:
