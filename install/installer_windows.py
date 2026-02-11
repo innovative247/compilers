@@ -749,7 +749,7 @@ def install_python_packages() -> bool:
 
     try:
         # Build pip install command
-        pip_cmd = [sys.executable, "-m", "pip", "install", "-e", str(SRC_DIR)]
+        pip_cmd = [sys.executable, "-m", "pip", "install", "--force-reinstall", "-e", str(SRC_DIR)]
 
         if user_mode:
             pip_cmd.insert(4, "--user")  # Insert --user before -e

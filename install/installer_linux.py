@@ -334,7 +334,7 @@ def install_python_packages() -> bool:
 
     try:
         # Install in editable mode (--break-system-packages for PEP 668 compliance on Ubuntu 23.04+)
-        run_command([sys.executable, "-m", "pip", "install", "-e", str(SRC_DIR), "--break-system-packages"])
+        run_command([sys.executable, "-m", "pip", "install", "--force-reinstall", "-e", str(SRC_DIR), "--break-system-packages"])
         log.log("IBS Compilers package installed successfully", "SUCCESS")
 
         # Check if commands are available

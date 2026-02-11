@@ -361,7 +361,7 @@ def install_python_packages() -> bool:
 
     try:
         # Install in editable mode
-        run_command([sys.executable, "-m", "pip", "install", "-e", str(SRC_DIR)])
+        run_command([sys.executable, "-m", "pip", "install", "--force-reinstall", "-e", str(SRC_DIR)])
         log.log("IBS Compilers package installed successfully", "SUCCESS")
 
         # Check if commands are available
