@@ -58,14 +58,15 @@ class Logger:
         self.log_file = log_file
 
     def _write_log(self, level: str, message: str):
-        """Write to log file."""
-        with open(self.log_file, "a", encoding="utf-8") as f:
-            f.write(f"[{level}] {message}\n")
+        """Write to log file. Silently fails if file is not writable."""
+        try:
+            with open(self.log_file, "a", encoding="utf-8") as f:
+                f.write(f"[{level}] {message}\n")
+        except (IOError, OSError):
+            pass
 
     def log(self, message: str, level: str = "INFO"):
         """Log a message to console and file."""
-        self._write_log(level, message)
-
         prefix = {
             "INFO": "   ",
             "WARN": " ! ",
@@ -78,20 +79,21 @@ class Logger:
         color = self.COLORS.get(level, self.COLORS["INFO"])
         reset = self.COLORS["RESET"]
         print(f"{color}{prefix}{message}{reset}")
+        self._write_log(level, message)
 
     def section(self, title: str):
         """Print a section header."""
-        self._write_log("SECTION", title)
         print()
         print("=" * 60)
         print(f"  {title}")
         print("=" * 60)
+        self._write_log("SECTION", title)
 
     def subsection(self, title: str):
         """Print a subsection header."""
-        self._write_log("SUBSECTION", title)
         print()
         print(f"  --- {title} ---")
+        self._write_log("SUBSECTION", title)
 
 
 # Initialize logger (will append to existing log from bootstrap script)

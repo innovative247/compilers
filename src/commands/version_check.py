@@ -208,6 +208,9 @@ def _run_dependency_installer(compilers_dir: Path, messages: list) -> None:
     Dynamically imports the installer module (freshly from disk after git pull)
     and calls install_freetds() directly. This ensures FreeTDS is the correct
     version and properly configured in PATH.
+
+    Runs as a subprocess so the LATEST installer code from git pull is always used,
+    even if the current process was started with older code.
     """
     install_dir = compilers_dir / 'install'
 
@@ -224,19 +227,39 @@ def _run_dependency_installer(compilers_dir: Path, messages: list) -> None:
         messages.append(f"Warning: Installer not found at {installer_file}")
         return
 
-    try:
-        import importlib.util
-        spec = importlib.util.spec_from_file_location("platform_installer", str(installer_file))
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
+    print()
+    print("  Verifying dependencies (FreeTDS)...")
+    if sys.platform != 'win32':
+        print("  (You may be prompted for your sudo password)")
+    print()
 
-        print()
-        success = mod.install_freetds()
-        if success:
+    # Run as a subprocess so the LATEST code from git pull is used.
+    # This avoids the stale-module problem where the current process loaded
+    # an older version_check.py before git pull updated the installer code.
+    install_script = (
+        f"import sys; sys.path.insert(0, {str(install_dir)!r}); "
+        f"import importlib.util; "
+        f"spec = importlib.util.spec_from_file_location('installer', {str(installer_file)!r}); "
+        f"mod = importlib.util.module_from_spec(spec); "
+        f"spec.loader.exec_module(mod); "
+        f"result = mod.install_freetds(); "
+        f"sys.exit(0 if result else 1)"
+    )
+
+    try:
+        result = subprocess.run(
+            [sys.executable, '-c', install_script],
+            timeout=300
+        )
+        if result.returncode == 0:
             messages.append("FreeTDS verified.")
         else:
             messages.append("Warning: FreeTDS installation/verification had issues.")
+    except subprocess.TimeoutExpired:
+        print("  FreeTDS installation timed out.")
+        messages.append("Warning: FreeTDS installation timed out.")
     except Exception as e:
+        print(f"  FreeTDS dependency check failed: {e}")
         messages.append(f"Warning: Dependency check failed: {e}")
 
 

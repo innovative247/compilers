@@ -70,9 +70,12 @@ class Logger:
             f.write("=" * 60 + "\n\n")
 
     def _write_log(self, level: str, message: str):
-        """Write to log file."""
-        with open(self.log_file, "a", encoding="utf-8") as f:
-            f.write(f"[{level}] {message}\n")
+        """Write to log file. Silently fails if file is not writable."""
+        try:
+            with open(self.log_file, "a", encoding="utf-8") as f:
+                f.write(f"[{level}] {message}\n")
+        except (IOError, OSError):
+            pass
 
     def _supports_color(self) -> bool:
         """Check if terminal supports color."""
@@ -82,8 +85,6 @@ class Logger:
 
     def log(self, message: str, level: str = "INFO"):
         """Log a message to console and file."""
-        self._write_log(level, message)
-
         prefix = {
             "INFO": "   ",
             "WARN": " ! ",
@@ -99,6 +100,7 @@ class Logger:
             print(f"{color}{prefix}{message}{reset}")
         else:
             print(f"{prefix}{message}")
+        self._write_log(level, message)
 
     def section(self, title: str):
         """Print a section header."""
