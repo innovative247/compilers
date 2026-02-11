@@ -239,49 +239,91 @@ def version_at_least(current: str, minimum: str) -> bool:
         return False
 
 
+def find_all_tsql() -> list[str]:
+    """Find all tsql binaries in PATH order (like 'which -a tsql')."""
+    paths = []
+    for dir_path in os.environ.get("PATH", "").split(":"):
+        if not dir_path:
+            continue
+        tsql_path = os.path.join(dir_path, "tsql")
+        if os.path.isfile(tsql_path) and os.access(tsql_path, os.X_OK):
+            paths.append(tsql_path)
+    return paths
+
+
 def verify_freetds() -> bool:
-    """Comprehensive post-install FreeTDS verification."""
+    """Comprehensive post-install FreeTDS verification.
+
+    Finds ALL tsql binaries in PATH, identifies the correct version,
+    and symlinks any old versions so the correct one is always used.
+    """
     log.subsection("FreeTDS Verification")
 
-    # 1. Find tsql binary
-    tsql_path = get_tsql_path()
-    if not tsql_path:
-        log.log("FAIL: tsql binary not found", "ERROR")
-        return False
-    log.log(f"tsql binary: {tsql_path}", "SUCCESS")
+    # 1. Find all tsql binaries in PATH
+    all_tsql = find_all_tsql()
+    if not all_tsql:
+        # Check fallback locations not in PATH
+        tsql_path = get_tsql_path()
+        if not tsql_path:
+            log.log("FAIL: tsql binary not found", "ERROR")
+            return False
+        all_tsql = [tsql_path]
 
-    # 2. Run tsql -C
-    tsql_output = get_freetds_version_output(tsql_path)
-    if not tsql_output:
-        log.log("FAIL: tsql -C returned no output", "ERROR")
-        return False
-    log.log(f"tsql -C output:\n{tsql_output}", "INFO")
+    # 2. Check each instance — find the correct one
+    correct_path = None
+    log.log(f"Found {len(all_tsql)} tsql binary(ies) in PATH:", "INFO")
+    for path in all_tsql:
+        output = get_freetds_version_output(path)
+        ver = parse_freetds_version(output)
+        tls = parse_freetds_tls(output)
+        status = f"v{ver} ({tls})" if ver and tls else f"v{ver}" if ver else "unknown"
+        log.log(f"  {path}: {status}", "INFO")
+        if ver and version_at_least(ver, FREETDS_MIN_VERSION) and not correct_path:
+            correct_path = path
 
-    # 3. Parse version
+    if not correct_path:
+        log.log(f"FAIL: no tsql binary with version >= {FREETDS_MIN_VERSION}", "ERROR")
+        return False
+
+    # 3. Ensure correct version is first in PATH — symlink old copies
+    if all_tsql[0] != correct_path:
+        log.log(f"Wrong tsql is first in PATH: {all_tsql[0]}", "WARN")
+        log.log(f"Correct version at: {correct_path}", "INFO")
+        real_correct = os.path.realpath(correct_path)
+        for path in all_tsql:
+            if os.path.realpath(path) == real_correct:
+                continue
+            log.log(f"Symlinking {path} -> {correct_path}", "STEP")
+            try:
+                run_command(["sudo", "ln", "-sf", correct_path, path])
+            except Exception as e:
+                log.log(f"Failed to symlink {path}: {e}", "WARN")
+
+    # 4. Final verification — the first tsql in PATH must be correct
+    first_tsql = get_tsql_path()
+    tsql_output = get_freetds_version_output(first_tsql)
     version = parse_freetds_version(tsql_output)
-    if not version:
-        log.log("FAIL: could not parse FreeTDS version", "ERROR")
+    tls = parse_freetds_tls(tsql_output)
+
+    if not version or not version_at_least(version, FREETDS_MIN_VERSION):
+        log.log(f"FAIL: first tsql in PATH ({first_tsql}) is still v{version}", "ERROR")
         return False
-    if not version_at_least(version, FREETDS_MIN_VERSION):
-        log.log(f"FAIL: FreeTDS {version} < {FREETDS_MIN_VERSION}", "ERROR")
-        return False
+
+    log.log(f"tsql binary: {first_tsql}", "SUCCESS")
     log.log(f"Version: {version} (>= {FREETDS_MIN_VERSION})", "SUCCESS")
 
-    # 4. Parse TLS library
-    tls = parse_freetds_tls(tsql_output)
+    # 5. TLS check
     if tls:
         log.log(f"TLS library: {tls}", "INFO")
     else:
         log.log("TLS library: unknown", "WARN")
 
-    # 5. TLS enforcement (Linux: GnuTLS = FAIL)
     if tls and "gnutls" in tls.lower():
         log.log("FAIL: GnuTLS detected — Azure SQL requires OpenSSL", "ERROR")
         return False
     if tls and "openssl" in tls.lower():
         log.log("TLS: OpenSSL (required for Azure SQL)", "SUCCESS")
 
-    # 6. Summary
     log.log(f"FreeTDS verification passed: v{version} ({tls or 'unknown TLS'})", "SUCCESS")
     return True
 

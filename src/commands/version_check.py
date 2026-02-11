@@ -5,6 +5,8 @@ Checks for updates once per day on first command execution.
 """
 
 import os
+import re
+import shutil
 import sys
 import json
 import subprocess
@@ -160,9 +162,9 @@ def _perform_upgrade() -> Tuple[bool, str]:
 
         git_output = result.stdout.strip()
         if 'Already up to date' in git_output:
-            return True, "Already up to date."
-
-        messages.append(f"Git pull: {git_output}")
+            messages.append("Code is up to date.")
+        else:
+            messages.append(f"Git pull: {git_output}")
 
         # Step 2: Reinstall package to update entry points and dependencies
         # Use pip install -e . for editable install from src/ directory
@@ -183,11 +185,14 @@ def _perform_upgrade() -> Tuple[bool, str]:
             if pip_result.returncode == 0:
                 messages.append("Package reinstalled successfully.")
             else:
-                # pip install failed, but git pull succeeded
                 messages.append(f"Warning: pip install failed: {pip_result.stderr.strip()}")
                 messages.append("You may need to run: pip install -e . (in the src/ directory)")
 
-        return True, "Upgrade successful!\n" + "\n".join(messages)
+        # Step 3: Run platform installer for dependencies (FreeTDS, etc.)
+        # This uses the LATEST installer code from git pull above
+        _run_dependency_installer(compilers_dir, messages)
+
+        return True, "\n".join(messages)
 
     except subprocess.TimeoutExpired:
         return False, "Upgrade timed out."
@@ -197,10 +202,132 @@ def _perform_upgrade() -> Tuple[bool, str]:
         return False, f"Upgrade failed: {str(e)}"
 
 
+def _run_dependency_installer(compilers_dir: Path, messages: list) -> None:
+    """Run the platform-specific installer to verify/install dependencies like FreeTDS.
+
+    Dynamically imports the installer module (freshly from disk after git pull)
+    and calls install_freetds() directly. This ensures FreeTDS is the correct
+    version and properly configured in PATH.
+    """
+    install_dir = compilers_dir / 'install'
+
+    if sys.platform.startswith('linux'):
+        installer_file = install_dir / 'installer_linux.py'
+    elif sys.platform == 'darwin':
+        installer_file = install_dir / 'installer_macos.py'
+    elif sys.platform == 'win32':
+        installer_file = install_dir / 'installer_windows.py'
+    else:
+        return
+
+    if not installer_file.exists():
+        messages.append(f"Warning: Installer not found at {installer_file}")
+        return
+
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("platform_installer", str(installer_file))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        print()
+        success = mod.install_freetds()
+        if success:
+            messages.append("FreeTDS verified.")
+        else:
+            messages.append("Warning: FreeTDS installation/verification had issues.")
+    except Exception as e:
+        messages.append(f"Warning: Dependency check failed: {e}")
+
+
+def _print_environment_summary() -> None:
+    """Print compiler and FreeTDS version/path summary after install/update."""
+    try:
+        from colorama import Fore, Style
+        has_colorama = True
+    except ImportError:
+        has_colorama = False
+
+    # Read compiler version from disk (may have been updated by git pull + pip install)
+    compilers_dir = _get_compilers_dir()
+    version_file = compilers_dir / 'src' / 'commands' / 'version.py'
+    current_version = __version__  # fallback to imported version
+    if version_file.exists():
+        try:
+            with open(version_file, 'r') as f:
+                for line in f:
+                    if line.startswith('__version__'):
+                        parts = line.split('=', 1)
+                        if len(parts) == 2:
+                            current_version = parts[1].strip().strip('"\'')
+                            break
+        except IOError:
+            pass
+
+    # Find compiler entry point path
+    compiler_path = shutil.which('runsql') or shutil.which('isqlline') or 'not found'
+
+    # Find tsql and get version info
+    tsql_path = shutil.which('tsql')
+    tsql_version = None
+    tsql_tls = None
+
+    if tsql_path:
+        try:
+            result = subprocess.run(
+                [tsql_path, '-C'],
+                capture_output=True, text=True, timeout=5
+            )
+            output = result.stdout
+            ver_match = re.search(r'Version:\s*freetds\s*v?(\d+\.\d+\.\d+)', output)
+            tls_match = re.search(r'TLS library:\s*(\S+)', output)
+            if ver_match:
+                tsql_version = ver_match.group(1)
+            if tls_match:
+                tsql_tls = tls_match.group(1)
+        except Exception:
+            pass
+
+    # Build summary
+    print("  " + "=" * 50)
+    if has_colorama:
+        print(f"  {Style.BRIGHT}Environment Summary{Style.RESET_ALL}")
+    else:
+        print("  Environment Summary")
+    print("  " + "=" * 50)
+
+    # Compiler line
+    if has_colorama:
+        print(f"  Compilers:  {Fore.GREEN}v{current_version}{Style.RESET_ALL}  ({compiler_path})")
+    else:
+        print(f"  Compilers:  v{current_version}  ({compiler_path})")
+
+    # FreeTDS line
+    if tsql_path:
+        tds_info = f"v{tsql_version}" if tsql_version else "unknown version"
+        if tsql_tls:
+            tds_info += f" ({tsql_tls})"
+        if has_colorama:
+            print(f"  FreeTDS:    {Fore.GREEN}{tds_info}{Style.RESET_ALL}  ({tsql_path})")
+        else:
+            print(f"  FreeTDS:    {tds_info}  ({tsql_path})")
+    else:
+        if has_colorama:
+            print(f"  FreeTDS:    {Fore.RED}not found{Style.RESET_ALL}")
+        else:
+            print("  FreeTDS:    not found")
+
+    print("  " + "=" * 50)
+
+
 def force_upgrade(command_name: str = "command") -> bool:
     """
-    Force an update check and upgrade, bypassing the daily check.
-    Called when user runs "<command> update".
+    Force an update check, upgrade, and dependency verification.
+    Called when user runs "<command> install" or "<command> update".
+
+    Always runs the full install process: git pull, pip install, and
+    dependency verification (FreeTDS, etc.) so users only need this
+    one command to get everything up to date and working.
 
     Returns:
         Always False (command should exit after update attempt)
@@ -217,38 +344,8 @@ def force_upgrade(command_name: str = "command") -> bool:
     else:
         print("  Checking for updates...")
 
-    remote_version = _fetch_remote_version()
-
-    if remote_version is None:
-        print()
-        if has_colorama:
-            print(f"  {Fore.RED}Could not reach update server.{Style.RESET_ALL}")
-        else:
-            print("  Could not reach update server.")
-        print()
-        return False
-
-    comparison = _compare_versions(__version__, remote_version)
-
-    if comparison >= 0:
-        print()
-        if has_colorama:
-            print(f"  {Fore.GREEN}Innovative247 Compilers {__version__} is up to date.{Style.RESET_ALL}")
-        else:
-            print(f"  Innovative247 Compilers {__version__} is up to date.")
-        print()
-        return False
-
-    # Newer version available - upgrade without prompting (user explicitly asked)
-    if has_colorama:
-        print(f"  Current version: {Fore.RED}{__version__}{Style.RESET_ALL}")
-        print(f"  Latest version:  {Fore.GREEN}{remote_version}{Style.RESET_ALL}")
-    else:
-        print(f"  Current version: {__version__}")
-        print(f"  Latest version:  {remote_version}")
-    print()
-    print("  Upgrading...")
-
+    # Always run the full upgrade (git pull + pip install + dependency check)
+    # even if version appears current — dependencies like FreeTDS may need fixing
     success, message = _perform_upgrade()
     print()
 
@@ -257,14 +354,15 @@ def force_upgrade(command_name: str = "command") -> bool:
             print(f"  {Fore.GREEN}{message}{Style.RESET_ALL}")
         else:
             print(f"  {message}")
-        if 'Already up to date' not in message:
-            print()
-            print("  Upgrade complete. Please re-run your command.")
     else:
         if has_colorama:
             print(f"  {Fore.RED}{message}{Style.RESET_ALL}")
         else:
             print(f"  {message}")
+
+    # Always show environment summary at the end
+    print()
+    _print_environment_summary()
 
     print()
     return False

@@ -431,7 +431,29 @@ function Main {
 
     Write-Status "Python $($pythonInfo.Version) meets requirements" "Success"
 
-    # Step 2: Run installer_windows.py
+    # Step 2: Pull latest code (ensures installer has newest FreeTDS logic, etc.)
+    Write-Host ""
+    Write-Host "  --- Pulling Latest Code ---" -ForegroundColor White
+    Write-Host ""
+
+    $gitCmd = Get-Command git -ErrorAction SilentlyContinue
+    if ($gitCmd -and (Test-Path (Join-Path $Script:ProjectRoot ".git"))) {
+        Write-Status "Pulling latest changes..." "Step"
+        try {
+            & git -C $Script:ProjectRoot pull 2>&1 | Out-Null
+            if ($LASTEXITCODE -eq 0) {
+                Write-Status "Repository updated" "Success"
+            } else {
+                Write-Status "git pull failed (continuing with current code)" "Warn"
+            }
+        } catch {
+            Write-Status "git pull failed: $_ (continuing with current code)" "Warn"
+        }
+    } else {
+        Write-Status "git not available or not a git repository - skipping pull" "Warn"
+    }
+
+    # Step 3: Run installer_windows.py
     Write-Host ""
     Write-Host "  --- Launching Windows Installer ---" -ForegroundColor White
     Write-Host ""

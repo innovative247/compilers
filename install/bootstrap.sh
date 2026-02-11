@@ -354,7 +354,23 @@ main() {
     echo "Python: $PYTHON_VERSION" >> "$LOG_FILE"
     echo "" >> "$LOG_FILE"
 
-    # Step 2: Run platform-specific installer
+    # Step 2: Pull latest code (ensures installer has newest FreeTDS logic, etc.)
+    echo ""
+    echo "  --- Pulling Latest Code ---"
+    echo ""
+
+    if command -v git &> /dev/null && [ -d "$PROJECT_ROOT/.git" ]; then
+        log_step "Pulling latest changes..."
+        if git -C "$PROJECT_ROOT" pull; then
+            log_success "Repository updated"
+        else
+            log_warn "git pull failed (continuing with current code)"
+        fi
+    else
+        log_warn "git not available or not a git repository - skipping pull"
+    fi
+
+    # Step 3: Run platform-specific installer
     echo ""
     echo "  --- Launching $PLATFORM_NAME Installer ---"
     echo ""

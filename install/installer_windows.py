@@ -60,7 +60,6 @@ class Logger:
 
     def __init__(self, log_file: Path):
         self.log_file = log_file
-        self._init_log_file()
 
     def _init_log_file(self):
         """Initialize the log file with header."""
@@ -382,48 +381,93 @@ def version_at_least(current: str, minimum: str) -> bool:
         return False
 
 
+def find_all_tsql() -> list:
+    """Find all tsql binaries in PATH order (like 'which -a tsql').
+    Also checks the known MSYS2 location even if not yet in PATH.
+    """
+    paths = []
+    seen = set()
+
+    # Check known MSYS2 location first (may not be in PATH during install)
+    msys2_tsql = str(WINDOWS_MSYS2_BIN / "tsql.exe")
+    if os.path.isfile(msys2_tsql):
+        paths.append(msys2_tsql)
+        seen.add(os.path.realpath(msys2_tsql).lower())
+
+    for dir_path in os.environ.get("PATH", "").split(";"):
+        if not dir_path:
+            continue
+        tsql_path = os.path.join(dir_path, "tsql.exe")
+        if os.path.isfile(tsql_path):
+            real = os.path.realpath(tsql_path).lower()
+            if real not in seen:
+                paths.append(tsql_path)
+                seen.add(real)
+    return paths
+
+
 def verify_freetds() -> bool:
-    """Comprehensive post-install FreeTDS verification."""
+    """Comprehensive post-install FreeTDS verification.
+
+    Finds ALL tsql binaries in PATH (and MSYS2), identifies the correct version,
+    and reports any old versions found.
+    """
     log.subsection("FreeTDS Verification")
 
-    # 1. Find tsql binary
-    tsql_path = get_tsql_path()
-    if not tsql_path:
-        log.log("FAIL: tsql binary not found", "ERROR")
-        return False
-    log.log(f"tsql binary: {tsql_path}", "SUCCESS")
+    # 1. Find all tsql binaries
+    all_tsql = find_all_tsql()
+    if not all_tsql:
+        tsql_path = get_tsql_path()
+        if not tsql_path:
+            log.log("FAIL: tsql binary not found", "ERROR")
+            return False
+        all_tsql = [tsql_path]
 
-    # 2. Run tsql -C
-    tsql_output = get_freetds_version_output(tsql_path)
-    if not tsql_output:
-        log.log("FAIL: tsql -C returned no output", "ERROR")
-        return False
-    log.log(f"tsql -C output:\n{tsql_output}", "INFO")
+    # 2. Check each instance — find the correct one
+    correct_path = None
+    log.log(f"Found {len(all_tsql)} tsql binary(ies):", "INFO")
+    for path in all_tsql:
+        output = get_freetds_version_output(path)
+        ver = parse_freetds_version(output)
+        tls = parse_freetds_tls(output)
+        status = f"v{ver} ({tls})" if ver and tls else f"v{ver}" if ver else "unknown"
+        log.log(f"  {path}: {status}", "INFO")
+        if ver and version_at_least(ver, FREETDS_MIN_VERSION) and not correct_path:
+            correct_path = path
 
-    # 3. Parse version
+    if not correct_path:
+        log.log(f"FAIL: no tsql binary with version >= {FREETDS_MIN_VERSION}", "ERROR")
+        return False
+
+    # 3. Check if correct version is the one that will be used
+    first_tsql = get_tsql_path()
+    if first_tsql and os.path.realpath(first_tsql).lower() != os.path.realpath(correct_path).lower():
+        log.log(f"WARNING: Primary tsql ({first_tsql}) differs from correct version ({correct_path})", "WARN")
+        log.log("Ensure MSYS2 ucrt64/bin is early in your PATH", "WARN")
+
+    # 4. Final verification using the correct binary
+    tsql_output = get_freetds_version_output(correct_path)
     version = parse_freetds_version(tsql_output)
-    if not version:
-        log.log("FAIL: could not parse FreeTDS version", "ERROR")
+    tls = parse_freetds_tls(tsql_output)
+
+    if not version or not version_at_least(version, FREETDS_MIN_VERSION):
+        log.log(f"FAIL: tsql at {correct_path} is still v{version}", "ERROR")
         return False
-    if not version_at_least(version, FREETDS_MIN_VERSION):
-        log.log(f"FAIL: FreeTDS {version} < {FREETDS_MIN_VERSION}", "ERROR")
-        return False
+
+    log.log(f"tsql binary: {correct_path}", "SUCCESS")
     log.log(f"Version: {version} (>= {FREETDS_MIN_VERSION})", "SUCCESS")
 
-    # 4. Parse TLS library
-    tls = parse_freetds_tls(tsql_output)
+    # 5. TLS check (Windows: GnuTLS = WARN only, package managers handle this)
     if tls:
         log.log(f"TLS library: {tls}", "INFO")
     else:
         log.log("TLS library: unknown", "WARN")
 
-    # 5. TLS check (Windows: GnuTLS = WARN only, package managers handle this)
     if tls and "gnutls" in tls.lower():
         log.log("WARNING: GnuTLS detected — OpenSSL recommended for Azure SQL", "WARN")
     if tls and "openssl" in tls.lower():
         log.log("TLS: OpenSSL (required for Azure SQL)", "SUCCESS")
 
-    # 6. Summary
     log.log(f"FreeTDS verification passed: v{version} ({tls or 'unknown TLS'})", "SUCCESS")
     return True
 
@@ -1130,6 +1174,9 @@ def main():
     args = parser.parse_args()
 
     plat = get_platform()
+
+    # Initialize log file (done here, not on import, so dynamic imports don't overwrite)
+    log._init_log_file()
 
     # Header
     print()
