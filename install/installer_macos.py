@@ -230,50 +230,156 @@ def install_homebrew() -> bool:
 # FREETDS INSTALLATION
 # =============================================================================
 
+FREETDS_MIN_VERSION = "1.4.0"
+
+
+def get_tsql_path() -> str:
+    """Get absolute path to tsql binary."""
+    path = shutil.which("tsql")
+    if path:
+        return path
+    for fallback in ["/opt/homebrew/bin/tsql", "/usr/local/bin/tsql"]:
+        if os.path.isfile(fallback):
+            return fallback
+    return ""
+
+
 def check_freetds_installed() -> bool:
     """Check if FreeTDS is installed."""
-    return command_exists("tsql")
+    return bool(get_tsql_path())
 
 
-def get_freetds_version() -> str:
-    """Get FreeTDS version info."""
+def get_freetds_version_output(tsql_path: str = "") -> str:
+    """Run tsql -C and return raw stdout."""
+    if not tsql_path:
+        tsql_path = get_tsql_path()
+    if not tsql_path:
+        return ""
     try:
         result = subprocess.run(
-            ["tsql", "-C"],
+            [tsql_path, "-C"],
             capture_output=True,
             text=True,
             check=True
         )
         return result.stdout
     except Exception:
-        return "Unknown"
+        return ""
+
+
+def parse_freetds_version(tsql_output: str = "") -> str:
+    """Parse the version number from tsql -C output. Returns version string or empty."""
+    import re
+    if not tsql_output:
+        tsql_output = get_freetds_version_output()
+    match = re.search(r'Version:\s*freetds\s*v?(\d+\.\d+\.\d+)', tsql_output)
+    return match.group(1) if match else ""
+
+
+def parse_freetds_tls(tsql_output: str = "") -> str:
+    """Parse the TLS library from tsql -C output."""
+    import re
+    if not tsql_output:
+        tsql_output = get_freetds_version_output()
+    match = re.search(r'TLS library:\s*(\S+)', tsql_output)
+    return match.group(1) if match else ""
+
+
+def version_at_least(current: str, minimum: str) -> bool:
+    """Compare version strings (e.g. '1.3.17' >= '1.4.0')."""
+    def parts(v):
+        return [int(x) for x in v.split('.')]
+    try:
+        return parts(current) >= parts(minimum)
+    except (ValueError, IndexError):
+        return False
+
+
+def verify_freetds() -> bool:
+    """Comprehensive post-install FreeTDS verification."""
+    log.subsection("FreeTDS Verification")
+
+    # 1. Find tsql binary
+    tsql_path = get_tsql_path()
+    if not tsql_path:
+        log.log("FAIL: tsql binary not found", "ERROR")
+        return False
+    log.log(f"tsql binary: {tsql_path}", "SUCCESS")
+
+    # 2. Run tsql -C
+    tsql_output = get_freetds_version_output(tsql_path)
+    if not tsql_output:
+        log.log("FAIL: tsql -C returned no output", "ERROR")
+        return False
+    log.log(f"tsql -C output:\n{tsql_output}", "INFO")
+
+    # 3. Parse version
+    version = parse_freetds_version(tsql_output)
+    if not version:
+        log.log("FAIL: could not parse FreeTDS version", "ERROR")
+        return False
+    if not version_at_least(version, FREETDS_MIN_VERSION):
+        log.log(f"FAIL: FreeTDS {version} < {FREETDS_MIN_VERSION}", "ERROR")
+        return False
+    log.log(f"Version: {version} (>= {FREETDS_MIN_VERSION})", "SUCCESS")
+
+    # 4. Parse TLS library
+    tls = parse_freetds_tls(tsql_output)
+    if tls:
+        log.log(f"TLS library: {tls}", "INFO")
+    else:
+        log.log("TLS library: unknown", "WARN")
+
+    # 5. TLS check (macOS: GnuTLS = WARN only, package managers handle this)
+    if tls and "gnutls" in tls.lower():
+        log.log("WARNING: GnuTLS detected — OpenSSL recommended for Azure SQL", "WARN")
+    if tls and "openssl" in tls.lower():
+        log.log("TLS: OpenSSL (required for Azure SQL)", "SUCCESS")
+
+    # 6. Summary
+    log.log(f"FreeTDS verification passed: v{version} ({tls or 'unknown TLS'})", "SUCCESS")
+    return True
 
 
 def install_freetds(force: bool = False) -> bool:
-    """Install FreeTDS via Homebrew."""
+    """Install FreeTDS via Homebrew with version enforcement."""
     log.section("FreeTDS Installation")
 
-    if not force and check_freetds_installed():
-        log.log("FreeTDS already installed", "SUCCESS")
-        log.log("Running: tsql -C", "INFO")
-        version_info = get_freetds_version()
-        log.log(f"FreeTDS version info:\n{version_info}", "INFO")
-        return True
+    # Check existing installation
+    if check_freetds_installed():
+        tsql_output = get_freetds_version_output()
+        version = parse_freetds_version(tsql_output)
+        tls = parse_freetds_tls(tsql_output)
+
+        if version and version_at_least(version, FREETDS_MIN_VERSION):
+            if not force:
+                log.log(f"FreeTDS {version} already installed (>= {FREETDS_MIN_VERSION}, TLS: {tls or 'unknown'})", "SUCCESS")
+                return verify_freetds()
+            else:
+                log.log(f"FreeTDS {version} installed but --force specified, reinstalling...", "INFO")
+        else:
+            log.log(f"FreeTDS {version or 'unknown'} is too old (need >= {FREETDS_MIN_VERSION})", "WARN")
+            force = True  # Force upgrade
 
     if not check_homebrew_installed():
         log.log("Homebrew not installed - cannot install FreeTDS", "ERROR")
         return False
 
-    log.log("Installing FreeTDS via Homebrew...", "STEP")
-
+    # Install or upgrade via Homebrew
     try:
-        run_command(["brew", "install", "freetds"])
+        if force and check_freetds_installed():
+            log.log("Upgrading FreeTDS via Homebrew...", "STEP")
+            try:
+                run_command(["brew", "upgrade", "freetds"])
+            except Exception:
+                log.log("brew upgrade failed, trying reinstall...", "WARN")
+                run_command(["brew", "reinstall", "freetds"])
+        else:
+            log.log("Installing FreeTDS via Homebrew...", "STEP")
+            run_command(["brew", "install", "freetds"])
 
         if check_freetds_installed():
-            log.log("FreeTDS installed successfully", "SUCCESS")
-            version_info = get_freetds_version()
-            log.log(f"FreeTDS version info:\n{version_info}", "INFO")
-            return True
+            return verify_freetds()
         else:
             log.log("FreeTDS installation completed but tsql not found", "ERROR")
             return False
@@ -335,30 +441,6 @@ def install_vim(force: bool = False) -> bool:
 # =============================================================================
 # PYTHON PACKAGES
 # =============================================================================
-
-def pull_latest() -> bool:
-    """Pull latest changes from origin."""
-    log.section("Pulling Latest Changes")
-
-    if not shutil.which("git"):
-        log.log("git not found - skipping pull", "WARN")
-        return False
-
-    if not (PROJECT_ROOT / ".git").exists():
-        log.log(f"Not a git repository: {PROJECT_ROOT}", "WARN")
-        return False
-
-    try:
-        run_command(["git", "-C", str(PROJECT_ROOT), "pull"])
-        log.log("Repository updated", "SUCCESS")
-        return True
-    except subprocess.CalledProcessError as e:
-        log.log(f"git pull failed (exit code {e.returncode})", "WARN")
-        return False
-    except Exception as e:
-        log.log(f"git pull failed: {e}", "WARN")
-        return False
-
 
 def pull_latest() -> bool:
     """Pull latest changes from origin."""
@@ -538,9 +620,13 @@ def show_summary():
         print(f"  {'Homebrew':<15} {'Not Installed':<20} {'':<40}")
 
     # FreeTDS
-    if check_freetds_installed():
-        tsql_path = shutil.which("tsql") or "N/A"
-        print(f"  {'FreeTDS':<15} {'Installed':<20} {tsql_path:<40}")
+    tsql_path = get_tsql_path()
+    if tsql_path:
+        tsql_output = get_freetds_version_output(tsql_path)
+        version = parse_freetds_version(tsql_output)
+        tls = parse_freetds_tls(tsql_output)
+        status = f"v{version} ({tls})" if version and tls else f"v{version}" if version else "Installed"
+        print(f"  {'FreeTDS':<15} {status:<20} {tsql_path:<40}")
     else:
         print(f"  {'FreeTDS':<15} {'Not Installed':<20} {'':<40}")
 
