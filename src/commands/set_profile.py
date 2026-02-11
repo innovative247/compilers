@@ -1799,7 +1799,7 @@ def main_menu():
 def main():
     """Entry point for the set_profile command."""
     # Handle --version / -v
-    if len(sys.argv) > 1 and sys.argv[1] in ('--version', '-v'):
+    if len(sys.argv) > 1 and sys.argv[1] in ('version', '-version', '--version', '-v'):
         from .version import __version__
         from .ibs_common import Fore, Style
         print(f"{Fore.GREEN}Innovative247 Compilers {__version__}{Style.RESET_ALL}")

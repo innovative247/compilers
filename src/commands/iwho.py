@@ -98,7 +98,7 @@ def build_sql(platform, filter_type, filter_value):
 def main():
     """Main entry point for iwho."""
     # Handle --version / -v
-    if len(sys.argv) > 1 and sys.argv[1] in ('--version', '-v'):
+    if len(sys.argv) > 1 and sys.argv[1] in ('version', '-version', '--version', '-v'):
         from .version import __version__
         print(f"{Fore.GREEN}Innovative247 Compilers {__version__}{Style.RESET_ALL}")
         sys.exit(0)
