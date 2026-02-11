@@ -8,7 +8,6 @@ name = "ibs_compilers"
 dynamic = ["version"]
 description = "A collection of command-line tools for managing and deploying IBS databases."
 dependencies = [
-    "pyodbc",
     "colorama"
 ]
 

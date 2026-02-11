@@ -3,7 +3,7 @@ ibs_common.py: Shared library for the IBS Compiler Python toolchain.
 
 This module consolidates core, reusable functions and classes for:
 - Configuration management (loading settings.json, profile selection, placeholder replacement).
-- Database interactions (pyodbc connections, SQL execution, stored procedures).
+- Database interactions (FreeTDS tsql SQL execution, stored procedures).
 - External process wrappers (BCP utility).
 - File system utilities (finding files, temporary file management).
 - User interface interactions (console prompts, logging).
@@ -15,7 +15,6 @@ import os
 import sys
 import json
 import subprocess
-import pyodbc
 import shutil
 import logging
 from pathlib import Path
@@ -1861,7 +1860,7 @@ def test_connection(host: str, port: int, username: str, password: str,
 
     Uses direct HOST:PORT connection (not server aliases) to verify that FreeTDS
     can connect to the database. This is the most reliable way to test connectivity
-    before using pyodbc or freebcp.
+    before using freebcp.
 
     Args:
         host: Database host (IP address or hostname)
@@ -1959,144 +1958,6 @@ def test_connection(host: str, port: int, username: str, password: str,
     except Exception as e:
         logging.error(f"Connection test exception: {e}")
         return False, str(e)[:100]
-
-
-# =============================================================================
-# DATABASE CONNECTIONS (using pyodbc with FreeTDS)
-# =============================================================================
-
-def get_db_connection(host: str, port: int, username: str, password: str,
-                      platform: str, database: str = None, autocommit: bool = True):
-    """
-    Establish pyodbc connection using FreeTDS ODBC driver.
-
-    Uses direct HOST:PORT connection (NOT server aliases from freetds.conf).
-    This ensures consistent behavior across Windows, macOS, and Linux.
-
-    Args:
-        host: Database host (IP or hostname)
-        port: Database port
-        username: Database username
-        password: Database password
-        platform: Database platform (SYBASE or MSSQL)
-        database: Database name (optional)
-        autocommit: Enable autocommit mode (default: True)
-
-    Returns:
-        pyodbc connection object
-
-    Raises:
-        pyodbc.Error: If connection fails
-
-    Example:
-        conn = get_db_connection("54.235.236.130", 5000, "sbn0", "ibsibs",
-                                 "SYBASE", "sbnmaster", autocommit=True)
-        cursor = conn.cursor()
-        cursor.execute("SELECT @@version")
-        conn.close()
-    """
-    logging.debug(f"Establishing pyodbc connection to {platform} at {host}:{port}")
-
-    # Get available ODBC drivers
-    import pyodbc
-    available_drivers = pyodbc.drivers()
-    logging.debug(f"Available ODBC drivers: {available_drivers}")
-
-    # Build connection string based on platform and available drivers
-    if platform.upper() == "MSSQL":
-        # Try to find the best MSSQL driver
-        if "ODBC Driver 18 for SQL Server" in available_drivers:
-            driver = "ODBC Driver 18 for SQL Server"
-        elif "ODBC Driver 17 for SQL Server" in available_drivers:
-            driver = "ODBC Driver 17 for SQL Server"
-        elif "SQL Server" in available_drivers:
-            driver = "SQL Server"
-        else:
-            raise ValueError(f"No MSSQL ODBC driver found. Available: {available_drivers}")
-
-        conn_str = (
-            f"DRIVER={{{driver}}};"
-            f"SERVER={host},{port};"
-            f"UID={username};"
-            f"PWD={password};"
-        )
-        if database:
-            conn_str += f"DATABASE={database};"
-
-    elif platform.upper() == "SYBASE":
-        # Try to find the Sybase ASE driver
-        if "Adaptive Server Enterprise" in available_drivers:
-            driver = "Adaptive Server Enterprise"
-        elif "FreeTDS" in available_drivers:
-            driver = "FreeTDS"
-        else:
-            raise ValueError(f"No Sybase ODBC driver found. Available: {available_drivers}. "
-                           f"Install the SAP/Sybase ASE ODBC driver or configure FreeTDS ODBC.")
-
-        conn_str = (
-            f"DRIVER={{{driver}}};"
-            f"SERVER={host};"
-            f"PORT={port};"
-            f"UID={username};"
-            f"PWD={password};"
-        )
-        if database:
-            conn_str += f"DATABASE={database};"
-
-    else:
-        raise ValueError(f"Unsupported platform: {platform}. Must be SYBASE or MSSQL.")
-
-    logging.debug(f"Connection string: DRIVER={{{driver}}};SERVER=...;UID={username};PWD=***")
-
-    try:
-        connection = pyodbc.connect(conn_str, autocommit=autocommit)
-        logging.debug(f"Database connection established to {host}:{port}")
-        return connection
-
-    except pyodbc.Error as ex:
-        sqlstate = ex.args[0] if ex.args else "Unknown"
-        error_msg = f"Failed to connect to {platform} at {host}:{port}. SQLSTATE: {sqlstate}. Error: {ex}"
-        logging.error(error_msg)
-        raise
-
-
-def get_db_connection_from_profile(profile_name: str, database: str = None,
-                                    autocommit: bool = True):
-    """
-    Convenience wrapper - loads profile and connects to database.
-
-    Args:
-        profile_name: Name of profile in settings.json
-        database: Database name (optional, overrides profile DATABASE)
-        autocommit: Enable autocommit mode (default: True)
-
-    Returns:
-        pyodbc connection object
-
-    Raises:
-        KeyError: If profile not found
-        ValueError: If profile missing required fields
-        pyodbc.Error: If connection fails
-
-    Example:
-        conn = get_db_connection_from_profile("GONZO", "sbnmaster")
-        cursor = conn.cursor()
-        cursor.execute("SELECT @@version")
-        conn.close()
-    """
-    profile = load_profile(profile_name)
-
-    host = profile["HOST"]
-    port = profile["PORT"]
-    username = profile["USERNAME"]
-    password = profile["PASSWORD"]
-    platform = profile["PLATFORM"]
-
-    # Use database from profile if not explicitly provided
-    if database is None:
-        database = profile.get("DATABASE")
-
-    return get_db_connection(host, port, username, password, platform, database, autocommit)
 
 
 # =============================================================================
