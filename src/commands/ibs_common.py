@@ -257,7 +257,12 @@ def open_settings_in_editor():
     elif system == 'Darwin':  # Mac
         subprocess.run(['open', str(settings_path)])
     else:  # Linux
-        subprocess.run(['xdg-open', str(settings_path)])
+        import shutil
+        editor = os.environ.get('EDITOR') or shutil.which('nano') or shutil.which('vim') or shutil.which('vi')
+        if editor:
+            subprocess.run([editor, str(settings_path)])
+        else:
+            print_error("No editor found. Set the EDITOR environment variable.")
 
 
 def load_settings() -> dict:
