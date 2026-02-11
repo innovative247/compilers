@@ -304,6 +304,30 @@ def ensure_pip_installed() -> bool:
     return False
 
 
+def pull_latest() -> bool:
+    """Pull latest changes from origin."""
+    log.section("Pulling Latest Changes")
+
+    if not shutil.which("git"):
+        log.log("git not found - skipping pull", "WARN")
+        return False
+
+    if not (PROJECT_ROOT / ".git").exists():
+        log.log(f"Not a git repository: {PROJECT_ROOT}", "WARN")
+        return False
+
+    try:
+        run_command(["git", "-C", str(PROJECT_ROOT), "pull"])
+        log.log("Repository updated", "SUCCESS")
+        return True
+    except subprocess.CalledProcessError as e:
+        log.log(f"git pull failed (exit code {e.returncode})", "WARN")
+        return False
+    except Exception as e:
+        log.log(f"git pull failed: {e}", "WARN")
+        return False
+
+
 def install_python_packages() -> bool:
     """Install Python packages from src/."""
     log.section("Python Packages Installation")
@@ -599,20 +623,23 @@ def main():
     else:
         log.log("Skipping vim installation (user flag)", "SKIP")
 
-    # Step 3: Python packages
+    # Step 3: Pull latest from origin
+    pull_latest()
+
+    # Step 4: Python packages
     if not args.skip_packages:
         if not install_python_packages():
             log.log("Python package installation had issues", "WARN")
     else:
         log.log("Skipping Python package installation (user flag)", "SKIP")
 
-    # Step 4: Initialize settings.json
+    # Step 5: Initialize settings.json
     initialize_settings_json(args.force)
 
-    # Step 5: Configure shell PATH
+    # Step 6: Configure shell PATH
     configure_shell_path()
 
-    # Step 6: Verify installation
+    # Step 7: Verify installation
     verify_installation()
 
     # Show summary

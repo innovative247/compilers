@@ -697,6 +697,30 @@ def configure_vim_path() -> bool:
         return False
 
 
+def pull_latest() -> bool:
+    """Pull latest changes from origin."""
+    log.section("Pulling Latest Changes")
+
+    if not shutil.which("git"):
+        log.log("git not found - skipping pull", "WARN")
+        return False
+
+    if not (PROJECT_ROOT / ".git").exists():
+        log.log(f"Not a git repository: {PROJECT_ROOT}", "WARN")
+        return False
+
+    try:
+        run_command(["git", "-C", str(PROJECT_ROOT), "pull"])
+        log.log("Repository updated", "SUCCESS")
+        return True
+    except subprocess.CalledProcessError as e:
+        log.log(f"git pull failed (exit code {e.returncode})", "WARN")
+        return False
+    except Exception as e:
+        log.log(f"git pull failed: {e}", "WARN")
+        return False
+
+
 def install_python_packages() -> bool:
     """Install Python packages from src/."""
     log.section("Python Packages Installation")
@@ -1028,17 +1052,20 @@ def main():
     # Step 3: PATH configuration
     configure_path()
 
-    # Step 4: Python packages
+    # Step 4: Pull latest from origin
+    pull_latest()
+
+    # Step 5: Python packages
     if not args.skip_packages:
         if not install_python_packages():
             log.log("Python package installation had issues", "WARN")
     else:
         log.log("Skipping Python package installation (user flag)", "SKIP")
 
-    # Step 5: Initialize settings.json
+    # Step 6: Initialize settings.json
     initialize_settings_json(args.force)
 
-    # Step 6: Configure vim PATH (Windows only)
+    # Step 7: Configure vim PATH (Windows only)
     if platform.system() == "Windows":
         configure_vim_path()
 
