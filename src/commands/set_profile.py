@@ -431,6 +431,7 @@ def display_single_profile(name, profile):
     platform = profile.get("PLATFORM", "unknown")
     host = profile.get("HOST", "unknown")
     port = profile.get("PORT", "unknown")
+    username = profile.get("USERNAME", "unknown")
     path_append = profile.get("SQL_SOURCE", "unknown")
     aliases = profile.get("ALIASES", [])
 
@@ -448,7 +449,8 @@ def display_single_profile(name, profile):
     print(f"  {Icons.GEAR}  {'Company:':<13}{Fore.WHITE}{company}{Style.RESET_ALL}")
     print(f"  {Icons.DATABASE}  {'Platform:':<13}{Fore.CYAN}{platform}{Style.RESET_ALL}")
     print(f"  {Icons.ARROW}  {'Server:':<13}{Fore.GREEN}{host}:{port}{Style.RESET_ALL}")
-    print(f"  {Icons.FOLDER} {'SQL Source:':<13}{style_path(path_append)}")
+    print(f"  {Icons.BULLET}  {'Username:':<13}{Fore.WHITE}{username}{Style.RESET_ALL}")
+    print(f"  {Icons.FOLDER} {'SQL Source:':<13}{Fore.LIGHTBLUE_EX}{path_append}{Style.RESET_ALL}")
     if raw_mode:
         print(f"  {Icons.WARNING}  {'Raw Mode:':<13}{Fore.YELLOW}Yes{Style.RESET_ALL}")
 
@@ -469,30 +471,6 @@ def list_profiles(settings):
         display_single_profile(name, profile)
 
     print()
-
-
-def view_profile(settings):
-    """View a specific profile or all profiles."""
-    if not settings.get("Profiles"):
-        print("No profiles configured yet.")
-        return
-
-    input_name = input("\nEnter profile name (or blank for all): ").strip()
-
-    if not input_name:
-        # Show all profiles
-        list_profiles(settings)
-    else:
-        # Find profile by name or alias
-        profile_name, profile_data = find_profile_by_name_or_alias(settings, input_name.upper())
-
-        if profile_name is None:
-            print_error(f"Profile '{input_name}' not found.")
-            return
-
-        print("-" * 70)
-        display_single_profile(profile_name, profile_data)
-        print("-" * 70)
 
 
 def test_connection(profile):
@@ -518,9 +496,19 @@ def test_connection(profile):
         )
         if success:
             print_success("Connection successful!")
+            return True
         else:
             print_error(f"Connection failed: {message}")
-        return success
+            retry = input("\nEnter new credentials? (y/N): ").strip().lower()
+            if retry == 'y':
+                new_user = input(f"  Username [{username}]: ").strip()
+                new_pass = getpass.getpass("  Password [****]: ")
+                if new_user:
+                    profile["USERNAME"] = new_user
+                if new_pass:
+                    profile["PASSWORD"] = new_pass
+                return test_connection(profile)
+            return False
     except Exception as e:
         print_error(f"Connection test failed: {e}")
         return False
@@ -912,15 +900,74 @@ def print_profile_summary(name, profile):
     print("=" * 70)
 
 
-def test_profile_menu(settings):
-    """Menu for testing a profile."""
+def test_profile_submenu(profile, profile_name):
+    """Submenu for testing profile settings."""
+    raw_mode = profile.get('RAW_MODE', False)
+
+    while True:
+        print()
+        print(f"{Style.BRIGHT}Test: {profile_name}{Style.RESET_ALL}")
+        if raw_mode:
+            print(f"  {style_dim('(RAW MODE - preprocessing tests not available)')}")
+        print()
+        print(f"  {Fore.CYAN}1.{Style.RESET_ALL} Test SQL Source path")
+        print(f"  {Fore.CYAN}2.{Style.RESET_ALL} Test connection")
+        if not raw_mode:
+            print(f"  {Fore.CYAN}3.{Style.RESET_ALL} Test options")
+            print(f"  {Fore.CYAN}4.{Style.RESET_ALL} Test changelog")
+            print(f"  {Fore.CYAN}5.{Style.RESET_ALL} Test table locations")
+            print(f"  {Fore.CYAN}6.{Style.RESET_ALL} Test symbolic links")
+        print(f" {Fore.CYAN}98.{Style.RESET_ALL} Back")
+        print(f" {Fore.CYAN}99.{Style.RESET_ALL} Exit")
+
+        max_choice = 2 if raw_mode else 6
+        choice = input(f"\nChoose [1-{max_choice}]: ").strip()
+
+        if choice == "1":
+            sql_source = profile.get('SQL_SOURCE', '')
+            print(f"\nSQL SOURCE: {sql_source}")
+            if sql_source:
+                if Path(sql_source).exists():
+                    print_success("Path exists!")
+                else:
+                    print_error("Path does NOT exist!")
+            else:
+                print_error("SQL SOURCE is not set!")
+
+        elif choice == "2":
+            test_connection(profile)
+
+        elif choice == "3" and not raw_mode:
+            test_option_value(profile, profile_name)
+
+        elif choice == "4" and not raw_mode:
+            test_changelog(profile, profile_name)
+
+        elif choice == "5" and not raw_mode:
+            test_table_locations(profile, profile_name)
+
+        elif choice == "6" and not raw_mode:
+            test_symbolic_links(profile)
+
+        elif choice == "98":
+            return
+
+        elif choice == "99":
+            sys.exit(0)
+
+        else:
+            print("Invalid choice.")
+
+
+def existing_profile_menu(settings, settings_path):
+    """Submenu for managing an existing profile (test, edit, copy, delete)."""
     if not settings.get("Profiles"):
-        print_warning("No profiles to test.")
+        print_warning("No profiles configured yet.")
         return
 
     list_profiles(settings)
 
-    input_name = input("\nEnter profile name to test (leave blank to cancel): ").strip()
+    input_name = input("\nEnter profile name (leave blank to cancel): ").strip()
 
     if not input_name:
         return
@@ -938,62 +985,77 @@ def test_profile_menu(settings):
 
     while True:
         print()
-        print(f"{Style.BRIGHT}Test Profile: {profile_name}{Style.RESET_ALL}")
-        if raw_mode:
-            print(f"  {style_dim('(RAW MODE - preprocessing tests not available)')}")
-            print()
-            print(f"  {Fore.CYAN}1.{Style.RESET_ALL} Test SQL Source path")
-            print(f"  {Fore.CYAN}2.{Style.RESET_ALL} Test connection")
-            print(f" {Fore.CYAN}98.{Style.RESET_ALL} Back")
-            print(f" {Fore.CYAN}99.{Style.RESET_ALL} Exit")
-            max_choice = 2
-        else:
-            print()
-            print(f"  {Fore.CYAN}1.{Style.RESET_ALL} Test SQL Source path")
-            print(f"  {Fore.CYAN}2.{Style.RESET_ALL} Test connection")
-            print(f"  {Fore.CYAN}3.{Style.RESET_ALL} Test options")
-            print(f"  {Fore.CYAN}4.{Style.RESET_ALL} Test changelog")
-            print(f"  {Fore.CYAN}5.{Style.RESET_ALL} Test table locations")
-            print(f"  {Fore.CYAN}6.{Style.RESET_ALL} Test symbolic links")
-            print(f" {Fore.CYAN}98.{Style.RESET_ALL} Back")
-            print(f" {Fore.CYAN}99.{Style.RESET_ALL} Exit")
-            max_choice = 6
+        print(f"{Style.BRIGHT}Profile: {profile_name}{Style.RESET_ALL}")
+        print()
+        print(f"  {Fore.CYAN}1.{Style.RESET_ALL} View")
+        print(f"  {Fore.CYAN}2.{Style.RESET_ALL} Test")
+        print(f"  {Fore.CYAN}3.{Style.RESET_ALL} Edit")
+        print(f"  {Fore.CYAN}4.{Style.RESET_ALL} Copy")
+        print(f"  {Fore.CYAN}5.{Style.RESET_ALL} Delete")
+        print(f" {Fore.CYAN}98.{Style.RESET_ALL} Back")
+        print(f" {Fore.CYAN}99.{Style.RESET_ALL} Exit")
 
-        choice = input(f"\nChoose [1-{max_choice}]: ").strip()
+        choice = input("\nChoose [1-5]: ").strip()
 
         if choice == "1":
-            # Test SQL Source path
-            sql_source = profile.get('SQL_SOURCE', '')
-            print(f"\nSQL SOURCE: {sql_source}")
-            if sql_source:
-                if Path(sql_source).exists():
-                    print_success("Path exists!")
-                else:
-                    print_error("Path does NOT exist!")
-            else:
-                print_error("SQL SOURCE is not set!")
+            # View profile
+            display_single_profile(profile_name, profile)
 
         elif choice == "2":
-            test_connection(profile)
+            # Test submenu
+            test_profile_submenu(profile, profile_name)
+
+        elif choice == "3":
+            # Edit profile inline
+            edited_profile = profile.copy()
+            new_name = edit_profile_inline(edited_profile, profile_name)
+
+            # Determine final name
+            final_name = new_name if new_name else profile_name
+
+            # Handle rename
+            if new_name and new_name != profile_name:
+                if new_name in settings["Profiles"]:
+                    print_error(f"Profile '{new_name}' already exists. Cannot rename.")
+                    continue
+                del settings["Profiles"][profile_name]
+                print(f"Profile renamed from '{profile_name}' to '{final_name}'")
+
+            # Save
+            settings["Profiles"][final_name] = edited_profile
+            if save_settings(settings, settings_path):
+                print_success(f"Profile '{final_name}' saved!")
+                print()
+                display_single_profile(final_name, edited_profile)
+                check_and_create_symbolic_links(edited_profile)
+
+            # Refresh references for submenu
+            profile_name = final_name
+            profile = edited_profile
+            raw_mode = profile.get('RAW_MODE', False)
+
+        elif choice == "4":
+            # Copy profile
+            copy_profile(settings, settings_path)
+
+        elif choice == "5":
+            # Delete profile
+            print()
+            display_single_profile(profile_name, profile)
+            print()
+            confirm = input(f"Type 'delete' to confirm deletion of '{profile_name}': ").strip().lower()
+            if confirm == 'delete':
+                del settings["Profiles"][profile_name]
+                if save_settings(settings, settings_path):
+                    print_success(f"Profile '{profile_name}' deleted.")
+                return  # Return to main menu since profile is gone
+            print("Delete cancelled.")
 
         elif choice == "98":
             return
 
         elif choice == "99":
             sys.exit(0)
-
-        elif choice == "3" and not raw_mode:
-            test_option_value(profile, profile_name)
-
-        elif choice == "4" and not raw_mode:
-            test_changelog(profile, profile_name)
-
-        elif choice == "5" and not raw_mode:
-            test_table_locations(profile, profile_name)
-
-        elif choice == "6" and not raw_mode:
-            # Test symbolic links
-            test_symbolic_links(profile)
 
         else:
             print("Invalid choice.")
@@ -1363,91 +1425,6 @@ def copy_profile(settings, settings_path):
     return False
 
 
-def edit_profile(settings, settings_path):
-    """Edit existing profile and save."""
-    if not settings.get("Profiles"):
-        print("No profiles to edit.")
-        return False
-
-    list_profiles(settings)
-
-    input_name = input("\nEnter profile name to edit (leave blank to cancel): ").strip()
-
-    if not input_name:
-        return False
-
-    input_name = input_name.upper()
-
-    # Find profile by name or alias
-    profile_name, profile_data = find_profile_by_name_or_alias(settings, input_name)
-
-    if profile_name is None:
-        print_error(f"Profile '{input_name}' not found.")
-        return False
-
-    # Make a copy to edit
-    profile = profile_data.copy()
-
-    # Edit inline
-    new_name = edit_profile_inline(profile, profile_name)
-
-    # Determine final name
-    final_name = new_name if new_name else profile_name
-
-    # Handle rename
-    if new_name and new_name != profile_name:
-        if new_name in settings["Profiles"]:
-            print_error(f"Profile '{new_name}' already exists. Cannot rename.")
-            return False
-        del settings["Profiles"][profile_name]
-        print(f"Profile renamed from '{profile_name}' to '{final_name}'")
-
-    # Save
-    settings["Profiles"][final_name] = profile
-    if save_settings(settings, settings_path):
-        print_success(f"Profile '{final_name}' saved!")
-        print()
-        display_single_profile(final_name, profile)
-        # Check for symbolic links after saving
-        check_and_create_symbolic_links(profile)
-        return True
-    return False
-
-
-def delete_profile(settings):
-    """Delete a profile"""
-    if not settings.get("Profiles"):
-        print("No profiles to delete.")
-        return
-
-    list_profiles(settings)
-
-    input_name = input("\nEnter profile name to delete (leave blank to cancel): ").strip()
-
-    if not input_name:
-        return
-
-    input_name = input_name.upper()
-
-    # Find profile by name or alias
-    profile_name, profile_data = find_profile_by_name_or_alias(settings, input_name)
-
-    if profile_name is None:
-        print_error(f"Profile '{input_name}' not found.")
-        return
-
-    print()
-    display_single_profile(profile_name, profile_data)
-    print()
-    confirm = input(f"Type 'delete' to confirm deletion of '{profile_name}': ").strip().lower()
-
-    if confirm == 'delete':
-        del settings["Profiles"][profile_name]
-        print_success(f"Profile '{profile_name}' deleted.")
-    else:
-        print("Delete cancelled.")
-
-
 # =============================================================================
 # VSCODE INTEGRATION
 # =============================================================================
@@ -1772,17 +1749,13 @@ def main_menu():
         print()
         print(f"{Style.BRIGHT}Main Menu{Style.RESET_ALL} {style_dim(f'({profile_count} profiles configured)')}")
         print()
-        print(f"  {Fore.CYAN}1.{Style.RESET_ALL} Create a new profile")
-        print(f"  {Fore.CYAN}2.{Style.RESET_ALL} Edit existing profile")
-        print(f"  {Fore.CYAN}3.{Style.RESET_ALL} Copy a profile")
-        print(f"  {Fore.CYAN}4.{Style.RESET_ALL} Delete a profile")
-        print(f"  {Fore.CYAN}5.{Style.RESET_ALL} View profile")
-        print(f"  {Fore.CYAN}6.{Style.RESET_ALL} Test a profile")
-        print(f"  {Fore.CYAN}7.{Style.RESET_ALL} Add to IDE")
-        print(f"  {Fore.CYAN}8.{Style.RESET_ALL} Open settings.json")
+        print(f"  {Fore.CYAN}1.{Style.RESET_ALL} New profile")
+        print(f"  {Fore.CYAN}2.{Style.RESET_ALL} Existing profile")
+        print(f"  {Fore.CYAN}3.{Style.RESET_ALL} Add to IDE")
+        print(f"  {Fore.CYAN}4.{Style.RESET_ALL} Open settings.json")
         print(f" {Fore.CYAN}99.{Style.RESET_ALL} Exit")
 
-        choice = input("\nChoose [1-8]: ").strip()
+        choice = input("\nChoose [1-4]: ").strip()
 
         if choice == "1":
             # Create new profile
@@ -1798,31 +1771,14 @@ def main_menu():
                     check_and_create_symbolic_links(profile)
 
         elif choice == "2":
-            # Edit profile
-            edit_profile(settings, settings_path)
+            # Existing profile submenu
+            existing_profile_menu(settings, settings_path)
 
         elif choice == "3":
-            # Copy profile
-            copy_profile(settings, settings_path)
-
-        elif choice == "4":
-            # Delete profile
-            delete_profile(settings)
-            save_settings(settings, settings_path)
-
-        elif choice == "5":
-            # View profile(s)
-            view_profile(settings)
-
-        elif choice == "6":
-            # Test a profile
-            test_profile_menu(settings)
-
-        elif choice == "7":
             # Add to IDE
             add_to_ide_menu(settings)
 
-        elif choice == "8":
+        elif choice == "4":
             # Open settings.json
             open_settings_in_editor()
 
