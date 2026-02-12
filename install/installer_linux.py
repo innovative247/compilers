@@ -355,7 +355,7 @@ def install_freetds_from_source() -> bool:
     try:
         # Install build dependencies
         log.log("Installing build dependencies...", "STEP")
-        run_command(["sudo", "apt", "install", "-y", "build-essential", "libssl-dev"])
+        run_command(["sudo", "apt", "install", "-y", "build-essential", "libssl-dev", "pkg-config"])
 
         # Download source
         log.log(f"Downloading FreeTDS {FREETDS_SOURCE_VERSION}...", "STEP")
@@ -392,6 +392,14 @@ def install_freetds_from_source() -> bool:
                 log.log(f"Linking {local_path} -> /usr/bin/{tool}", "INFO")
                 run_command(["sudo", "ln", "-sf", str(local_path), f"/usr/bin/{tool}"])
 
+        # Verify TLS was linked
+        post_build_output = get_freetds_version_output("/usr/local/bin/tsql")
+        post_build_tls = parse_freetds_tls(post_build_output)
+        if not post_build_tls or "openssl" not in post_build_tls.lower():
+            log.log("Source build completed but OpenSSL was NOT linked", "ERROR")
+            log.log("Ensure libssl-dev is installed: sudo apt install -y libssl-dev", "ERROR")
+            return False
+
         # Verify
         if verify_freetds():
             return True
@@ -424,8 +432,11 @@ def install_freetds(force: bool = False) -> bool:
             if tls and "gnutls" in tls.lower():
                 log.log(f"FreeTDS {version} uses GnuTLS — rebuilding with OpenSSL for Azure SQL", "WARN")
                 return install_freetds_from_source()
+            if not tls or "openssl" not in tls.lower():
+                log.log(f"FreeTDS {version} has no TLS library — rebuilding with OpenSSL for Azure SQL", "WARN")
+                return install_freetds_from_source()
             if not force:
-                log.log(f"FreeTDS {version} already installed (>= {FREETDS_MIN_VERSION}, TLS: {tls or 'unknown'})", "SUCCESS")
+                log.log(f"FreeTDS {version} already installed (>= {FREETDS_MIN_VERSION}, TLS: {tls})", "SUCCESS")
                 return verify_freetds()
             else:
                 log.log(f"FreeTDS {version} installed but --force specified, rebuilding...", "INFO")
@@ -453,7 +464,10 @@ def install_freetds(force: bool = False) -> bool:
             if tls and "gnutls" in tls.lower():
                 log.log(f"apt installed FreeTDS {version} but uses GnuTLS — rebuilding with OpenSSL", "WARN")
                 return install_freetds_from_source()
-            log.log(f"FreeTDS {version} installed via apt (TLS: {tls or 'unknown'})", "SUCCESS")
+            if not tls or "openssl" not in tls.lower():
+                log.log(f"apt installed FreeTDS {version} but no TLS library — rebuilding with OpenSSL", "WARN")
+                return install_freetds_from_source()
+            log.log(f"FreeTDS {version} installed via apt (TLS: {tls})", "SUCCESS")
             return verify_freetds()
         else:
             log.log(f"apt version {version or 'unknown'} is too old (need >= {FREETDS_MIN_VERSION})", "WARN")
