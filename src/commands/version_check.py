@@ -373,15 +373,17 @@ def force_upgrade(command_name: str = "command") -> bool:
     print()
 
     if success:
+        indented = message.replace("\n", "\n  ")
         if has_colorama:
-            print(f"  {Fore.GREEN}{message}{Style.RESET_ALL}")
+            print(f"  {Fore.GREEN}{indented}{Style.RESET_ALL}")
         else:
-            print(f"  {message}")
+            print(f"  {indented}")
     else:
+        indented = message.replace("\n", "\n  ")
         if has_colorama:
-            print(f"  {Fore.RED}{message}{Style.RESET_ALL}")
+            print(f"  {Fore.RED}{indented}{Style.RESET_ALL}")
         else:
-            print(f"  {message}")
+            print(f"  {indented}")
 
     # Always show environment summary at the end
     print()
@@ -458,10 +460,11 @@ def check_for_updates(command_name: str = "command") -> bool:
         print()
 
         if success:
+            indented = message.replace("\n", "\n  ")
             if has_colorama:
-                print(f"  {Fore.GREEN}{message}{Style.RESET_ALL}")
+                print(f"  {Fore.GREEN}{indented}{Style.RESET_ALL}")
             else:
-                print(f"  {message}")
+                print(f"  {indented}")
 
             if 'Already up to date' not in message:
                 print()
@@ -469,10 +472,11 @@ def check_for_updates(command_name: str = "command") -> bool:
                 print()
                 return False  # Cancel the user's command
         else:
+            indented = message.replace("\n", "\n  ")
             if has_colorama:
-                print(f"  {Fore.RED}{message}{Style.RESET_ALL}")
+                print(f"  {Fore.RED}{indented}{Style.RESET_ALL}")
             else:
-                print(f"  {message}")
+                print(f"  {indented}")
             print()
             print(f"  Continuing with current version ({__version__})...")
             print()
