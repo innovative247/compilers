@@ -222,14 +222,6 @@ def parse_freetds_version(tsql_output: str = "") -> str:
     return match.group(1) if match else ""
 
 
-def parse_freetds_tls(tsql_output: str = "") -> str:
-    """Parse the TLS library from tsql -C output."""
-    import re
-    if not tsql_output:
-        tsql_output = get_freetds_version_output()
-    match = re.search(r'TLS library:\s*(\S+)', tsql_output)
-    return match.group(1) if match else ""
-
 
 def version_at_least(current: str, minimum: str) -> bool:
     """Compare version strings (e.g. '1.3.17' >= '1.4.0')."""
@@ -275,11 +267,8 @@ def verify_freetds() -> bool:
     correct_path = None
     log.log(f"Found {len(all_tsql)} tsql binary(ies) in PATH:", "INFO")
     for path in all_tsql:
-        output = get_freetds_version_output(path)
-        ver = parse_freetds_version(output)
-        tls = parse_freetds_tls(output)
-        status = f"v{ver} ({tls})" if ver and tls else f"v{ver}" if ver else "unknown"
-        log.log(f"  {path}: {status}", "INFO")
+        ver = parse_freetds_version(get_freetds_version_output(path))
+        log.log(f"  {path}: v{ver}" if ver else f"  {path}: unknown", "INFO")
         if ver and version_at_least(ver, FREETDS_MIN_VERSION) and not correct_path:
             correct_path = path
 
@@ -303,9 +292,7 @@ def verify_freetds() -> bool:
 
     # 4. Final verification — the first tsql in PATH must be correct
     first_tsql = get_tsql_path()
-    tsql_output = get_freetds_version_output(first_tsql)
-    version = parse_freetds_version(tsql_output)
-    tls = parse_freetds_tls(tsql_output)
+    version = parse_freetds_version(get_freetds_version_output(first_tsql))
 
     if not version or not version_at_least(version, FREETDS_MIN_VERSION):
         log.log(f"FAIL: first tsql in PATH ({first_tsql}) is still v{version}", "ERROR")
@@ -313,20 +300,7 @@ def verify_freetds() -> bool:
 
     log.log(f"tsql binary: {first_tsql}", "SUCCESS")
     log.log(f"Version: {version} (>= {FREETDS_MIN_VERSION})", "SUCCESS")
-
-    # 5. TLS check
-    if tls:
-        log.log(f"TLS library: {tls}", "INFO")
-    else:
-        log.log("TLS library: unknown", "WARN")
-
-    if tls and "gnutls" in tls.lower():
-        log.log("FAIL: GnuTLS detected — Azure SQL requires OpenSSL", "ERROR")
-        return False
-    if tls and "openssl" in tls.lower():
-        log.log("TLS: OpenSSL (required for Azure SQL)", "SUCCESS")
-
-    log.log(f"FreeTDS verification passed: v{version} ({tls or 'unknown TLS'})", "SUCCESS")
+    log.log(f"FreeTDS verification passed: v{version}", "SUCCESS")
     return True
 
 
@@ -355,7 +329,7 @@ def install_freetds_from_source() -> bool:
     try:
         # Install build dependencies
         log.log("Installing build dependencies...", "STEP")
-        run_command(["sudo", "apt", "install", "-y", "build-essential", "libssl-dev", "pkg-config"])
+        run_command(["sudo", "apt", "install", "-y", "build-essential"])
 
         # Download source
         log.log(f"Downloading FreeTDS {FREETDS_SOURCE_VERSION}...", "STEP")
@@ -368,9 +342,9 @@ def install_freetds_from_source() -> bool:
         run_command(["tar", "xzf", str(tarball), "-C", str(build_dir)])
 
         # Configure
-        log.log("Configuring (--with-openssl --enable-mars)...", "STEP")
+        log.log("Configuring (--enable-mars)...", "STEP")
         run_command(
-            ["./configure", "--with-openssl", "--enable-mars", "--disable-odbc"],
+            ["./configure", "--enable-mars", "--disable-odbc"],
             cwd=str(source_dir)
         )
 
@@ -411,56 +385,39 @@ def install_freetds_from_source() -> bool:
 
 
 def install_freetds(force: bool = False) -> bool:
-    """Install FreeTDS. Uses apt first, then builds from source if version is too old or TLS is wrong."""
+    """Install FreeTDS. Uses apt first, then builds from source if version is too old."""
     log.section("FreeTDS Installation")
 
     # Check existing installation
     if check_freetds_installed():
-        tsql_output = get_freetds_version_output()
-        version = parse_freetds_version(tsql_output)
-        tls = parse_freetds_tls(tsql_output)
-
-        if version and version_at_least(version, FREETDS_MIN_VERSION):
-            if tls and "gnutls" in tls.lower():
-                log.log(f"FreeTDS {version} uses GnuTLS — rebuilding with OpenSSL for Azure SQL", "WARN")
-                return install_freetds_from_source()
-            if not force:
-                log.log(f"FreeTDS {version} already installed (>= {FREETDS_MIN_VERSION}, TLS: {tls or 'unknown'})", "SUCCESS")
-                return verify_freetds()
-            else:
-                log.log(f"FreeTDS {version} installed but --force specified, rebuilding...", "INFO")
-                return install_freetds_from_source()
-        else:
+        version = parse_freetds_version(get_freetds_version_output())
+        if version and version_at_least(version, FREETDS_MIN_VERSION) and not force:
+            log.log(f"FreeTDS {version} already installed (>= {FREETDS_MIN_VERSION})", "SUCCESS")
+            return verify_freetds()
+        if not version or not version_at_least(version, FREETDS_MIN_VERSION):
             log.log(f"FreeTDS {version or 'unknown'} is too old (need >= {FREETDS_MIN_VERSION})", "WARN")
-            return install_freetds_from_source()
+        if force:
+            log.log(f"FreeTDS {version} installed but --force specified, rebuilding...", "INFO")
+        return install_freetds_from_source()
 
     # Not installed — try apt first
     log.log("Installing FreeTDS via apt...", "STEP")
-
     try:
         run_command(["sudo", "apt", "update"])
         run_command(["sudo", "apt", "install", "-y", "freetds-bin", "freetds-dev", "freetds-common"])
     except Exception as e:
         log.log(f"apt install failed: {e}", "WARN")
 
-    # Check version and TLS after apt install
+    # Check version after apt install
     if check_freetds_installed():
-        tsql_output = get_freetds_version_output()
-        version = parse_freetds_version(tsql_output)
-        tls = parse_freetds_tls(tsql_output)
-
+        version = parse_freetds_version(get_freetds_version_output())
         if version and version_at_least(version, FREETDS_MIN_VERSION):
-            if tls and "gnutls" in tls.lower():
-                log.log(f"apt installed FreeTDS {version} but uses GnuTLS — rebuilding with OpenSSL", "WARN")
-                return install_freetds_from_source()
-            log.log(f"FreeTDS {version} installed via apt (TLS: {tls or 'unknown'})", "SUCCESS")
+            log.log(f"FreeTDS {version} installed via apt", "SUCCESS")
             return verify_freetds()
-        else:
-            log.log(f"apt version {version or 'unknown'} is too old (need >= {FREETDS_MIN_VERSION})", "WARN")
-            return install_freetds_from_source()
-    else:
-        log.log("apt install did not provide tsql, building from source...", "WARN")
-        return install_freetds_from_source()
+        log.log(f"apt version {version or 'unknown'} is too old (need >= {FREETDS_MIN_VERSION})", "WARN")
+
+    # apt failed or version too old — build from source
+    return install_freetds_from_source()
 
 
 # =============================================================================
@@ -752,10 +709,8 @@ def show_summary():
     # FreeTDS
     tsql_path = get_tsql_path()
     if tsql_path:
-        tsql_output = get_freetds_version_output(tsql_path)
-        version = parse_freetds_version(tsql_output)
-        tls = parse_freetds_tls(tsql_output)
-        status = f"v{version} ({tls})" if version and tls else f"v{version}" if version else "Installed"
+        version = parse_freetds_version(get_freetds_version_output(tsql_path))
+        status = f"v{version}" if version else "Installed"
         print(f"  {'FreeTDS':<15} {status:<20} {tsql_path:<40}")
     else:
         print(f"  {'FreeTDS':<15} {'Not Installed':<20} {'':<40}")
