@@ -11,10 +11,26 @@ namespace ibsCompiler.Database
         private readonly ResolvedProfile _profile;
         private static readonly Regex GoRegex = new(@"^\s*go\s*$", RegexOptions.IgnoreCase | RegexOptions.Multiline);
         private static readonly Regex ExitRegex = new(@"^\s*(exit|quit)\s*$", RegexOptions.IgnoreCase);
+        private static readonly string? SqlCmdInitScript = LoadSqlCmdInit();
 
         public MssqlExecutor(ResolvedProfile profile)
         {
             _profile = profile;
+        }
+
+        private static string? LoadSqlCmdInit()
+        {
+            var path = Environment.GetEnvironmentVariable("SQLCMDINI");
+            if (!string.IsNullOrEmpty(path) && File.Exists(path))
+                return File.ReadAllText(path);
+            return null;
+        }
+
+        private static void ExecuteInitScript(SqlConnection connection)
+        {
+            if (SqlCmdInitScript == null) return;
+            using var cmd = new SqlCommand(SqlCmdInitScript, connection);
+            cmd.ExecuteNonQuery();
         }
 
         private string BuildConnectionString(string database)
@@ -50,6 +66,7 @@ namespace ibsCompiler.Database
                     output.AppendLine(msg);
                 };
                 connection.Open();
+                ExecuteInitScript(connection);
 
                 // Split on GO batch separator
                 var batches = SplitBatches(sqlText);
@@ -150,6 +167,7 @@ namespace ibsCompiler.Database
             var connStr = BuildConnectionString(database);
             using var connection = new SqlConnection(connStr);
             connection.Open();
+            ExecuteInitScript(connection);
 
             // Get column schema from database
             var columnTypes = new List<Type>();
@@ -261,6 +279,7 @@ namespace ibsCompiler.Database
             var connStr = BuildConnectionString(database);
             using var connection = new SqlConnection(connStr);
             connection.Open();
+            ExecuteInitScript(connection);
 
             using var cmd = new SqlCommand($"SELECT * FROM {tableName}", connection);
             using var reader = cmd.ExecuteReader();
