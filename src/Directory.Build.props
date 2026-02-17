@@ -1,0 +1,9 @@
+<Project>
+  <PropertyGroup>
+    <Version>2.0.1</Version>
+    <AssemblyVersion>2.0.1.0</AssemblyVersion>
+    <FileVersion>2.0.1.0</FileVersion>
+    <Company>Innovative247</Company>
+    <Product>IBS Compilers</Product>
+  </PropertyGroup>
+</Project>

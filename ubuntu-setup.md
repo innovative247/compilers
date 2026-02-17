@@ -44,23 +44,18 @@ sudo apt update && sudo apt upgrade -y && sudo apt autoremove -y
 # 7. Install git
 sudo apt install -y git
 
-# 8. Clone git compiler repo
-cd ~
-git clone https://github.com/innovative247/compilers.git
-
-# 9. Install SVN
+# 8. Install SVN
 sudo apt install -y subversion
 
-# 10. Pull down an SVN repo
+# 9. Pull down an SVN repo
 mkdir -p ~/ir_local
 cd ~/ir_local
 svn checkout http://10.130.61.10/work2/svn/repos/SBN_IR/trunk .
 
-# 10a. Setup shortcut (optional) 
+# 9a. Setup shortcut (optional)
 vim ~/.bashrc
 export ir="$HOME/ir_local"
 . ~/.bashrc
 
-# FINAL. Install compiler 
-Follow readme.md where ever you installed the compilers (Step 8).
-./compilers/readme.md
+# FINAL. Install compilers
+curl -fsSL https://raw.githubusercontent.com/innovative247/compilers/main/install.sh | bash

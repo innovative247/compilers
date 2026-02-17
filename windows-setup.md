@@ -91,14 +91,7 @@ Start-Process -FilePath "$env:TEMP\git-installer.exe" -ArgumentList "/VERYSILENT
 $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
 ```
 
-## Step 9: Clone Compiler Repo
-
-```powershell
-cd $HOME
-git clone https://github.com/innovative247/compilers.git
-```
-
-## Step 10: Install SVN (Subversion)
+## Step 9: Install SVN (Subversion)
 
 ```powershell
 # Download Apache Subversion (SlikSVN - command-line client)
@@ -111,7 +104,7 @@ Start-Process msiexec.exe -ArgumentList "/i", "$env:TEMP\svn-installer.msi", "/q
 $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
 ```
 
-## Step 11: Checkout SVN Repo
+## Step 10: Checkout SVN Repo
 
 ```powershell
 mkdir -Force "$HOME\ir_local"
@@ -119,9 +112,11 @@ cd "$HOME\ir_local"
 svn checkout http://10.130.61.10/work2/svn/repos/SBN_IR/trunk .
 ```
 
-## Final: Install Compiler
+## Final: Install Compilers
 
-See readme.md in the compilers repo for compiler installation instructions.
+```powershell
+irm https://raw.githubusercontent.com/innovative247/compilers/main/install.ps1 | iex
+```
 
 ---
 
