@@ -77,6 +77,8 @@ runsql update
 
 On machines without internet, download the new archive and extract over the existing installation.
 
+> **Note:** `configure`, `version`, `update`, and `install` are subcommands available on every command — not just the examples above. For instance, `isqlline version`, `transfer_data update`, `eopt configure` all work.
+
 ---
 
 ## Environment Troubleshooting
@@ -115,7 +117,7 @@ Every command supports these subcommands:
 | Subcommand | Description |
 |------------|-------------|
 | `version` | Print version and exit |
-| `update` | Download and install latest release |
+| `update` / `install` | Download and install latest release |
 | `configure` | Show configuration status, add to PATH |
 
 ---
@@ -211,7 +213,30 @@ source ~/.bashrc
 
 ### Command not found
 
-Run `set_profile configure` to add the install directory to your PATH.
+Run `set_profile configure` to automatically add the install directory to your PATH. If that doesn't work, add it manually:
+
+**Windows (PowerShell):**
+```powershell
+# Add to user PATH permanently
+[Environment]::SetEnvironmentVariable("PATH", "$env:LOCALAPPDATA\ibs-compilers;" + [Environment]::GetEnvironmentVariable("PATH", "User"), "User")
+```
+Restart your terminal for the change to take effect.
+
+**Linux/macOS:**
+```bash
+echo 'export PATH="$HOME/ibs-compilers:$PATH"' >> ~/.bashrc
+source ~/.bashrc && hash -r
+```
+For zsh, use `~/.zshrc` instead of `~/.bashrc`.
+
+If commands were previously found but now fail, bash may have cached an old location. Run `hash -r` to clear it.
+
+### Command not found after self-update
+
+On Linux/macOS, if commands fail with "Permission denied" after running `update`, the new files may not be executable. Fix with:
+```bash
+chmod +x ~/ibs-compilers/*
+```
 
 ### Connection failed
 
@@ -220,25 +245,88 @@ Check your profile settings with `set_profile`, then test connectivity:
 isqlline "SELECT 1" master PROFILE_NAME
 ```
 
+### MSSQL: QUOTED_IDENTIFIER or SET option errors
+
+Some MSSQL databases require specific session settings. Set the `SQLCMDINI` environment variable to point to a SQL file that runs at the start of every connection:
+
+**Windows:**
+```powershell
+[Environment]::SetEnvironmentVariable("SQLCMDINI", "C:\path\to\mssql_setup.sql", "User")
+```
+
+**Linux/macOS:**
+```bash
+echo 'export SQLCMDINI="$HOME/mssql_setup.sql"' >> ~/.bashrc
+source ~/.bashrc
+```
+
+See the [MSSQL Initialization Script](#mssql-initialization-script-sqlcmdini) section for example SQL settings.
+
+### Clipboard not working over RDP (Windows Server)
+
+```cmd
+taskkill /f /im rdpclip.exe && rdpclip.exe
+```
+
+### Removing Python compilers (v1.x)
+
+The installer detects and offers to remove the old Python `ibs_compilers` package automatically. If you need to clean up manually:
+
+**1. Uninstall the pip package:**
+```bash
+python -m pip uninstall ibs_compilers -y
+```
+
+**2. Remove leftover entry points** (executables like `runsql`, `set_profile`, etc.) from Python Scripts directories:
+
+**Windows:** Check `%APPDATA%\Python\Python*\Scripts\` and `%LOCALAPPDATA%\Programs\Python\Python*\Scripts\`
+
+**Linux/macOS:** Check `~/.local/bin/`
+
+**3. Remove editable install leftovers** that `pip uninstall` misses:
+```bash
+# From your Python site-packages directory:
+rm -f __editable__.ibs_compilers-*.pth
+rm -f __editable___ibs_compilers_*_finder.py
+rm -rf ibs_compilers-*.dist-info
+```
+
+**4. Clean PATH:** Remove any Python Scripts directories from your PATH that were only there for the compilers.
+
+**5. Clear bash hash cache** (Linux/macOS):
+```bash
+hash -r
+```
+
 ---
 
 ## Project Structure
 
 ```
 compilers/
-├── install.ps1              # Windows installer
-├── install.sh               # Linux/macOS installer
+├── install.ps1              # Windows installer (irm | iex)
+├── install.sh               # Linux/macOS installer (curl | bash)
 ├── publish.ps1              # Build and package all platforms
+├── readme.md
 ├── settings.json.example    # Template configuration
+├── ubuntu-setup.md          # WSL/Ubuntu environment setup guide
+├── windows-setup.md         # Windows Server environment setup guide
 └── src/
     ├── Directory.Build.props    # Shared version (all projects)
     ├── Compilers.sln
+    ├── AdoNetCore.AseClient.dll # Sybase managed ADO.NET driver
     ├── ibsCompiler/             # Shared library
-    │   ├── Configuration/       # Profile management
-    │   ├── Database/            # ISqlExecutor, MSSQL/Sybase executors
-    │   └── TransferData/        # Bulk transfer engine
-    ├── runsql/                  # Entry point projects
+    │   ├── Configuration/       # ProfileManager, ProfileData
+    │   ├── Database/            # ISqlExecutor, MssqlExecutor, SybaseExecutor
+    │   ├── TransferData/        # Bulk transfer engine (menu, wizard, runner)
+    │   ├── ConfigureCommand.cs  # PATH setup, environment status
+    │   ├── VersionCheck.cs      # Daily update check, self-update
+    │   ├── VersionInfo.cs       # Runtime version accessor
+    │   └── ...                  # Command logic (Runsql, Isqlline, etc.)
+    ├── runsql/                  # Entry point projects (21 total)
     ├── isqlline/
     ├── set_profile/
-    └── ...                      # 21 total executables
+    ├── transfer_data/
+    ├── bcp_data/
+    └── ...
 ```
