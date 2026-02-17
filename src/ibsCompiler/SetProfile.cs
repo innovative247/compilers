@@ -736,7 +736,7 @@ namespace ibsCompiler
                         TestConnection(profile);
                         break;
                     case "3" when !profile.RawMode:
-                        Console.WriteLine("Options test - requires a server connection target.");
+                        TestOptions(name, profile);
                         break;
                     case "4" when !profile.RawMode:
                         TestTableLocations(profile);
@@ -808,6 +808,53 @@ namespace ibsCompiler
             {
                 PrintError($"Connection failed: {ex.Message}");
             }
+        }
+
+        private static void TestOptions(string profileName, ProfileData profile)
+        {
+            Console.WriteLine("\nTesting options files...");
+
+            if (string.IsNullOrEmpty(profile.SqlSource))
+            {
+                PrintError("SQL Source is not set.");
+                return;
+            }
+
+            var cssSetup = Path.Combine(profile.SqlSource, "CSS", "Setup");
+            if (!Directory.Exists(cssSetup))
+            {
+                PrintError($"CSS/Setup directory NOT found: {cssSetup}");
+                return;
+            }
+
+            var company = profile.Company ?? "101";
+
+            // options.def — defaults
+            var optDef = Path.Combine(cssSetup, "options.def");
+            if (File.Exists(optDef))
+                PrintSuccess($"  options.def found ({CountLines(optDef)} lines)");
+            else
+                PrintDim("  options.def not found (optional)");
+
+            // options.{company} — company-specific (required)
+            var optCompany = Path.Combine(cssSetup, $"options.{company}");
+            if (File.Exists(optCompany))
+                PrintSuccess($"  options.{company} found ({CountLines(optCompany)} lines)");
+            else
+                PrintError($"  options.{company} NOT found — this file is required (can be empty)");
+
+            // options.{company}.{profile} — profile-specific
+            var optProfile = Path.Combine(cssSetup, $"options.{company}.{profileName}");
+            if (File.Exists(optProfile))
+                PrintSuccess($"  options.{company}.{profileName} found ({CountLines(optProfile)} lines)");
+            else
+                PrintDim($"  options.{company}.{profileName} not found (optional)");
+        }
+
+        private static int CountLines(string filePath)
+        {
+            try { return File.ReadAllLines(filePath).Length; }
+            catch { return 0; }
         }
 
         private static void TestTableLocations(ProfileData profile)
