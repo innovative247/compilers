@@ -105,6 +105,13 @@ except: pass
             python3 -m pip uninstall ibs_compilers -y 2>/dev/null || true
         fi
 
+        # Step 1b: Clean up editable install leftovers (pip uninstall misses these)
+        if [ -n "$PIP_LOCATION" ] && [ -d "$PIP_LOCATION" ]; then
+            rm -f "$PIP_LOCATION"/__editable__.ibs_compilers-*.pth
+            rm -f "$PIP_LOCATION"/__editable___ibs_compilers_*_finder.py
+            rm -rf "$PIP_LOCATION"/ibs_compilers-*.dist-info
+        fi
+
         # Step 2: Remove any leftover entry points in ~/.local/bin
         REMOVED=0
         for cmd in runsql isqlline set_profile set_actions eact compile_actions \
