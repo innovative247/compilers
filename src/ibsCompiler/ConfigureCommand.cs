@@ -16,7 +16,8 @@ namespace ibsCompiler
             var settingsPath = ProfileManager.FindSettingsFile();
 
             // Fix PATH before displaying status
-            var inPath = IsInPath(binDir);
+            var wasInPath = IsInPath(binDir);
+            var inPath = wasInPath;
             if (!inPath)
                 inPath = AddToPath(binDir);
 
@@ -41,14 +42,6 @@ namespace ibsCompiler
             Console.WriteLine($"  Settings:    {(settingsPath != null ? settingsPath : "NOT FOUND")}");
             Console.WriteLine($"  PATH:        {(inPath ? "OK" : "FAILED — add manually")}");
             Console.WriteLine();
-
-            // On Unix, PATH changes require the user to reload their shell
-            if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-            {
-                Console.WriteLine("  To activate PATH changes, restart your terminal or run:");
-                Console.WriteLine("    source ~/.bashrc && hash -r");
-                Console.WriteLine();
-            }
         }
 
         /// <summary>

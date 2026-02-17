@@ -82,10 +82,11 @@ except: pass
     fi
 
     echo ""
-    echo "  The .NET 8 version replaces the Python version."
-    echo "  The Python compilers must be removed to avoid conflicts."
+    echo "  The .NET 8 compilers replace the Python compilers."
+    echo "  The Python compilers package must be removed to avoid conflicts."
+    echo "  (This does not remove Python itself.)"
     echo ""
-    read -p "  Remove Python installation? [Y/n]: " REMOVE_PYTHON < /dev/tty
+    read -p "  Remove Python compilers? [Y/n]: " REMOVE_PYTHON < /dev/tty
     REMOVE_PYTHON=${REMOVE_PYTHON:-Y}
 
     if [ "${REMOVE_PYTHON,,}" != "n" ] && [ "${REMOVE_PYTHON,,}" != "no" ]; then
@@ -123,7 +124,7 @@ except: pass
         fi
 
         echo ""
-        echo "  Python installation removed."
+        echo "  Python compilers removed."
         echo ""
     else
         echo ""
