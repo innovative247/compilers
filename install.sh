@@ -237,18 +237,25 @@ echo ""
 read -p "Run configure now? (adds to PATH and verifies setup) [Y/n]: " RUN_CONFIGURE < /dev/tty
 RUN_CONFIGURE=${RUN_CONFIGURE:-Y}
 
+# Detect shell rc file
+SHELL_NAME=$(basename "${SHELL:-/bin/bash}")
+case "$SHELL_NAME" in
+    zsh)  RC_FILE="~/.zshrc" ;;
+    *)    RC_FILE="~/.bashrc" ;;
+esac
+
 if [ "${RUN_CONFIGURE,,}" != "n" ] && [ "${RUN_CONFIGURE,,}" != "no" ]; then
     "$INSTALL_DIR/set_profile" configure
     echo ""
     echo "To activate PATH, restart your terminal or run:"
-    echo "  source ~/.bashrc && hash -r"
+    echo "  source $RC_FILE && hash -r"
     echo ""
     echo "Then run: set_profile"
     echo "  (configure database connections)"
 else
     echo "Next steps:"
     echo "  1. Run: $INSTALL_DIR/set_profile configure"
-    echo "  2. Restart your terminal (or: source ~/.bashrc && hash -r)"
+    echo "  2. Restart your terminal (or: source $RC_FILE && hash -r)"
     echo "  3. Run: set_profile"
     echo "     (configure database connections)"
 fi
