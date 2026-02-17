@@ -114,9 +114,13 @@ svn checkout http://10.130.61.10/work2/svn/repos/SBN_IR/trunk .
 
 ## Final: Install Compilers
 
+See [readme.md](readme.md) for full installation details (online, offline, and manual options).
+
 ```powershell
 irm https://raw.githubusercontent.com/innovative247/compilers/main/install.ps1 | iex
 ```
+
+Then run `set_profile configure` to add to PATH and verify setup.
 
 ---
 

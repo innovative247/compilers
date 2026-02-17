@@ -57,5 +57,6 @@ vim ~/.bashrc
 export ir="$HOME/ir_local"
 . ~/.bashrc
 
-# FINAL. Install compilers
+# FINAL. Install compilers (see readme.md for full details)
 curl -fsSL https://raw.githubusercontent.com/innovative247/compilers/main/install.sh | bash
+# Then: set_profile configure

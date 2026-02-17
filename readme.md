@@ -2,9 +2,7 @@
 
 Cross-platform .NET 8 tools for compiling and deploying SQL to Sybase ASE and Microsoft SQL Server databases.
 
-## Overview
-
-Self-contained executables — no runtime or FreeTDS required. Managed ADO.NET drivers handle all database connectivity.
+Self-contained executables — no runtime or dependencies required. Managed ADO.NET drivers handle all database connectivity.
 
 - **SQL compilation** - Execute SQL scripts with placeholder resolution and sequence support
 - **Database builds** - Orchestrate multi-file builds via create scripts
@@ -15,22 +13,53 @@ Self-contained executables — no runtime or FreeTDS required. Managed ADO.NET d
 
 ## Installation
 
-### Windows
+### Online Install
 
+**Windows (PowerShell):**
 ```powershell
 irm https://raw.githubusercontent.com/innovative247/compilers/main/install.ps1 | iex
 ```
 
-### macOS / Linux / WSL
-
+**Linux / macOS / WSL:**
 ```bash
 curl -fsSL https://raw.githubusercontent.com/innovative247/compilers/main/install.sh | bash
 ```
 
+The installer downloads the latest release, extracts it, and walks you through setup.
+
+### Offline / Manual Install
+
+If the target machine has no internet access:
+
+1. Download the archive for your platform from [GitHub Releases](https://github.com/innovative247/compilers/releases/latest):
+   - `compilers-net8-win-x64.zip` (Windows)
+   - `compilers-net8-linux-x64.tar.gz` (Linux / WSL)
+   - `compilers-net8-osx-x64.tar.gz` (macOS)
+
+2. Transfer the archive to the target machine.
+
+3. Extract to your preferred location:
+
+   **Windows:**
+   ```powershell
+   Expand-Archive compilers-net8-win-x64.zip -DestinationPath "$env:LOCALAPPDATA\ibs-compilers"
+   ```
+
+   **Linux / macOS:**
+   ```bash
+   mkdir -p ~/ibs-compilers && tar -xzf compilers-net8-linux-x64.tar.gz -C ~/ibs-compilers
+   ```
+
+4. Run configure to add to PATH and set up settings.json:
+   ```bash
+   set_profile configure
+   ```
+   On first run, use the full path to the executable (e.g., `~/ibs-compilers/set_profile configure`).
+
 ### After Install
 
 ```bash
-set_profile configure    # Add to PATH
+set_profile configure    # Add to PATH, verify environment
 set_profile              # Configure database connections
 ```
 
@@ -45,6 +74,17 @@ runsql version
 ```bash
 runsql update
 ```
+
+On machines without internet, download the new archive and extract over the existing installation.
+
+---
+
+## Environment Troubleshooting
+
+Having trouble with your development environment (terminal, Node.js, Git, SVN, WSL, etc.)?
+
+- [Windows Server 2022](windows-setup.md)
+- [WSL Ubuntu](ubuntu-setup.md)
 
 ---
 
