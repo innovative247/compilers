@@ -169,7 +169,7 @@ namespace ibsCompiler
             Console.WriteLine($"Current version: v{VersionInfo.Version}");
             Console.WriteLine("Checking for updates...");
 
-            using var http = CreateHttpClient(timeout: 30);
+            using var http = CreateHttpClient(timeout: 5);
 
             // Get latest release info
             var response = await http.GetAsync(ReleasesApiUrl);
