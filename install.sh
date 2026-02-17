@@ -224,9 +224,50 @@ fi
 echo ""
 echo "Installed $VERSION to $INSTALL_DIR"
 echo ""
-echo "Next steps:"
-echo "  1. Run: $INSTALL_DIR/set_profile configure"
-echo "     (adds compilers to your PATH and verifies setup)"
-echo "  2. Restart your terminal (or: source ~/.bashrc)"
-echo "  3. Run: set_profile"
-echo "     (configure database connections)"
+
+# --- Prompt to run configure ---
+read -p "Run configure now? (adds to PATH and verifies setup) [Y/n]: " RUN_CONFIGURE
+RUN_CONFIGURE=${RUN_CONFIGURE:-Y}
+
+if [ "${RUN_CONFIGURE,,}" != "n" ] && [ "${RUN_CONFIGURE,,}" != "no" ]; then
+    "$INSTALL_DIR/set_profile" configure
+
+    # Source the appropriate shell rc file so PATH takes effect immediately
+    SOURCED=false
+    SHELL_NAME=$(basename "${SHELL:-/bin/bash}")
+    case "$SHELL_NAME" in
+        zsh)
+            if [ -f "$HOME/.zshrc" ]; then
+                echo ""
+                echo "  Applying PATH changes..."
+                # shellcheck disable=SC1091
+                . "$HOME/.zshrc" 2>/dev/null && SOURCED=true
+            fi
+            ;;
+        *)
+            if [ -f "$HOME/.bashrc" ]; then
+                echo ""
+                echo "  Applying PATH changes..."
+                # shellcheck disable=SC1091
+                . "$HOME/.bashrc" 2>/dev/null && SOURCED=true
+            fi
+            ;;
+    esac
+
+    if [ "$SOURCED" = true ]; then
+        echo "  PATH is active — no need to restart your terminal."
+    fi
+
+    echo ""
+    echo "Next step:"
+    echo "  Run: set_profile"
+    echo "  (configure database connections)"
+else
+    echo ""
+    echo "Next steps:"
+    echo "  1. Run: $INSTALL_DIR/set_profile configure"
+    echo "     (adds compilers to your PATH and verifies setup)"
+    echo "  2. Restart your terminal (or: source ~/.bashrc)"
+    echo "  3. Run: set_profile"
+    echo "     (configure database connections)"
+fi
