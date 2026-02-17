@@ -23,7 +23,14 @@ detect_python_install() {
     return 1
 }
 
-if detect_python_install; then
+# Skip Python check if .NET compilers are already installed
+if [ -f "$INSTALL_DIR/runsql" ] || [ -f "$INSTALL_DIR/set_profile" ]; then
+    SKIP_PYTHON_CHECK=true
+else
+    SKIP_PYTHON_CHECK=false
+fi
+
+if [ "$SKIP_PYTHON_CHECK" = false ] && detect_python_install; then
     echo "=== Existing Python installation detected ==="
     echo ""
 
