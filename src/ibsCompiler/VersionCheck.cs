@@ -234,7 +234,7 @@ namespace ibsCompiler
                 // Install to the directory containing the actual exe
                 var installDir = GetExeDir();
 
-                Console.WriteLine($"Installing to {installDir}...");
+                Console.WriteLine($"Extracting to {installDir}...");
 
                 if (assetName.EndsWith(".zip"))
                     ExtractZip(tempFile, installDir);

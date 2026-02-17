@@ -253,7 +253,7 @@ if ($runConfigure.ToLower() -ne "n" -and $runConfigure.ToLower() -ne "no") {
     Write-Host "  (configure database connections)" -ForegroundColor Gray
 } else {
     Write-Host "Next steps:" -ForegroundColor Yellow
-    Write-Host "  1. Run: $installDir\set_profile.exe configure" -ForegroundColor White
+    Write-Host "  1. Run: $installDir\set_profile configure" -ForegroundColor White
     Write-Host "     (adds compilers to your PATH and verifies setup)" -ForegroundColor Gray
     Write-Host "  2. Restart your terminal" -ForegroundColor White
     Write-Host "  3. Run: set_profile" -ForegroundColor White
