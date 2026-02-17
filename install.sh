@@ -1,6 +1,6 @@
 #!/bin/bash
 # install.sh — IBS Compilers installer for Linux/macOS
-# One-liner: curl -fsSL https://raw.githubusercontent.com/innovative247/compilers/main/compilers-net8/install.sh | bash
+# One-liner: curl -fsSL https://raw.githubusercontent.com/innovative247/compilers/main/install.sh | bash
 
 set -e
 
@@ -85,7 +85,7 @@ except: pass
     echo "  The .NET 8 version replaces the Python version."
     echo "  The Python compilers must be removed to avoid conflicts."
     echo ""
-    read -p "  Remove Python installation? [Y/n]: " REMOVE_PYTHON
+    read -p "  Remove Python installation? [Y/n]: " REMOVE_PYTHON < /dev/tty
     REMOVE_PYTHON=${REMOVE_PYTHON:-Y}
 
     if [ "${REMOVE_PYTHON,,}" != "n" ] && [ "${REMOVE_PYTHON,,}" != "no" ]; then
@@ -115,7 +115,7 @@ except: pass
         if dpkg -l freetds-bin >/dev/null 2>&1; then
             echo ""
             echo "  FreeTDS (freetds-bin) is installed. The .NET 8 compilers don't need it."
-            read -p "  Remove FreeTDS packages? [y/N]: " REMOVE_FREETDS
+            read -p "  Remove FreeTDS packages? [y/N]: " REMOVE_FREETDS < /dev/tty
             if [ "${REMOVE_FREETDS,,}" = "y" ] || [ "${REMOVE_FREETDS,,}" = "yes" ]; then
                 echo "  Removing FreeTDS..."
                 sudo apt remove -y freetds-bin freetds-dev 2>/dev/null || echo "  (requires sudo — you can remove manually: sudo apt remove freetds-bin freetds-dev)"
@@ -206,7 +206,7 @@ if [ ! -f "$INSTALL_DIR/settings.json" ]; then
         echo ""
         echo "  Found existing settings.json with your profiles:"
         echo "    $PYTHON_SETTINGS"
-        read -p "  Copy to new installation? [Y/n]: " MIGRATE_SETTINGS
+        read -p "  Copy to new installation? [Y/n]: " MIGRATE_SETTINGS < /dev/tty
         MIGRATE_SETTINGS=${MIGRATE_SETTINGS:-Y}
         if [ "${MIGRATE_SETTINGS,,}" != "n" ] && [ "${MIGRATE_SETTINGS,,}" != "no" ]; then
             cp "$PYTHON_SETTINGS" "$INSTALL_DIR/settings.json"
@@ -226,7 +226,7 @@ echo "Installed $VERSION to $INSTALL_DIR"
 echo ""
 
 # --- Prompt to run configure ---
-read -p "Run configure now? (adds to PATH and verifies setup) [Y/n]: " RUN_CONFIGURE
+read -p "Run configure now? (adds to PATH and verifies setup) [Y/n]: " RUN_CONFIGURE < /dev/tty
 RUN_CONFIGURE=${RUN_CONFIGURE:-Y}
 
 if [ "${RUN_CONFIGURE,,}" != "n" ] && [ "${RUN_CONFIGURE,,}" != "no" ]; then
