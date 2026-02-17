@@ -841,7 +841,7 @@ namespace ibsCompiler
             if (File.Exists(optCompany))
                 PrintSuccess($"  options.{company} found ({CountLines(optCompany)} lines)");
             else
-                PrintError($"  options.{company} NOT found — this file is required (can be empty)");
+                PrintError($"  options.{company} NOT found — this file is required");
 
             // options.{company}.{profile} — profile-specific
             var optProfile = Path.Combine(cssSetup, $"options.{company}.{profileName}");
