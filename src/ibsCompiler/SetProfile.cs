@@ -1348,17 +1348,7 @@ namespace ibsCompiler
                 return;
             }
 
-            Console.WriteLine($"Opening: {_settingsPath}");
-            try
-            {
-                Process.Start(new ProcessStartInfo(_settingsPath) { UseShellExecute = true });
-                PrintSuccess("Opened in default editor.");
-            }
-            catch (Exception ex)
-            {
-                PrintError($"Could not open file: {ex.Message}");
-                Console.WriteLine($"Please manually edit: {_settingsPath}");
-            }
+            InteractiveMenus.LaunchEditor(_settingsPath);
         }
         #endregion
 
