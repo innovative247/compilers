@@ -230,7 +230,7 @@ if [ ! -f "$INSTALL_DIR/settings.json" ]; then
 fi
 
 echo ""
-echo "Installed $VERSION to $INSTALL_DIR"
+echo "Downloaded $VERSION to $INSTALL_DIR"
 echo ""
 
 # --- Prompt to run configure ---
