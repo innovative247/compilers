@@ -1,6 +1,7 @@
 # publish.ps1 — Publish all .NET 8 compiler executables for all platforms
 # Usage: .\publish.ps1 [-Version 1.0.1]
-# All 22 exe projects are published self-contained single-file to bin/<platform>/.
+# All projects are published self-contained to a shared bin/<platform>/ directory.
+# The .NET runtime is output once; each command adds only its small exe/dll.
 # After publishing, creates distributable archives in bin/.
 
 param(
@@ -53,6 +54,11 @@ $allFailed = @()
 foreach ($rid in $runtimes) {
     $outputDir = Join-Path $PSScriptRoot "bin\$rid"
 
+    # Clean previous output for this platform
+    if (Test-Path $outputDir) {
+        Remove-Item $outputDir -Recurse -Force
+    }
+
     Write-Host "=== Publishing $($projects.Count) projects for $rid ===" -ForegroundColor Cyan
     Write-Host ""
 
@@ -61,8 +67,6 @@ foreach ($rid in $runtimes) {
         Write-Host "  Publishing $project..." -NoNewline
 
         dotnet publish $csproj -c Release -r $rid --self-contained `
-            -p:PublishSingleFile=true `
-            -p:IncludeNativeLibrariesForSelfExtract=true `
             -o $outputDir --nologo -v quiet 2>&1 | Out-Null
 
         if ($LASTEXITCODE -eq 0) {
@@ -88,7 +92,9 @@ foreach ($rid in $runtimes) {
             # Linux/macOS: count executables (files with no extension matching project names)
             $count = ($projects | Where-Object { Test-Path (Join-Path $outputDir $_) } | Measure-Object).Count
         }
-        Write-Host "  $rid`: $count executables" -ForegroundColor Green
+        $totalSize = (Get-ChildItem -Path $outputDir -Recurse | Measure-Object -Property Length -Sum).Sum
+        $sizeMB = [math]::Round($totalSize / 1MB, 1)
+        Write-Host "  $rid`: $count executables, $sizeMB MB total" -ForegroundColor Green
     } else {
         Write-Host "  $rid`: output directory missing" -ForegroundColor Red
     }
@@ -127,7 +133,8 @@ if (Test-Path $winDir) {
     $zipPath = Join-Path $binDir "compilers-net8-win-x64.zip"
     if (Test-Path $zipPath) { Remove-Item $zipPath }
     Compress-Archive -Path "$winDir\*" -DestinationPath $zipPath
-    Write-Host "  Created: compilers-net8-win-x64.zip" -ForegroundColor Green
+    $sizeMB = [math]::Round((Get-Item $zipPath).Length / 1MB, 1)
+    Write-Host "  Created: compilers-net8-win-x64.zip ($sizeMB MB)" -ForegroundColor Green
 }
 
 # Linux tar.gz
@@ -136,7 +143,8 @@ if (Test-Path $linuxDir) {
     $tarPath = Join-Path $binDir "compilers-net8-linux-x64.tar.gz"
     if (Test-Path $tarPath) { Remove-Item $tarPath }
     tar -czf $tarPath -C $linuxDir .
-    Write-Host "  Created: compilers-net8-linux-x64.tar.gz" -ForegroundColor Green
+    $sizeMB = [math]::Round((Get-Item $tarPath).Length / 1MB, 1)
+    Write-Host "  Created: compilers-net8-linux-x64.tar.gz ($sizeMB MB)" -ForegroundColor Green
 }
 
 # macOS tar.gz
@@ -145,7 +153,8 @@ if (Test-Path $osxDir) {
     $tarPath = Join-Path $binDir "compilers-net8-osx-x64.tar.gz"
     if (Test-Path $tarPath) { Remove-Item $tarPath }
     tar -czf $tarPath -C $osxDir .
-    Write-Host "  Created: compilers-net8-osx-x64.tar.gz" -ForegroundColor Green
+    $sizeMB = [math]::Round((Get-Item $tarPath).Length / 1MB, 1)
+    Write-Host "  Created: compilers-net8-osx-x64.tar.gz ($sizeMB MB)" -ForegroundColor Green
 }
 
 Write-Host ""
