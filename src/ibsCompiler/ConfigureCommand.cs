@@ -14,7 +14,23 @@ namespace ibsCompiler
             var binDir = GetExeDir().TrimEnd(Path.DirectorySeparatorChar);
             var rid = GetRuntimeId();
             var settingsPath = ProfileManager.FindSettingsFile();
+
+            // Fix PATH before displaying status
             var inPath = IsInPath(binDir);
+            if (!inPath)
+                inPath = AddToPath(binDir);
+
+            // Fix settings.json before displaying status
+            if (settingsPath == null)
+            {
+                var examplePath = Path.Combine(binDir, "settings.json.example");
+                var targetPath = Path.Combine(binDir, "settings.json");
+                if (File.Exists(examplePath))
+                {
+                    File.Copy(examplePath, targetPath);
+                    settingsPath = targetPath;
+                }
+            }
 
             Console.WriteLine();
             Console.WriteLine("=== Compilers Configuration ===");
@@ -23,57 +39,8 @@ namespace ibsCompiler
             Console.WriteLine($"  Bin dir:     {binDir}");
             Console.WriteLine($"  Platform:    {rid}");
             Console.WriteLine($"  Settings:    {(settingsPath != null ? settingsPath : "NOT FOUND")}");
-            Console.WriteLine($"  PATH:        {(inPath ? "OK" : "NOT configured")}");
+            Console.WriteLine($"  PATH:        {(inPath ? "OK" : "FAILED — add manually")}");
             Console.WriteLine();
-
-            bool allGood = true;
-
-            // If no settings.json, offer to create from example
-            if (settingsPath == null)
-            {
-                allGood = false;
-                var examplePath = Path.Combine(binDir, "settings.json.example");
-                var targetPath = Path.Combine(binDir, "settings.json");
-                if (File.Exists(examplePath))
-                {
-                    Console.WriteLine("  No settings.json found.");
-                    Console.Write("  Copy settings.json.example to settings.json? [Y/n]: ");
-                    var response = Console.ReadLine()?.Trim().ToLowerInvariant();
-                    if (response != "n" && response != "no")
-                    {
-                        File.Copy(examplePath, targetPath);
-                        Console.WriteLine("  Created settings.json — run set_profile to configure connections.");
-                    }
-                }
-                else
-                {
-                    Console.WriteLine("  No settings.json or settings.json.example found.");
-                    Console.WriteLine("  Run set_profile to create a new settings file.");
-                }
-                Console.WriteLine();
-            }
-
-            // Offer PATH setup if not configured
-            if (!inPath)
-            {
-                allGood = false;
-                Console.Write("  Add to user PATH? [Y/n]: ");
-                var response = Console.ReadLine()?.Trim().ToLowerInvariant();
-                if (response != "n" && response != "no")
-                {
-                    if (AddToPath(binDir))
-                        Console.WriteLine("  PATH updated.");
-                    else
-                        Console.WriteLine("  Failed to update PATH. You may need to add it manually.");
-                }
-                Console.WriteLine();
-            }
-
-            if (allGood)
-            {
-                Console.WriteLine("  Everything looks good!");
-                Console.WriteLine();
-            }
         }
 
         /// <summary>
