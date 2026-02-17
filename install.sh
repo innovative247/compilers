@@ -255,7 +255,11 @@ if [ "${RUN_CONFIGURE,,}" != "n" ] && [ "${RUN_CONFIGURE,,}" != "no" ]; then
     esac
 
     if [ "$SOURCED" = true ]; then
-        echo "  PATH is active — no need to restart your terminal."
+        hash -r 2>/dev/null  # Clear stale command hash table
+        echo "  PATH is ready."
+    else
+        echo ""
+        echo "  Restart your terminal (or: source ~/.bashrc) to use commands by name."
     fi
 
     echo ""

@@ -47,51 +47,25 @@ namespace ibsCompiler.Configuration
         /// </summary>
         public static string? FindSettingsFile()
         {
-            // 1. Current directory
-            var path = Path.Combine(Directory.GetCurrentDirectory(), "settings.json");
-            if (File.Exists(path)) return path;
-
-            // 2. Executable directory (use ProcessPath for single-file apps; AppContext.BaseDirectory
-            //    points to a temp extraction folder for self-contained single-file executables)
+            // 1. Executable directory — the canonical location (settings.json lives next to the binaries)
             var exePath = Environment.ProcessPath;
             if (!string.IsNullOrEmpty(exePath))
             {
                 var exeDir = Path.GetDirectoryName(exePath);
                 if (!string.IsNullOrEmpty(exeDir))
                 {
-                    path = Path.Combine(exeDir, "settings.json");
+                    var path = Path.Combine(exeDir, "settings.json");
                     if (File.Exists(path)) return path;
                 }
             }
 
-            // 3. AppContext.BaseDirectory fallback (framework-dependent deployments)
-            path = Path.Combine(AppContext.BaseDirectory, "settings.json");
-            if (File.Exists(path)) return path;
+            // 2. AppContext.BaseDirectory fallback (framework-dependent deployments)
+            var basePath = Path.Combine(AppContext.BaseDirectory, "settings.json");
+            if (File.Exists(basePath)) return basePath;
 
-            // 4. Walk up from executable directory looking for settings.json
-            if (!string.IsNullOrEmpty(exePath))
-            {
-                var dir = Path.GetDirectoryName(exePath);
-                for (int i = 0; i < 5 && dir != null; i++)
-                {
-                    var parent = Directory.GetParent(dir);
-                    if (parent == null) break;
-                    path = Path.Combine(parent.FullName, "settings.json");
-                    if (File.Exists(path)) return path;
-                    dir = parent.FullName;
-                }
-            }
-
-            // 5. Walk up from current directory
-            var cwd = Directory.GetCurrentDirectory();
-            for (int i = 0; i < 5; i++)
-            {
-                var parent = Directory.GetParent(cwd);
-                if (parent == null) break;
-                path = Path.Combine(parent.FullName, "settings.json");
-                if (File.Exists(path)) return path;
-                cwd = parent.FullName;
-            }
+            // 3. Current directory
+            var cwdPath = Path.Combine(Directory.GetCurrentDirectory(), "settings.json");
+            if (File.Exists(cwdPath)) return cwdPath;
 
             return null;
         }

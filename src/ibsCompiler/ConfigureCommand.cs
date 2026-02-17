@@ -62,7 +62,7 @@ namespace ibsCompiler
                 if (response != "n" && response != "no")
                 {
                     if (AddToPath(binDir))
-                        Console.WriteLine("  PATH updated. Restart your terminal for changes to take effect.");
+                        Console.WriteLine("  PATH updated.");
                     else
                         Console.WriteLine("  Failed to update PATH. You may need to add it manually.");
                 }
