@@ -8,7 +8,7 @@
 
   <ItemGroup>
     <Reference Include="AdoNetCore.AseClient">
-      <HintPath>..\..\..\sbn-services\lib\AdoNetCore\AdoNetCore.AseClient.dll</HintPath>
+      <HintPath>..\AdoNetCore.AseClient.dll</HintPath>
     </Reference>
     <PackageReference Include="Microsoft.Data.SqlClient" Version="6.1.4" />
   </ItemGroup>
