@@ -1,5 +1,5 @@
 # install.ps1 — IBS Compilers installer for Windows
-# One-liner: irm https://raw.githubusercontent.com/innovative247/compilers/main/compilers-net8/install.ps1 | iex
+# One-liner: irm https://raw.githubusercontent.com/innovative247/compilers/main/install.ps1 | iex
 
 $ErrorActionPreference = 'Stop'
 
@@ -39,7 +39,10 @@ if (-not $pythonInstalled) {
     }
 }
 
-if ($pythonInstalled) {
+# Skip Python check if .NET compilers are already installed
+$skipPythonCheck = Test-Path (Join-Path $installDir "runsql.exe")
+
+if (-not $skipPythonCheck -and $pythonInstalled) {
     Write-Host "=== Existing Python installation detected ===" -ForegroundColor Yellow
     Write-Host ""
 
@@ -84,10 +87,11 @@ if ($pythonInstalled) {
     }
 
     Write-Host ""
-    Write-Host "  The .NET 8 version replaces the Python version." -ForegroundColor White
-    Write-Host "  The Python compilers must be removed to avoid conflicts." -ForegroundColor White
+    Write-Host "  The .NET 8 compilers replace the Python compilers." -ForegroundColor White
+    Write-Host "  The Python compilers package must be removed to avoid conflicts." -ForegroundColor White
+    Write-Host "  (This does not remove Python itself.)" -ForegroundColor Gray
     Write-Host ""
-    $removePython = Read-Host "  Remove Python installation? [Y/n]"
+    $removePython = Read-Host "  Remove Python compilers? [Y/n]"
     if (-not $removePython) { $removePython = "Y" }
 
     if ($removePython.ToLower() -ne "n" -and $removePython.ToLower() -ne "no") {
@@ -151,8 +155,15 @@ if ($pythonInstalled) {
             }
         }
 
+        # Clean up editable install leftovers (pip uninstall misses these)
+        if ($pipLocation -and (Test-Path $pipLocation)) {
+            Get-Item (Join-Path $pipLocation "__editable__.ibs_compilers-*.pth") -ErrorAction SilentlyContinue | Remove-Item -Force
+            Get-Item (Join-Path $pipLocation "__editable___ibs_compilers_*_finder.py") -ErrorAction SilentlyContinue | Remove-Item -Force
+            Get-Item (Join-Path $pipLocation "ibs_compilers-*.dist-info") -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force
+        }
+
         Write-Host ""
-        Write-Host "  Python installation removed." -ForegroundColor Green
+        Write-Host "  Python compilers removed." -ForegroundColor Green
         Write-Host ""
     } else {
         Write-Host ""
@@ -194,7 +205,7 @@ Write-Host "Downloading $assetName..."
 Invoke-WebRequest -Uri $downloadUrl -OutFile $tempFile -Headers $headers -UseBasicParsing
 
 # Extract
-Write-Host "Installing to $installDir..."
+Write-Host "Extracting to $installDir..."
 if (-not (Test-Path $installDir)) {
     New-Item -ItemType Directory -Path $installDir -Force | Out-Null
 }
@@ -226,11 +237,25 @@ if (-not (Test-Path $settingsFile)) {
 }
 
 Write-Host ""
-Write-Host "Installed $version to $installDir" -ForegroundColor Green
+Write-Host "Extracted $version to $installDir" -ForegroundColor Green
 Write-Host ""
-Write-Host "Next steps:" -ForegroundColor Yellow
-Write-Host "  1. Run: $installDir\set_profile.exe configure" -ForegroundColor White
-Write-Host "     (adds compilers to your PATH and verifies setup)" -ForegroundColor Gray
-Write-Host "  2. Restart your terminal" -ForegroundColor White
-Write-Host "  3. Run: set_profile" -ForegroundColor White
-Write-Host "     (configure database connections)" -ForegroundColor Gray
+
+# Prompt to run configure
+$runConfigure = Read-Host "Run configure now? (adds to PATH and verifies setup) [Y/n]"
+if (-not $runConfigure) { $runConfigure = "Y" }
+
+if ($runConfigure.ToLower() -ne "n" -and $runConfigure.ToLower() -ne "no") {
+    & "$installDir\set_profile.exe" configure
+    Write-Host ""
+    Write-Host "Restart your terminal for PATH changes to take effect." -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "Then run: set_profile" -ForegroundColor White
+    Write-Host "  (configure database connections)" -ForegroundColor Gray
+} else {
+    Write-Host "Next steps:" -ForegroundColor Yellow
+    Write-Host "  1. Run: $installDir\set_profile.exe configure" -ForegroundColor White
+    Write-Host "     (adds compilers to your PATH and verifies setup)" -ForegroundColor Gray
+    Write-Host "  2. Restart your terminal" -ForegroundColor White
+    Write-Host "  3. Run: set_profile" -ForegroundColor White
+    Write-Host "     (configure database connections)" -ForegroundColor Gray
+}
