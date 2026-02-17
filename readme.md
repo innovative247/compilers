@@ -176,6 +176,37 @@ Short paths are automatically expanded in SQL file references:
 
 ---
 
+## MSSQL Initialization Script (SQLCMDINI)
+
+When connecting to Microsoft SQL Server, the compilers check for the `SQLCMDINI` environment variable. If it points to a SQL file, that file is executed at the start of every connection — before any compilation runs. This matches `sqlcmd.exe` behavior.
+
+This is useful for setting session options that make MSSQL behave consistently with Sybase:
+
+**Example file** (`mssql_setup.sql`):
+```sql
+SET ARITHABORT               ON
+SET ANSI_NULL_DFLT_ON        OFF
+SET ANSI_NULL_DFLT_OFF       OFF
+SET CONCAT_NULL_YIELDS_NULL  OFF
+SET ANSI_WARNINGS            ON
+SET QUOTED_IDENTIFIER        OFF
+```
+
+**Set the environment variable:**
+
+Windows:
+```powershell
+[Environment]::SetEnvironmentVariable("SQLCMDINI", "C:\path\to\mssql_setup.sql", "User")
+```
+
+Linux / macOS:
+```bash
+echo 'export SQLCMDINI="$HOME/mssql_setup.sql"' >> ~/.bashrc
+source ~/.bashrc
+```
+
+---
+
 ## Troubleshooting
 
 ### Command not found
