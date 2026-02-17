@@ -159,7 +159,7 @@ namespace ibsCompiler
         #region Settings I/O
         private static void LoadSettings()
         {
-            _settingsPath = FindSettingsFile() ?? "";
+            _settingsPath = ProfileManager.FindSettingsFile() ?? "";
             if (!string.IsNullOrEmpty(_settingsPath) && File.Exists(_settingsPath))
             {
                 try
@@ -179,7 +179,11 @@ namespace ibsCompiler
             {
                 _settings = new SettingsFile();
                 if (string.IsNullOrEmpty(_settingsPath))
-                    _settingsPath = Path.Combine(Directory.GetCurrentDirectory(), "settings.json");
+                {
+                    var exeDir = Path.GetDirectoryName(Environment.ProcessPath);
+                    if (string.IsNullOrEmpty(exeDir)) exeDir = AppContext.BaseDirectory;
+                    _settingsPath = Path.Combine(exeDir, "settings.json");
+                }
                 Console.WriteLine($"Creating new settings file: {_settingsPath}");
             }
         }
@@ -201,26 +205,6 @@ namespace ibsCompiler
             }
         }
 
-        private static string? FindSettingsFile()
-        {
-            var path = Path.Combine(Directory.GetCurrentDirectory(), "settings.json");
-            if (File.Exists(path)) return path;
-
-            var exeDir = AppContext.BaseDirectory;
-            path = Path.Combine(exeDir, "settings.json");
-            if (File.Exists(path)) return path;
-
-            var dir = Directory.GetCurrentDirectory();
-            for (int i = 0; i < 5; i++)
-            {
-                var parent = Directory.GetParent(dir);
-                if (parent == null) break;
-                path = Path.Combine(parent.FullName, "settings.json");
-                if (File.Exists(path)) return path;
-                dir = parent.FullName;
-            }
-            return null;
-        }
         #endregion
 
         #region Main Menu
