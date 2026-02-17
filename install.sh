@@ -231,47 +231,16 @@ RUN_CONFIGURE=${RUN_CONFIGURE:-Y}
 
 if [ "${RUN_CONFIGURE,,}" != "n" ] && [ "${RUN_CONFIGURE,,}" != "no" ]; then
     "$INSTALL_DIR/set_profile" configure
-
-    # Source the appropriate shell rc file so PATH takes effect immediately
-    SOURCED=false
-    SHELL_NAME=$(basename "${SHELL:-/bin/bash}")
-    case "$SHELL_NAME" in
-        zsh)
-            if [ -f "$HOME/.zshrc" ]; then
-                echo ""
-                echo "  Applying PATH changes..."
-                # shellcheck disable=SC1091
-                . "$HOME/.zshrc" 2>/dev/null && SOURCED=true
-            fi
-            ;;
-        *)
-            if [ -f "$HOME/.bashrc" ]; then
-                echo ""
-                echo "  Applying PATH changes..."
-                # shellcheck disable=SC1091
-                . "$HOME/.bashrc" 2>/dev/null && SOURCED=true
-            fi
-            ;;
-    esac
-
-    if [ "$SOURCED" = true ]; then
-        hash -r 2>/dev/null  # Clear stale command hash table
-        echo "  PATH is ready."
-    else
-        echo ""
-        echo "  Restart your terminal (or: source ~/.bashrc) to use commands by name."
-    fi
-
     echo ""
-    echo "Next step:"
-    echo "  Run: set_profile"
+    echo "To activate PATH, restart your terminal or run:"
+    echo "  source ~/.bashrc && hash -r"
+    echo ""
+    echo "Then run: set_profile"
     echo "  (configure database connections)"
 else
-    echo ""
     echo "Next steps:"
     echo "  1. Run: $INSTALL_DIR/set_profile configure"
-    echo "     (adds compilers to your PATH and verifies setup)"
-    echo "  2. Restart your terminal (or: source ~/.bashrc)"
+    echo "  2. Restart your terminal (or: source ~/.bashrc && hash -r)"
     echo "  3. Run: set_profile"
     echo "     (configure database connections)"
 fi
