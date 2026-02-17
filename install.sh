@@ -200,7 +200,7 @@ echo "Downloading $ASSET_NAME..."
 curl -fsSL -o "$TEMP_FILE" "$DOWNLOAD_URL"
 
 # Extract
-echo "Installing to $INSTALL_DIR..."
+echo "Copying to $INSTALL_DIR..."
 mkdir -p "$INSTALL_DIR"
 tar -xzf "$TEMP_FILE" -C "$INSTALL_DIR"
 rm -f "$TEMP_FILE"
@@ -230,7 +230,7 @@ if [ ! -f "$INSTALL_DIR/settings.json" ]; then
 fi
 
 echo ""
-echo "Downloaded $VERSION to $INSTALL_DIR"
+echo "Copied $VERSION to $INSTALL_DIR"
 echo ""
 
 # --- Prompt to run configure ---
