@@ -239,7 +239,10 @@ namespace ibsCompiler
                 if (assetName.EndsWith(".zip"))
                     ExtractZip(tempFile, installDir);
                 else
+                {
                     ExtractTarGz(tempFile, installDir);
+                    SetExecutable(installDir);
+                }
 
                 Console.WriteLine($"Updated to v{latestVersion}. Please re-run your command.");
             }
@@ -282,11 +285,24 @@ namespace ibsCompiler
 
         private static void ExtractTarGz(string tarGzPath, string destDir)
         {
-            // Use system tar for .tar.gz extraction
             var psi = new System.Diagnostics.ProcessStartInfo
             {
                 FileName = "tar",
                 Arguments = $"-xzf \"{tarGzPath}\" -C \"{destDir}\"",
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
+            using var proc = System.Diagnostics.Process.Start(psi);
+            proc?.WaitForExit();
+        }
+
+        private static void SetExecutable(string dir)
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "find",
+                Arguments = $"\"{dir}\" -maxdepth 1 -type f ! -name \"*.json\" ! -name \"*.example\" -exec chmod +x {{}} +",
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true
