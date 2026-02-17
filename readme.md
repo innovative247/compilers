@@ -58,26 +58,16 @@ If the target machine has no internet access:
 
 ### After Install
 
+Every command supports the subcommands `configure`, `version`, `update`, and `install`. You can use any command interchangeably for these operations (e.g., `runsql version`, `set_profile update`, `isqlline configure` all work).
+
 ```bash
 set_profile configure    # Add to PATH, verify environment
 set_profile              # Configure database connections
-```
-
-### Verify
-
-```bash
-runsql version
-```
-
-### Update
-
-```bash
-runsql update
+set_profile version      # Verify installation
+set_profile update       # Download and install latest release
 ```
 
 On machines without internet, download the new archive and extract over the existing installation.
-
-> **Note:** `configure`, `version`, `update`, and `install` are subcommands available on every command — not just the examples above. For instance, `isqlline version`, `transfer_data update`, `eopt configure` all work.
 
 ---
 
