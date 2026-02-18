@@ -742,7 +742,7 @@ namespace ibsCompiler
                         TestTableLocations(profile);
                         break;
                     case "5" when !profile.RawMode:
-                        TestChangelog(profile);
+                        TestChangelog(name, profile);
                         break;
                     case "6" when !profile.RawMode:
                         TestSymbolicLinks(profile);
@@ -866,22 +866,13 @@ namespace ibsCompiler
                 PrintError($"Table locations file NOT found: {tblLoc}");
         }
 
-        private static void TestChangelog(ProfileData profile)
+        private static void TestChangelog(string profileName, ProfileData profile)
         {
             Console.WriteLine("\nTesting changelog...");
-            Console.WriteLine();
-            PrintDim("  Changelog requires the gclog12 option to be active in the database.");
-            PrintDim("  This test checks if gclog12 exists in the options table.");
-            Console.WriteLine();
 
-            var dbName = $"{profile.Company}pr";
-            Console.Write($"  Database [{dbName}]: ");
-            var input = Console.ReadLine()?.Trim();
-            if (!string.IsNullOrEmpty(input)) dbName = input;
-
-            Console.Write("  Checking... ");
             var resolved = new ResolvedProfile
             {
+                ProfileName = profileName,
                 Host = profile.Host,
                 Port = profile.EffectivePort,
                 User = profile.Username,
@@ -889,31 +880,109 @@ namespace ibsCompiler
                 ServerType = profile.ServerType,
                 Company = profile.Company ?? "101",
                 Language = profile.DefaultLanguage ?? "1",
-                IRPath = profile.SqlSource ?? ""
+                IRPath = profile.SqlSource ?? "",
+                IsProfile = true
             };
+
+            // Build CommandVariables for Options resolution
+            var cmdvars = new CommandVariables
+            {
+                User = profile.Username,
+                Pass = profile.Password,
+                ServerType = profile.ServerType,
+                Database = $"{profile.Company}pr",
+                Command = "TEST"
+            };
+            cmdvars.Server = $"{profile.Host}:{profile.EffectivePort}";
+
+            // Resolve placeholders via Options
+            var myOptions = new Options(cmdvars, resolved, true);
+            if (!myOptions.GenerateOptionFiles())
+            {
+                PrintError("Could not load options files. Ensure SQL Source and CSS/Setup are configured.");
+                return;
+            }
+
+            var dbpro = myOptions.ReplaceOptions("&dbpro&");
+            if (dbpro == "&dbpro&")
+            {
+                PrintError("Could not resolve &dbpro& placeholder.");
+                return;
+            }
 
             try
             {
                 using var executor = SqlExecutorFactory.Create(resolved);
-                var result = executor.ExecuteSql(
-                    "SELECT opt_no, act_flg FROM options WHERE opt_no = 'gclog12'",
-                    dbName, captureOutput: true);
-                if (result.Returncode && !string.IsNullOrEmpty(result.Output) &&
-                    result.Output.Contains("gclog12", StringComparison.OrdinalIgnoreCase))
+
+                // Step 1: Check if gclog12 is enabled
+                Console.Write("  Checking gclog12 option... ");
+                var optionsTable = myOptions.ReplaceOptions("&options&");
+                var query = $"SELECT act_flg FROM {optionsTable} WHERE id = 'gclog12'";
+                var result = executor.ExecuteSql(query, dbpro, captureOutput: true);
+
+                if (!result.Returncode || string.IsNullOrEmpty(result.Output) ||
+                    !result.Output.Contains("+"))
                 {
-                    PrintSuccess("gclog12 option found in database.");
-                    Console.WriteLine($"  {result.Output.Trim()}");
+                    PrintError("gclog12 option is off.");
+                    return;
                 }
-                else
+
+                PrintSuccess("gclog12 is on.");
+
+                // Step 2: Check ba_gen_chg_log_new exists
+                Console.Write("  Checking ba_gen_chg_log_new... ");
+                var spCheck = executor.ExecuteSql(
+                    "SELECT 1 FROM sysobjects WHERE name = 'ba_gen_chg_log_new' AND type = 'P'",
+                    dbpro, captureOutput: true);
+
+                if (!spCheck.Returncode || string.IsNullOrEmpty(spCheck.Output) ||
+                    !spCheck.Output.Contains("1"))
                 {
-                    PrintError("gclog12 option not found or query failed.");
-                    if (!string.IsNullOrEmpty(result.Output))
-                        Console.WriteLine($"  {result.Output.Trim()}");
+                    PrintError($"ba_gen_chg_log_new stored procedure not found in {dbpro}.");
+                    return;
+                }
+
+                PrintSuccess("ba_gen_chg_log_new exists.");
+
+                // Step 3: Insert test changelog entry
+                var osUser = Environment.UserName;
+                var exePath = Environment.ProcessPath ?? "TEST";
+                var description = $"User {osUser}: set_profile test".Replace("'", "''");
+                var cmdStr = $"{exePath}".Replace("'", "''");
+
+                Console.Write("  Inserting test entry... ");
+                var insertSql = $"EXEC ba_gen_chg_log_new '', '{description}', 'TEST', '', '{cmdStr}', '', 'X'";
+                var insertResult = executor.ExecuteSql(insertSql, dbpro, captureOutput: true);
+
+                if (!insertResult.Returncode)
+                {
+                    PrintError("Failed to insert test changelog entry.");
+                    return;
+                }
+
+                PrintSuccess("Test entry inserted.");
+
+                // Step 4: Show last 5 changelog entries
+                var chgLogTable = myOptions.ReplaceOptions("&ba_gen_chg_log&");
+                if (chgLogTable != "&ba_gen_chg_log&")
+                {
                     Console.WriteLine();
-                    PrintDim("  To enable changelog:");
-                    PrintDim("    1. Ensure options table exists with gclog12 row");
-                    PrintDim("    2. Set gclog12 act_flg = '+' in the database");
-                    PrintDim("    3. Ensure ba_gen_chg_log_new stored procedure exists");
+                    PrintDim("  Recent changelog entries:");
+                    PrintDim("  " + new string('-', 66));
+                    var recentQuery = $"SELECT TOP 5 dateadd(ss, tm, '800101') AS 'server time', descr FROM {chgLogTable} ORDER BY tm DESC";
+                    var recentResult = executor.ExecuteSql(recentQuery, dbpro, captureOutput: true);
+                    if (recentResult.Returncode && !string.IsNullOrEmpty(recentResult.Output))
+                    {
+                        foreach (var line in recentResult.Output.Split('\n'))
+                        {
+                            if (!string.IsNullOrWhiteSpace(line))
+                                Console.WriteLine($"  {line}");
+                        }
+                    }
+                    else
+                    {
+                        PrintDim("  Could not retrieve changelog entries.");
+                    }
                 }
             }
             catch (Exception ex)

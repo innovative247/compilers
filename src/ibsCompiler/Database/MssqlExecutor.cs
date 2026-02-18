@@ -13,6 +13,10 @@ namespace ibsCompiler.Database
         private static readonly Regex ExitRegex = new(@"^\s*(exit|quit)\s*$", RegexOptions.IgnoreCase);
         private static readonly string? SqlCmdInitScript = LoadSqlCmdInit();
 
+        // Persistent connection for batch-at-a-time execution (OpenConnection/ExecuteBatch/CloseConnection)
+        private SqlConnection? _persistentConn;
+        private StringBuilder? _batchOutput;
+
         public MssqlExecutor(ResolvedProfile profile)
         {
             _profile = profile;
@@ -60,10 +64,13 @@ namespace ibsCompiler.Database
                 using var connection = new SqlConnection(BuildConnectionString(database));
                 connection.InfoMessage += (sender, e) =>
                 {
-                    var msg = e.Message;
-                    if (msg.StartsWith("Changed database context"))
-                        return;
-                    output.AppendLine(msg);
+                    foreach (SqlError err in e.Errors)
+                    {
+                        if (err.Class >= 11) continue; // errors handled by SqlException catch
+                        var msg = err.Message;
+                        if (msg.StartsWith("Changed database context")) continue;
+                        output.AppendLine(msg);
+                    }
                 };
                 connection.Open();
                 ExecuteInitScript(connection);
@@ -124,6 +131,80 @@ namespace ibsCompiler.Database
             }
 
             return result;
+        }
+
+        public void OpenConnection(string database)
+        {
+            _batchOutput = new StringBuilder();
+            _persistentConn = new SqlConnection(BuildConnectionString(database));
+            _persistentConn.InfoMessage += (sender, e) =>
+            {
+                foreach (SqlError err in e.Errors)
+                {
+                    if (err.Class >= 11) continue; // errors handled by SqlException catch
+                    var msg = err.Message;
+                    if (msg.StartsWith("Changed database context")) continue;
+                    _batchOutput.AppendLine(msg);
+                }
+            };
+            _persistentConn.Open();
+            ExecuteInitScript(_persistentConn);
+        }
+
+        public ExecReturn ExecuteBatch(string batch, bool captureOutput = false, string outputFile = "")
+        {
+            var result = new ExecReturn { Returncode = true, Output = "" };
+            _batchOutput!.Clear();
+
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(batch))
+                {
+                    using var cmd = new SqlCommand(batch, _persistentConn);
+                    cmd.CommandTimeout = 0;
+
+                    using var reader = cmd.ExecuteReader();
+                    do
+                    {
+                        if (reader.FieldCount > 0)
+                            FormatResultSet(reader, _batchOutput);
+                    } while (reader.NextResult());
+                }
+            }
+            catch (SqlException ex)
+            {
+                foreach (SqlError err in ex.Errors)
+                {
+                    var msg = $"Msg {err.Number}, Level {err.Class}, State {err.State}";
+                    if (err.Procedure != null && err.Procedure.Length > 0)
+                        msg += $", Procedure {err.Procedure}";
+                    if (err.LineNumber > 0)
+                        msg += $", Line {err.LineNumber}";
+                    _batchOutput.AppendLine(msg);
+                    _batchOutput.AppendLine(err.Message);
+                }
+                result.Returncode = false;
+            }
+
+            result.Output = _batchOutput.ToString();
+
+            if (!captureOutput)
+            {
+                var target = !string.IsNullOrEmpty(outputFile) ? outputFile : ibs_compiler_common.DefaultOutFile;
+                if (!string.IsNullOrEmpty(target))
+                    ibs_compiler_common.WriteLineToDisk(target, result.Output);
+                else if (!string.IsNullOrEmpty(result.Output))
+                    Console.Write(result.Output);
+            }
+
+            return result;
+        }
+
+        public void CloseConnection()
+        {
+            _persistentConn?.Dispose();
+            _persistentConn = null;
+            _batchOutput = null;
         }
 
         public ExecReturn BulkCopy(string table, BcpDirection direction, string dataFile, string formatFile = "")
@@ -373,6 +454,10 @@ namespace ibsCompiler.Database
             output.AppendLine();
         }
 
-        public void Dispose() { }
+        public void Dispose()
+        {
+            _persistentConn?.Dispose();
+            _persistentConn = null;
+        }
     }
 }

@@ -8,6 +8,7 @@ var arguments = args.ToList();
 var profileMgr = new ProfileManager();
 
 var cmdvars = ibs_compiler_common.isql_variables(arguments, profileMgr);
+cmdvars.CommandName = "runsql";
 if (string.IsNullOrEmpty(cmdvars.Server))
 {
     Console.Error.WriteLine("Usage: runsql <script> <database> <server/profile> [-U user] [-P pass] [-O outfile] [-e] [-F first] [-L last] [--changelog] [--preview] [-MSSQL|-SYBASE]");

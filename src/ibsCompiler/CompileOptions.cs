@@ -29,6 +29,17 @@ namespace ibsCompiler
             if (!File.Exists(optFileServer))
                 ibs_compiler_common.WriteLine("Warning! Server Option File Missing! " + optFileServer, cmdvars.OutFile);
 
+            // Changelog entry
+            var chgDb = myOptions.ReplaceOptions("&dbpro&");
+            if (chgDb != "&dbpro&")
+            {
+                var chgLines = new List<string>();
+                foreach (var l in change_log.compileLines("OPTIONS", "updated options"))
+                    chgLines.Add(myOptions.ReplaceOptions(l));
+                chgLines.Add("go");
+                executor.ExecuteSql(string.Join(Environment.NewLine, chgLines), chgDb, false, cmdvars.OutFile);
+            }
+
             ibs_compiler_common.WriteLine("Import of options started at " + DateTime.Now, cmdvars.OutFile);
 
             List<string> tmpOptFileSQL = new();

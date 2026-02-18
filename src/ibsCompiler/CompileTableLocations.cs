@@ -23,6 +23,17 @@ namespace ibsCompiler
                 return result;
             }
 
+            // Changelog entry
+            var chgDb = myOptions.ReplaceOptions("&dbpro&");
+            if (chgDb != "&dbpro&")
+            {
+                var chgLines = new List<string>();
+                foreach (var l in change_log.compileLines("TABLES", "updated table locations"))
+                    chgLines.Add(myOptions.ReplaceOptions(l));
+                chgLines.Add("go");
+                executor.ExecuteSql(string.Join(Environment.NewLine, chgLines), chgDb, false, cmdvars.OutFile);
+            }
+
             ibs_compiler_common.WriteLine("compile_table_locations started at " + DateTime.Now, cmdvars.OutFile);
 
             cmdvars.Database = "ibs";

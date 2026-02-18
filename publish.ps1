@@ -54,9 +54,19 @@ $allFailed = @()
 foreach ($rid in $runtimes) {
     $outputDir = Join-Path $PSScriptRoot "bin\$rid"
 
-    # Clean previous output for this platform
+    # Clean previous output for this platform (preserve settings.json)
     if (Test-Path $outputDir) {
+        $settingsBackup = $null
+        $settingsFile = Join-Path $outputDir "settings.json"
+        if (Test-Path $settingsFile) {
+            $settingsBackup = Get-Content $settingsFile -Raw
+        }
         Remove-Item $outputDir -Recurse -Force
+        if ($settingsBackup) {
+            New-Item $outputDir -ItemType Directory -Force | Out-Null
+            Set-Content (Join-Path $outputDir "settings.json") $settingsBackup -NoNewline
+            Write-Host "  Preserved settings.json" -ForegroundColor Yellow
+        }
     }
 
     Write-Host "=== Publishing $($projects.Count) projects for $rid ===" -ForegroundColor Cyan
@@ -66,7 +76,7 @@ foreach ($rid in $runtimes) {
         $csproj = Join-Path $PSScriptRoot "src\$project\$project.csproj"
         Write-Host "  Publishing $project..." -NoNewline
 
-        dotnet publish $csproj -c Release -r $rid --self-contained `
+        dotnet publish $csproj -c Release -r $rid --no-self-contained `
             -o $outputDir --nologo -v quiet 2>&1 | Out-Null
 
         if ($LASTEXITCODE -eq 0) {

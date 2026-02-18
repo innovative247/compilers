@@ -17,6 +17,23 @@ namespace ibsCompiler.Database
         ExecReturn ExecuteSql(string sqlText, string database, bool captureOutput = false, string outputFile = "");
 
         /// <summary>
+        /// Open a persistent connection for executing multiple batches while
+        /// preserving session state (USE database, temp tables, SET options, etc.).
+        /// </summary>
+        void OpenConnection(string database);
+
+        /// <summary>
+        /// Execute a single batch on the persistent connection opened by OpenConnection.
+        /// Output is written immediately per batch.
+        /// </summary>
+        ExecReturn ExecuteBatch(string batch, bool captureOutput = false, string outputFile = "");
+
+        /// <summary>
+        /// Close the persistent connection opened by OpenConnection.
+        /// </summary>
+        void CloseConnection();
+
+        /// <summary>
         /// Bulk copy data between a file and a database table.
         /// Replaces F4.8's exec_bcp() which launched native bcp/obcp.
         /// </summary>

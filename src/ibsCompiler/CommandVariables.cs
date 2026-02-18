@@ -71,6 +71,7 @@ namespace ibsCompiler
         public int SeqLast;
         public string Bcp;
         public bool ChangeLog;
+        public string CommandName;
         public bool Preview;
     }
 

@@ -41,6 +41,25 @@ namespace ibsCompiler
             }
             ibs_compiler_common.WriteLine($"Upgrade script: {cmdvars.Command}", cmdvars.OutFile);
 
+            // Execute changelog once at top level
+            if (cmdvars.ChangeLog && !profile.RawMode)
+            {
+                var chgDb = cmdvars.Database;
+                if (string.IsNullOrEmpty(chgDb))
+                    chgDb = myOptions.ReplaceOptions("&dbpro&");
+
+                if (!string.IsNullOrEmpty(chgDb))
+                {
+                    var chgLines = new List<string>();
+                    foreach (var l in change_log.lines(cmdvars, profile))
+                        chgLines.Add(myOptions.ReplaceOptions(l, cmdvars.SeqFirst));
+                    chgLines.Add("go");
+                    var chgSql = string.Join(Environment.NewLine, chgLines);
+                    executor.ExecuteSql(chgSql, chgDb, false, cmdvars.OutFile);
+                }
+                cmdvars.ChangeLog = false; // Don't log again for inner runsql calls
+            }
+
             // Check if upgrade has already been run
             cmdvars.Command = myOptions.ReplaceOptions($"&dbpro&..ba_upgrades_check '{cmdvars.Upgrade_no}'");
             ibs_compiler_common.WriteLine($"Executing {cmdvars.Command}...", cmdvars.OutFile);

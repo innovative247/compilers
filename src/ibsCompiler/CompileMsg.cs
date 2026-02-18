@@ -14,6 +14,17 @@ namespace ibsCompiler
             var myOptions = new Options(cmdvars, profile, true);
             if (!myOptions.GenerateOptionFiles()) return;
 
+            // Changelog entry
+            var chgDb = myOptions.ReplaceOptions("&dbpro&");
+            if (chgDb != "&dbpro&")
+            {
+                var chgLines = new List<string>();
+                foreach (var l in change_log.compileLines("MESSAGES", "updated messages"))
+                    chgLines.Add(myOptions.ReplaceOptions(l));
+                chgLines.Add("go");
+                executor.ExecuteSql(string.Join(Environment.NewLine, chgLines), chgDb, false, cmdvars.OutFile);
+            }
+
             ibs_compiler_common.WriteLine("Starting compile_msg...", cmdvars.OutFile);
 
             // Production safety guard — prevent message import into GONZO

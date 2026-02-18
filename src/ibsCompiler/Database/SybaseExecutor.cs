@@ -12,6 +12,10 @@ namespace ibsCompiler.Database
         private static readonly Regex GoRegex = new(@"^\s*go\s*$", RegexOptions.IgnoreCase | RegexOptions.Multiline);
         private static readonly Regex ExitRegex = new(@"^\s*(exit|quit)\s*$", RegexOptions.IgnoreCase);
 
+        // Persistent connection for batch-at-a-time execution (OpenConnection/ExecuteBatch/CloseConnection)
+        private AseConnection? _persistentConn;
+        private StringBuilder? _batchOutput;
+
         public SybaseExecutor(ResolvedProfile profile)
         {
             _profile = profile;
@@ -43,13 +47,16 @@ namespace ibsCompiler.Database
                 using var connection = new AseConnection(BuildConnectionString(database));
                 connection.InfoMessage += (sender, e) =>
                 {
-                    // Filter out Sybase server setting confirmations (not in Python compilers output)
-                    var msg = e.Message;
-                    if (msg.StartsWith("Changed client character set") ||
-                        msg.StartsWith("Changed database context") ||
-                        msg.StartsWith("Changed language setting"))
-                        return;
-                    output.AppendLine(msg);
+                    foreach (AseError err in e.Errors)
+                    {
+                        if (err.Severity >= 11) continue; // errors handled by AseException catch
+                        var msg = err.Message;
+                        if (msg.StartsWith("Changed client character set") ||
+                            msg.StartsWith("Changed database context") ||
+                            msg.StartsWith("Changed language setting"))
+                            continue;
+                        output.AppendLine(msg);
+                    }
                 };
                 connection.Open();
 
@@ -102,6 +109,77 @@ namespace ibsCompiler.Database
             }
 
             return result;
+        }
+
+        public void OpenConnection(string database)
+        {
+            _batchOutput = new StringBuilder();
+            _persistentConn = new AseConnection(BuildConnectionString(database));
+            _persistentConn.InfoMessage += (sender, e) =>
+            {
+                foreach (AseError err in e.Errors)
+                {
+                    if (err.Severity >= 11) continue; // errors handled by AseException catch
+                    var msg = err.Message;
+                    if (msg.StartsWith("Changed client character set") ||
+                        msg.StartsWith("Changed database context") ||
+                        msg.StartsWith("Changed language setting"))
+                        continue;
+                    _batchOutput.AppendLine(msg);
+                }
+            };
+            _persistentConn.Open();
+        }
+
+        public ExecReturn ExecuteBatch(string batch, bool captureOutput = false, string outputFile = "")
+        {
+            var result = new ExecReturn { Returncode = true, Output = "" };
+            _batchOutput!.Clear();
+
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(batch))
+                {
+                    using var cmd = new AseCommand(batch, _persistentConn);
+                    cmd.CommandTimeout = 0;
+
+                    using var reader = cmd.ExecuteReader();
+                    do
+                    {
+                        if (reader.FieldCount > 0)
+                            FormatResultSet(reader, _batchOutput);
+                    } while (reader.NextResult());
+                }
+            }
+            catch (AseException ex)
+            {
+                foreach (AseError err in ex.Errors)
+                {
+                    _batchOutput.AppendLine($"Msg {err.MessageNumber}, Level {err.Severity}, State {err.State}");
+                    _batchOutput.AppendLine(err.Message);
+                }
+                result.Returncode = false;
+            }
+
+            result.Output = _batchOutput.ToString();
+
+            if (!captureOutput)
+            {
+                var target = !string.IsNullOrEmpty(outputFile) ? outputFile : ibs_compiler_common.DefaultOutFile;
+                if (!string.IsNullOrEmpty(target))
+                    ibs_compiler_common.WriteLineToDisk(target, result.Output);
+                else if (!string.IsNullOrEmpty(result.Output))
+                    Console.Write(result.Output);
+            }
+
+            return result;
+        }
+
+        public void CloseConnection()
+        {
+            _persistentConn?.Dispose();
+            _persistentConn = null;
+            _batchOutput = null;
         }
 
         public ExecReturn BulkCopy(string table, BcpDirection direction, string dataFile, string formatFile = "")
@@ -301,6 +379,10 @@ namespace ibsCompiler.Database
             output.AppendLine();
         }
 
-        public void Dispose() { }
+        public void Dispose()
+        {
+            _persistentConn?.Dispose();
+            _persistentConn = null;
+        }
     }
 }

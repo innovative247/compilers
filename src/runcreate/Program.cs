@@ -8,6 +8,7 @@ var arguments = args.ToList();
 var profileMgr = new ProfileManager();
 
 var cmdvars = ibs_compiler_common.runcreate_variables(arguments, profileMgr);
+cmdvars.CommandName = "runcreate";
 if (string.IsNullOrEmpty(cmdvars.Server))
 {
     Console.Error.WriteLine("Usage: runcreate <script> <server/profile> [-U user] [-P pass] [-e] [-O outfile | outfile]");

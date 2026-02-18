@@ -14,6 +14,15 @@ namespace ibsCompiler
     public class runsql_main
     {
         private static readonly Regex ExitRegex = new(@"^\s*(exit|quit)\s*$", RegexOptions.IgnoreCase);
+        private static readonly Regex GoRegex = new(@"^\s*go\s*$",
+            RegexOptions.IgnoreCase | RegexOptions.Multiline);
+
+        private static string[] SplitBatches(string sqlText)
+        {
+            return GoRegex.Split(sqlText)
+                .Where(b => !string.IsNullOrWhiteSpace(b))
+                .ToArray();
+        }
 
         public bool Run(CommandVariables cmdvars, ResolvedProfile profile, ISqlExecutor executor,
                         bool logFile = true, Options? existingOptions = null)
@@ -93,32 +102,74 @@ namespace ibsCompiler
                 }
                 else
                 {
-                    // Echo mode: print each line with line numbers before execution
-                    if (cmdvars.EchoInput)
+                    // Split SQL into GO-delimited batches and execute each one
+                    // on a single persistent connection (preserves USE database,
+                    // temp tables, session state, etc.)
+                    var batches = SplitBatches(sqlText);
+                    bool anyFailed = false;
+
+                    try
                     {
-                        var echoLines = sqlText.Split(new[] { Environment.NewLine, "\n" }, StringSplitOptions.None);
-                        for (int i = 0; i < echoLines.Length; i++)
+                        executor.OpenConnection(cmdvars.Database);
+
+                        for (int batchIndex = 0; batchIndex < batches.Length; batchIndex++)
                         {
-                            // Insert blank line between changelog and file content
-                            if (i == changelogLineCount && changelogLineCount > 0)
+                            var batch = batches[batchIndex];
+                            var trimmedBatch = batch.Trim('\r', '\n');
+
+                            // Echo mode: print batch lines with per-batch line numbers
+                            if (cmdvars.EchoInput)
                             {
+                                var batchLines = trimmedBatch.Split(new[] { Environment.NewLine, "\n" }, StringSplitOptions.None);
+                                for (int i = 0; i < batchLines.Length; i++)
+                                {
+                                    // Insert blank line between changelog and file content (first batch only)
+                                    if (batchIndex == 0 && i == changelogLineCount && changelogLineCount > 0)
+                                    {
+                                        if (!string.IsNullOrEmpty(cmdvars.OutFile))
+                                            ibs_compiler_common.WriteLineToDisk(cmdvars.OutFile, "");
+                                        else
+                                            Console.WriteLine();
+                                    }
+
+                                    var echoLine = $"{i + 1}> {batchLines[i]}";
+                                    if (!string.IsNullOrEmpty(cmdvars.OutFile))
+                                        ibs_compiler_common.WriteLineToDisk(cmdvars.OutFile, echoLine);
+                                    else
+                                        Console.WriteLine(echoLine);
+                                }
+
+                                // Echo the GO separator
+                                var goLine = $"{batchLines.Length + 1}> go";
                                 if (!string.IsNullOrEmpty(cmdvars.OutFile))
-                                    ibs_compiler_common.WriteLineToDisk(cmdvars.OutFile, "");
+                                    ibs_compiler_common.WriteLineToDisk(cmdvars.OutFile, goLine);
                                 else
-                                    Console.WriteLine();
+                                    Console.WriteLine(goLine);
                             }
 
-                            var echoLine = $"{i + 1}> {echoLines[i]}";
-                            if (!string.IsNullOrEmpty(cmdvars.OutFile))
-                                ibs_compiler_common.WriteLineToDisk(cmdvars.OutFile, echoLine);
+                            // Execute this batch on the persistent connection
+                            var result = executor.ExecuteBatch(batch, false, cmdvars.OutFile);
+                            if (result.Returncode)
+                            {
+                                ibs_compiler_common.WriteLine("(return status = 0)", cmdvars.OutFile);
+                            }
                             else
-                                Console.WriteLine(echoLine);
+                            {
+                                anyFailed = true;
+                            }
                         }
                     }
+                    catch (Exception ex)
+                    {
+                        ibs_compiler_common.WriteLine($"ERROR! {ex.Message}", cmdvars.OutFile);
+                        anyFailed = true;
+                    }
+                    finally
+                    {
+                        executor.CloseConnection();
+                    }
 
-                    // Execute via ADO.NET
-                    var result = executor.ExecuteSql(sqlText, cmdvars.Database, false, cmdvars.OutFile);
-                    if (!result.Returncode)
+                    if (anyFailed)
                     {
                         ibs_compiler_common.WriteLine("ERROR! Failed to Run.", cmdvars.OutFile);
                         returncode = false;

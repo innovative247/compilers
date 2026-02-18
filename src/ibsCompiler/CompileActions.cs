@@ -15,6 +15,17 @@ namespace ibsCompiler
             var myOptions = new Options(cmdvars, profile, true);
             if (!myOptions.GenerateOptionFiles()) return;
 
+            // Changelog entry
+            var chgDb = myOptions.ReplaceOptions("&dbpro&");
+            if (chgDb != "&dbpro&")
+            {
+                var chgLines = new List<string>();
+                foreach (var l in change_log.compileLines("ACTIONS", "updated actions"))
+                    chgLines.Add(myOptions.ReplaceOptions(l));
+                chgLines.Add("go");
+                executor.ExecuteSql(string.Join(Environment.NewLine, chgLines), chgDb, false, cmdvars.OutFile);
+            }
+
             ibs_compiler_common.WriteLine("Starting compile_actions...", cmdvars.OutFile);
             var actHeader = ibs_compiler_common.GetPath_Actions(cmdvars, profile);
             var actDetail = ibs_compiler_common.GetPath_ActionsDetail(profile);
