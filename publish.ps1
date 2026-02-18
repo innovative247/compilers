@@ -76,7 +76,7 @@ foreach ($rid in $runtimes) {
         $csproj = Join-Path $PSScriptRoot "src\$project\$project.csproj"
         Write-Host "  Publishing $project..." -NoNewline
 
-        dotnet publish $csproj -c Release -r $rid --no-self-contained `
+        dotnet publish $csproj -c Release -r $rid --self-contained `
             -o $outputDir --nologo -v quiet 2>&1 | Out-Null
 
         if ($LASTEXITCODE -eq 0) {
