@@ -435,12 +435,6 @@ namespace ibsCompiler
             {
                 profile.Company = "0";
                 profile.SqlSource = "";
-
-                Console.WriteLine();
-                PrintStep(7, "Default Database");
-                PrintDim("  Default database used when -D is not specified on the command line.");
-                Console.Write("  Default database: ");
-                profile.Database = Console.ReadLine()?.Trim() ?? "";
             }
             else
             {
@@ -577,20 +571,20 @@ namespace ibsCompiler
             PrintDim("  Press Enter to keep current value.");
             Console.WriteLine();
 
-            // Raw Mode first — drives what else is shown
-            PrintDim("  Raw mode skips SBN-specific preprocessing (options files, symlinks, changelog).");
-            var currentRaw = profile.RawMode ? "y" : "n";
-            Console.Write($"  Raw mode (y/N) [{currentRaw}]: ");
-            var val = Console.ReadLine()?.Trim().ToLower();
-            if (val == "y") profile.RawMode = true;
-            else if (val == "n") profile.RawMode = false;
-
             Console.Write($"  Aliases [{string.Join(", ", profile.Aliases ?? new List<string>())}] (enter 'clear' to remove): ");
             var aliasInput = Console.ReadLine()?.Trim();
             if (aliasInput?.ToLower() == "clear")
                 profile.Aliases = new List<string>();
             else if (!string.IsNullOrEmpty(aliasInput))
                 profile.Aliases = PromptAliases(name, profile.Aliases ?? new List<string>(), aliasInput);
+
+            // Raw Mode — drives what else is shown
+            PrintDim("  Raw mode skips SBN-specific preprocessing (options files, symlinks, changelog).");
+            var currentRaw = profile.RawMode ? "y" : "n";
+            Console.Write($"  Raw mode (y/N) [{currentRaw}]: ");
+            var val = Console.ReadLine()?.Trim().ToLower();
+            if (val == "y") profile.RawMode = true;
+            else if (val == "n") profile.RawMode = false;
 
             Console.Write($"  Platform [{profile.Platform}] (1=Sybase, 2=MSSQL): ");
             val = Console.ReadLine()?.Trim();
@@ -618,12 +612,6 @@ namespace ibsCompiler
             {
                 profile.Company = "0";
                 profile.SqlSource = "";
-
-                Console.WriteLine();
-                PrintDim("  Default database for raw mode (used when -D not specified).");
-                Console.Write($"  Database [{profile.Database}]: ");
-                val = Console.ReadLine()?.Trim();
-                if (!string.IsNullOrEmpty(val)) profile.Database = val;
             }
             else
             {
@@ -642,8 +630,6 @@ namespace ibsCompiler
                 }
                 else if (!string.IsNullOrEmpty(val))
                     profile.SqlSource = val;
-
-                profile.Database = "";
             }
 
             if (SaveSettings())

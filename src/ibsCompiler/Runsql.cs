@@ -13,15 +13,73 @@ namespace ibsCompiler
     /// </summary>
     public class runsql_main
     {
-        private static readonly Regex ExitRegex = new(@"^\s*(exit|quit)\s*$", RegexOptions.IgnoreCase);
+        private static readonly Regex ExitRegex = new(@"^\s*(exit|quit)\b", RegexOptions.IgnoreCase);
         private static readonly Regex GoRegex = new(@"^\s*go\s*$",
             RegexOptions.IgnoreCase | RegexOptions.Multiline);
 
         private static string[] SplitBatches(string sqlText)
         {
-            return GoRegex.Split(sqlText)
-                .Where(b => !string.IsNullOrWhiteSpace(b))
-                .ToArray();
+            var batches = new List<string>();
+            var current = new System.Text.StringBuilder();
+            bool inBlockComment = false;
+
+            using var reader = new StringReader(sqlText);
+            string? line;
+            while ((line = reader.ReadLine()) != null)
+            {
+                bool lineStartedInBlockComment = inBlockComment;
+                char inString = '\0'; // reset per-line; tracks ' or " delimiter
+
+                // Scan line to track /* */ block comment state.
+                // Ignores /* and */ that appear inside string literals or -- comments.
+                for (int i = 0; i < line.Length; i++)
+                {
+                    char c = line[i];
+                    char next = i + 1 < line.Length ? line[i + 1] : '\0';
+
+                    if (inBlockComment)
+                    {
+                        if (c == '*' && next == '/')
+                        {
+                            inBlockComment = false;
+                            i++;
+                        }
+                    }
+                    else if (inString != '\0')
+                    {
+                        if (c == inString)
+                        {
+                            if (next == inString) i++; // escaped quote ('')
+                            else inString = '\0';
+                        }
+                    }
+                    else
+                    {
+                        if (c == '/' && next == '*') { inBlockComment = true; i++; }
+                        else if (c == '-' && next == '-') break; // -- comment: skip rest of line
+                        else if (c == '\'' || c == '"') inString = c;
+                    }
+                }
+
+                // Treat as GO separator only when not inside a block comment
+                if (!lineStartedInBlockComment && GoRegex.IsMatch(line))
+                {
+                    var batch = current.ToString();
+                    if (!string.IsNullOrWhiteSpace(batch))
+                        batches.Add(batch);
+                    current.Clear();
+                }
+                else
+                {
+                    current.AppendLine(line);
+                }
+            }
+
+            var remaining = current.ToString();
+            if (!string.IsNullOrWhiteSpace(remaining))
+                batches.Add(remaining);
+
+            return batches.ToArray();
         }
 
         public bool Run(CommandVariables cmdvars, ResolvedProfile profile, ISqlExecutor executor,
@@ -88,6 +146,13 @@ namespace ibsCompiler
                     while ((line = source.ReadLine()) != null)
                     {
                         if (ExitRegex.IsMatch(line)) break;
+                        // Convert Sybase-style // line comments to MSSQL-compatible --
+                        if (profile.ServerType == SQLServerTypes.MSSQL)
+                        {
+                            int cs = line.Length - line.TrimStart().Length;
+                            if (cs < line.Length - 1 && line[cs] == '/' && line[cs + 1] == '/')
+                                line = line[..cs] + "--" + line[(cs + 2)..];
+                        }
                         sqlLines.Add(profile.RawMode ? line : myOptions!.ReplaceOptions(line, cmdvars.SeqFirst));
                     }
                 }
