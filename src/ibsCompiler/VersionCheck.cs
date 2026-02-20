@@ -244,7 +244,10 @@ namespace ibsCompiler
                     SetExecutable(installDir);
                 }
 
-                Console.WriteLine($"Updated to v{latestVersion}. Please re-run your command.");
+                var prev = Console.ForegroundColor;
+                Console.ForegroundColor = ConsoleColor.Green;
+                Console.WriteLine($"✓ Updated to v{latestVersion}.");
+                Console.ForegroundColor = prev;
             }
             finally
             {
