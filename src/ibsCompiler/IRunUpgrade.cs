@@ -22,6 +22,12 @@ namespace ibsCompiler
         {
             var originalCommand = cmdvars.Command;
 
+            if (profile.RawMode && existingOptions == null)
+            {
+                ibs_compiler_common.WriteLine("ERROR: i_run_upgrade requires option file processing and is not available in raw mode.", cmdvars.OutFile);
+                return false;
+            }
+
             // Build options
             Options myOptions;
             if (existingOptions == null)

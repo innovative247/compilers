@@ -15,6 +15,7 @@ if (string.IsNullOrEmpty(cmdvars.Server))
     return 1;
 }
 
+if (!profileMgr.ValidateProfile(cmdvars.Server)) return 1;
 var profile = profileMgr.Resolve(cmdvars);
 using var executor = SqlExecutorFactory.Create(profile);
 var upgrade = new i_run_upgrade_main();

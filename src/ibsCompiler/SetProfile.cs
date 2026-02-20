@@ -33,8 +33,8 @@ namespace ibsCompiler
 
             public static string GEAR     => _unicode ? "⚙"  : "[*]";
             public static string DATABASE => _unicode ? "🗄"  : "[DB]";
-            public static string ARROW    => _unicode ? "→"  : "->";
-            public static string BULLET   => _unicode ? "•"  : "*";
+            public static string ARROW    => _unicode ? "🛢"  : "->";
+            public static string BULLET   => _unicode ? "🔑" : "*";
             public static string FOLDER   => _unicode ? "📁" : "[D]";
             public static string WARNING  => _unicode ? "⚠"  : "[!]";
             public static string SUCCESS  => _unicode ? "✓"  : "[OK]";
@@ -135,8 +135,7 @@ namespace ibsCompiler
         private static void PrintField(string icon, string label, string value, ConsoleColor valueColor = ConsoleColor.White)
         {
             var prev = Console.ForegroundColor;
-            Console.Write($"  {icon}  ");
-            Console.Write($"{label,-13}");
+            Console.Write($"  {label,-13}");
             Console.ForegroundColor = valueColor;
             Console.WriteLine(value);
             Console.ForegroundColor = prev;
@@ -288,18 +287,21 @@ namespace ibsCompiler
             }
             Console.WriteLine();
 
-            PrintField(Icons.GEAR, "Company:", profile.Company ?? "unknown");
+            if (!profile.RawMode)
+                PrintField(Icons.GEAR, "Company:", profile.Company ?? "unknown");
             PrintField(Icons.DATABASE, "Platform:", profile.Platform ?? "unknown", ConsoleColor.Cyan);
             PrintField(Icons.ARROW, "Server:", $"{profile.Host}:{profile.EffectivePort}", ConsoleColor.Green);
             PrintField(Icons.BULLET, "Username:", profile.Username ?? "unknown");
 
-            var sqlSource = profile.SqlSource ?? "unknown";
-            var prev2 = Console.ForegroundColor;
-            Console.Write($"  {Icons.FOLDER} ");
-            Console.Write($"{"SQL Source:",-13}");
-            Console.ForegroundColor = ConsoleColor.Cyan;
-            Console.WriteLine(sqlSource);
-            Console.ForegroundColor = prev2;
+            if (!profile.RawMode)
+            {
+                var sqlSource = profile.SqlSource ?? "unknown";
+                var prev2 = Console.ForegroundColor;
+                Console.Write($"  {"SQL Source:",-13}");
+                Console.ForegroundColor = ConsoleColor.Cyan;
+                Console.WriteLine(sqlSource);
+                Console.ForegroundColor = prev2;
+            }
 
             if (profile.RawMode)
                 PrintField(Icons.WARNING, "Raw Mode:", "Yes", ConsoleColor.Yellow);
@@ -320,7 +322,7 @@ namespace ibsCompiler
 
             // 1. Profile Name
             PrintStep(1, "Profile Name");
-            PrintDim("  Use a short, memorable name like GONZO, PROD, or DEV.");
+            PrintDim("  Use a short, memorable name like GONZO, PROD, or SRM.");
             string name;
             while (true)
             {
@@ -331,7 +333,7 @@ namespace ibsCompiler
                     PrintWarning("Invalid name. Use alphanumeric characters and underscores only.");
                     continue;
                 }
-                if (_settings.Profiles.ContainsKey(name))
+                if (_settings.Profiles.Keys.Any(k => string.Equals(k, name, StringComparison.OrdinalIgnoreCase)))
                 {
                     PrintError($"Profile '{name}' already exists.");
                     continue;
@@ -345,13 +347,14 @@ namespace ibsCompiler
             PrintDim("  Aliases allow shortcuts for this profile (e.g., 'G' for 'GONZO').");
             profile.Aliases = PromptAliases(name, new List<string>());
 
-            // 3. Company
+            // 3. Raw Mode (drives what else is asked)
             Console.WriteLine();
-            PrintStep(3, "Company Number");
-            PrintDim("  The COMPANY number identifies your organization in the database.");
-            Console.Write("  Company [101]: ");
-            var company = Console.ReadLine()?.Trim();
-            profile.Company = string.IsNullOrEmpty(company) ? "101" : company;
+            PrintStep(3, "Raw Mode");
+            PrintDim("  Raw mode skips SBN-specific preprocessing (options files, changelog).");
+            PrintDim("  Use this for projects without the CSS/Setup/ directory structure.");
+            Console.Write("  Enable raw mode? [y/N]: ");
+            var raw = Console.ReadLine()?.Trim().ToUpper();
+            profile.RawMode = raw == "Y";
 
             // 4. Platform
             Console.WriteLine();
@@ -369,7 +372,7 @@ namespace ibsCompiler
                 Console.WriteLine("  Invalid choice. Please enter 1 or 2.");
             }
 
-            // 5. Host
+            // 5. Host + Port
             Console.WriteLine();
             PrintStep(5, "Server Connection");
             PrintDim("  Enter the hostname or IP address of your database server (do not include port).");
@@ -383,7 +386,6 @@ namespace ibsCompiler
             }
             profile.Host = host;
 
-            // 6. Port
             var defaultPort = profile.Platform == "MSSQL" ? "1433" : "5000";
             while (true)
             {
@@ -402,7 +404,7 @@ namespace ibsCompiler
                 PrintWarning("Port must be a number.");
             }
 
-            // 7. Credentials
+            // 6. Credentials
             Console.WriteLine();
             PrintStep(6, "Database Credentials");
             PrintDim("  Enter the username and password for the database server.");
@@ -427,58 +429,61 @@ namespace ibsCompiler
             }
             profile.Password = password;
 
-            // 8. SQL Source
-            Console.WriteLine();
-            PrintStep(7, "SQL Source Directory");
-            PrintDim("  The directory containing your SQL source files (CSS/, IBS/ folders).");
-            var cwd = Directory.GetCurrentDirectory();
-            PrintDim($"  Enter '.' to use current directory: {cwd}");
-            while (true)
-            {
-                Console.Write("\n  Path: ");
-                var sqlSource = Console.ReadLine()?.Trim();
-                if (string.IsNullOrEmpty(sqlSource))
-                {
-                    PrintWarning("SQL source path is required.");
-                    continue;
-                }
-                if (sqlSource == "." || sqlSource == "./" || sqlSource == ".\\")
-                {
-                    sqlSource = cwd;
-                    PrintSuccess($"Using: {sqlSource}");
-                }
-                else if (Directory.Exists(sqlSource))
-                {
-                    PrintSuccess($"Using: {sqlSource}");
-                }
-                else
-                {
-                    PrintWarning($"Path does not exist: {sqlSource}");
-                    Console.Write("  Use anyway? [y/n]: ");
-                    var useAnyway = Console.ReadLine()?.Trim().ToLower();
-                    if (useAnyway != "y") continue;
-                }
-                profile.SqlSource = sqlSource;
-                break;
-            }
-
-            // 9. Default Language
+            // 7+. Raw vs normal: different remaining fields
             profile.DefaultLanguage = "1";
-
-            // 10. Raw Mode
-            Console.WriteLine();
-            PrintStep(8, "Raw Mode (Optional)");
-            PrintDim("  Raw mode skips SBN-specific preprocessing (options files, symlinks, changelog).");
-            PrintDim("  Use this for projects without the CSS/Setup/ directory structure.");
-            Console.Write("  Enable raw mode? [y/N]: ");
-            var raw = Console.ReadLine()?.Trim().ToUpper();
-            profile.RawMode = raw == "Y";
             if (profile.RawMode)
             {
+                profile.Company = "0";
+                profile.SqlSource = "";
+
                 Console.WriteLine();
-                PrintDim("  Default database for raw mode (used when -D not specified).");
+                PrintStep(7, "Default Database");
+                PrintDim("  Default database used when -D is not specified on the command line.");
                 Console.Write("  Default database: ");
                 profile.Database = Console.ReadLine()?.Trim() ?? "";
+            }
+            else
+            {
+                Console.WriteLine();
+                PrintStep(7, "Company Number");
+                PrintDim("  The COMPANY number identifies your organization in the database.");
+                Console.Write("  Company [101]: ");
+                var company = Console.ReadLine()?.Trim();
+                profile.Company = string.IsNullOrEmpty(company) ? "101" : company;
+
+                Console.WriteLine();
+                PrintStep(8, "SQL Source Directory");
+                PrintDim("  The directory containing your SQL source files (CSS/, IBS/ folders).");
+                var cwd = Directory.GetCurrentDirectory();
+                PrintDim($"  Enter '.' to use current directory: {cwd}");
+                while (true)
+                {
+                    Console.Write("\n  Path: ");
+                    var sqlSource = Console.ReadLine()?.Trim();
+                    if (string.IsNullOrEmpty(sqlSource))
+                    {
+                        PrintWarning("SQL source path is required.");
+                        continue;
+                    }
+                    if (sqlSource == "." || sqlSource == "./" || sqlSource == ".\\")
+                    {
+                        sqlSource = cwd;
+                        PrintSuccess($"Using: {sqlSource}");
+                    }
+                    else if (Directory.Exists(sqlSource))
+                    {
+                        PrintSuccess($"Using: {sqlSource}");
+                    }
+                    else
+                    {
+                        PrintWarning($"Path does not exist: {sqlSource}");
+                        Console.Write("  Use anyway? [y/n]: ");
+                        var useAnyway = Console.ReadLine()?.Trim().ToLower();
+                        if (useAnyway != "y") continue;
+                    }
+                    profile.SqlSource = sqlSource;
+                    break;
+                }
             }
 
             // Save
@@ -572,16 +577,20 @@ namespace ibsCompiler
             PrintDim("  Press Enter to keep current value.");
             Console.WriteLine();
 
+            // Raw Mode first — drives what else is shown
+            PrintDim("  Raw mode skips SBN-specific preprocessing (options files, symlinks, changelog).");
+            var currentRaw = profile.RawMode ? "y" : "n";
+            Console.Write($"  Raw mode (y/N) [{currentRaw}]: ");
+            var val = Console.ReadLine()?.Trim().ToLower();
+            if (val == "y") profile.RawMode = true;
+            else if (val == "n") profile.RawMode = false;
+
             Console.Write($"  Aliases [{string.Join(", ", profile.Aliases ?? new List<string>())}] (enter 'clear' to remove): ");
             var aliasInput = Console.ReadLine()?.Trim();
             if (aliasInput?.ToLower() == "clear")
                 profile.Aliases = new List<string>();
             else if (!string.IsNullOrEmpty(aliasInput))
                 profile.Aliases = PromptAliases(name, profile.Aliases ?? new List<string>(), aliasInput);
-
-            Console.Write($"  Company [{profile.Company}]: ");
-            var val = Console.ReadLine()?.Trim();
-            if (!string.IsNullOrEmpty(val)) profile.Company = val;
 
             Console.Write($"  Platform [{profile.Platform}] (1=Sybase, 2=MSSQL): ");
             val = Console.ReadLine()?.Trim();
@@ -605,30 +614,11 @@ namespace ibsCompiler
             Console.WriteLine();
             if (!string.IsNullOrEmpty(val)) profile.Password = val;
 
-            Console.Write($"  SQL Source [{profile.SqlSource}]: ");
-            PrintDim($"    (Enter '.' for current directory: {Directory.GetCurrentDirectory()})");
-            Console.Write("    New value: ");
-            val = Console.ReadLine()?.Trim();
-            if (val == "." || val == "./" || val == ".\\")
-            {
-                profile.SqlSource = Directory.GetCurrentDirectory();
-                Console.WriteLine($"    Using: {profile.SqlSource}");
-            }
-            else if (!string.IsNullOrEmpty(val))
-                profile.SqlSource = val;
-
-            // Raw Mode
-            Console.WriteLine();
-            PrintDim("  Raw mode skips SBN-specific preprocessing (options files, symlinks, changelog).");
-            var currentRaw = profile.RawMode ? "y" : "n";
-            Console.Write($"  Raw mode (y/N) [{currentRaw}]: ");
-            val = Console.ReadLine()?.Trim().ToLower();
-            if (val == "y") profile.RawMode = true;
-            else if (val == "n") profile.RawMode = false;
-
-            // Database (only if raw mode)
             if (profile.RawMode)
             {
+                profile.Company = "0";
+                profile.SqlSource = "";
+
                 Console.WriteLine();
                 PrintDim("  Default database for raw mode (used when -D not specified).");
                 Console.Write($"  Database [{profile.Database}]: ");
@@ -637,6 +627,22 @@ namespace ibsCompiler
             }
             else
             {
+                Console.Write($"  Company [{profile.Company}]: ");
+                val = Console.ReadLine()?.Trim();
+                if (!string.IsNullOrEmpty(val)) profile.Company = val;
+
+                Console.Write($"  SQL Source [{profile.SqlSource}]: ");
+                PrintDim($"    (Enter '.' for current directory: {Directory.GetCurrentDirectory()})");
+                Console.Write("    New value: ");
+                val = Console.ReadLine()?.Trim();
+                if (val == "." || val == "./" || val == ".\\")
+                {
+                    profile.SqlSource = Directory.GetCurrentDirectory();
+                    Console.WriteLine($"    Using: {profile.SqlSource}");
+                }
+                else if (!string.IsNullOrEmpty(val))
+                    profile.SqlSource = val;
+
                 profile.Database = "";
             }
 
@@ -658,7 +664,7 @@ namespace ibsCompiler
                 Console.WriteLine("Invalid name.");
                 return;
             }
-            if (_settings.Profiles.ContainsKey(newName))
+            if (_settings.Profiles.Keys.Any(k => string.Equals(k, newName, StringComparison.OrdinalIgnoreCase)))
             {
                 PrintError($"Profile '{newName}' already exists.");
                 return;

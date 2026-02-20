@@ -18,6 +18,7 @@ if (string.IsNullOrEmpty(cmdvars.Server))
 if (!string.IsNullOrEmpty(cmdvars.OutFile))
     ibs_compiler_common.DefaultOutFile = cmdvars.OutFile;
 
+if (!profileMgr.ValidateProfile(cmdvars.Server)) return 1;
 var profile = profileMgr.Resolve(cmdvars);
 using var executor = SqlExecutorFactory.Create(profile);
 var runcreate = new runcreate_main();

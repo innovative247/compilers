@@ -177,6 +177,20 @@ namespace ibsCompiler.Configuration
         {
             return _settings.Profiles.Keys.ToList();
         }
+
+        /// <summary>
+        /// Returns false (and prints an error) if profiles are configured but <paramref name="nameOrAlias"/> doesn't match any of them.
+        /// Returns true when: no profiles are configured (legacy env-var mode), or the profile is found.
+        /// </summary>
+        public bool ValidateProfile(string nameOrAlias)
+        {
+            if (_settings.Profiles.Count == 0) return true;
+            if (string.IsNullOrEmpty(nameOrAlias)) return true;
+            if (ResolveProfile(nameOrAlias) != null) return true;
+
+            Console.Error.WriteLine($"Profile '{nameOrAlias}' not found. Run set_profile to add it.");
+            return false;
+        }
     }
 
     /// <summary>

@@ -13,18 +13,18 @@ namespace ibsCompiler
                         Options? existingOptions = null)
         {
             // Build options once at top level; reuse for nested calls
-            Options myOptions;
+            Options? myOptions = null;
             if (existingOptions != null)
             {
                 myOptions = existingOptions;
             }
-            else
+            else if (!profile.RawMode)
             {
                 myOptions = new Options(cmdvars, profile);
                 if (!myOptions.GenerateOptionFiles()) return false;
 
                 // Execute changelog once at top level
-                if (cmdvars.ChangeLog && !profile.RawMode)
+                if (cmdvars.ChangeLog)
                 {
                     var chgDb = cmdvars.Database;
                     if (string.IsNullOrEmpty(chgDb))
@@ -64,7 +64,7 @@ namespace ibsCompiler
                 var newVars = cmdvars;
 
                 // Check if line is based on an option
-                if (line.StartsWith("&"))
+                if (myOptions != null && line.StartsWith("&"))
                 {
                     int j = line.IndexOf("&", 1);
                     var optValue = line.Substring(0, j + 1);
@@ -132,7 +132,7 @@ namespace ibsCompiler
                     var uniqDb = new List<string>();
                     foreach (var mydb in databases)
                     {
-                        var resolvedDb = myOptions.ReplaceOptions(mydb);
+                        var resolvedDb = myOptions != null ? myOptions.ReplaceOptions(mydb) : mydb;
                         if (mydb != "" && !uniqDb.Contains(resolvedDb))
                         {
                             uniqDb.Add(resolvedDb);
@@ -161,23 +161,23 @@ namespace ibsCompiler
                 }
                 else if (strType == "import_options")
                 {
-                    compile_options_main.Run(cmdvars, profile, executor);
+                    if (!profile.RawMode) compile_options_main.Run(cmdvars, profile, executor);
                 }
                 else if (strType == "create_tbl_locations")
                 {
-                    compile_table_locations_main.Run(newVars, profile, executor);
+                    if (!profile.RawMode) compile_table_locations_main.Run(newVars, profile, executor);
                 }
                 else if (strType == "install_msg")
                 {
-                    compile_msg_main.Run(newVars, profile, executor, batch: true);
+                    if (!profile.RawMode) compile_msg_main.Run(newVars, profile, executor, batch: true);
                 }
                 else if (strType == "compile_actions")
                 {
-                    compile_actions_main.Run(cmdvars, profile, executor);
+                    if (!profile.RawMode) compile_actions_main.Run(cmdvars, profile, executor);
                 }
                 else if (strType == "install_required_fields")
                 {
-                    compile_required_fields_main.Run(cmdvars, profile, executor);
+                    if (!profile.RawMode) compile_required_fields_main.Run(cmdvars, profile, executor);
                 }
             }
 
