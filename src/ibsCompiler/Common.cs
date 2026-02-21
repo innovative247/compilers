@@ -12,6 +12,7 @@ namespace ibsCompiler
     {
         public static bool OutputToStdErr { get; set; } = false;
         public static string DefaultOutFile { get; set; } = "";
+        public static string DefaultErrFile { get; set; } = "";
 
         #region Console output
         public static void WriteLine(string text, string outputFile = "")
@@ -28,9 +29,10 @@ namespace ibsCompiler
         public static void WriteLineToDisk(string fileName, string line)
         {
             if (string.IsNullOrWhiteSpace(fileName)) return;
+            var normalized = line.Replace("\r\n", "\n").Replace("\r", "\n").TrimEnd('\n');
             using var fs = new FileStream(fileName, FileMode.Append, FileAccess.Write, FileShare.ReadWrite);
-            using var writer = new StreamWriter(fs);
-            writer.WriteLine(line);
+            using var writer = new StreamWriter(fs) { NewLine = "\n" };
+            writer.WriteLine(normalized);
         }
 
         public static bool ConsoleYesNo(string question)
@@ -298,12 +300,15 @@ namespace ibsCompiler
                 if (arguments.Count >= 3 && string.IsNullOrEmpty(myargs.OutFile))
                     myargs.OutFile = arguments[2];
 
-                // Resolve outfile to full path
+                // Resolve outfile to full path; split into .out and .err
                 if (!string.IsNullOrEmpty(myargs.OutFile))
                 {
                     if (!Path.IsPathRooted(myargs.OutFile))
                         myargs.OutFile = Path.Combine(Environment.CurrentDirectory, myargs.OutFile);
+                    myargs.ErrFile = myargs.OutFile + ".err";
+                    myargs.OutFile = myargs.OutFile + ".out";
                     try { File.Delete(myargs.OutFile); } catch { }
+                    try { File.Delete(myargs.ErrFile); } catch { }
                 }
             }
             return myargs;
@@ -366,6 +371,7 @@ namespace ibsCompiler
             args.User = FindAndRemove("-U", ref arguments);
             args.Pass = FindAndRemove("-P", ref arguments);
             args.OutFile = FindAndRemove("-O", ref arguments);
+            args.ErrFile = "";
             args.EchoInput = FindAndRemove_Flag("-E", ref arguments);
             args.SeqFirst = FindAndRemove_Int("-F", ref arguments);
             args.SeqLast = FindAndRemove_Int("-L", ref arguments);

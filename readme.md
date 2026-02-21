@@ -87,7 +87,7 @@ Having trouble with your development environment (terminal, Node.js, Git, SVN, W
 | `set_profile` | | Interactive profile configuration wizard |
 | `isqlline` | | Execute a single SQL command |
 | `runsql` | | Execute SQL scripts with placeholder resolution and sequences |
-| `runcreate` | | Orchestrate multi-file database builds |
+| `runcreate` | | Orchestrate multi-file database builds (supports `-bg` to run in background) |
 | `i_run_upgrade` | | Execute database upgrade scripts |
 | `set_options` | `eopt` | Edit and compile database options |
 | `set_table_locations` | `eloc` | Edit and compile table locations |
@@ -99,6 +99,7 @@ Having trouble with your development environment (terminal, Node.js, Git, SVN, W
 | `iplan` | | Interactive plan viewer |
 | `iplanext` | | Extended plan viewer |
 | `iwho` | | Show connected users |
+| `iwatch` | | Follow a log file live (`tail -f` on Linux/macOS, `Get-Content -Wait` on Windows) |
 
 ### Common Subcommands
 
@@ -109,6 +110,21 @@ Every command supports these subcommands:
 | `version` | Print version and exit |
 | `update` / `install` | Download and install latest release |
 | `configure` | Show configuration status, add to PATH |
+
+### Background Builds + Live Log (runcreate + iwatch)
+
+Run a database build in the background and watch the log live in the same terminal session:
+
+```bash
+runcreate create_all G gonzo.log -bg    # launches in background, prints PID
+iwatch gonzo.log.out                    # follows the log live; waits if file not yet created
+```
+
+When a log file is specified, `runcreate` automatically creates two files:
+- `gonzo.log.out` — all output (every script start, result, and elapsed time)
+- `gonzo.log.err` — only the sections for scripts that failed (quick failure summary)
+
+`iwatch` waits up to 5 seconds for the file to appear, then tails it until the process exits. On Windows it uses `Get-Content -Wait`; on Linux/macOS it uses `tail -f`.
 
 ---
 

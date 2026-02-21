@@ -17,6 +17,7 @@ $projects = @(
     'isqlline'
     'set_profile'
     'iwho'
+    'iwatch'
     'iplan'
     'iplanext'
     'runcreate'
@@ -137,32 +138,33 @@ if (Test-Path $settingsExample) {
     }
 }
 
-# Windows zip
+# Windows zip (exclude settings.json — never overwrite user credentials on update)
 $winDir = Join-Path $binDir "win-x64"
 if (Test-Path $winDir) {
     $zipPath = Join-Path $binDir "compilers-net8-win-x64.zip"
     if (Test-Path $zipPath) { Remove-Item $zipPath }
-    Compress-Archive -Path "$winDir\*" -DestinationPath $zipPath
+    $filesToZip = Get-ChildItem -Path $winDir | Where-Object { $_.Name -ne "settings.json" }
+    Compress-Archive -Path ($filesToZip.FullName) -DestinationPath $zipPath
     $sizeMB = [math]::Round((Get-Item $zipPath).Length / 1MB, 1)
     Write-Host "  Created: compilers-net8-win-x64.zip ($sizeMB MB)" -ForegroundColor Green
 }
 
-# Linux tar.gz
+# Linux tar.gz (exclude settings.json)
 $linuxDir = Join-Path $binDir "linux-x64"
 if (Test-Path $linuxDir) {
     $tarPath = Join-Path $binDir "compilers-net8-linux-x64.tar.gz"
     if (Test-Path $tarPath) { Remove-Item $tarPath }
-    tar -czf $tarPath -C $linuxDir .
+    tar -czf $tarPath --exclude='./settings.json' -C $linuxDir .
     $sizeMB = [math]::Round((Get-Item $tarPath).Length / 1MB, 1)
     Write-Host "  Created: compilers-net8-linux-x64.tar.gz ($sizeMB MB)" -ForegroundColor Green
 }
 
-# macOS tar.gz
+# macOS tar.gz (exclude settings.json)
 $osxDir = Join-Path $binDir "osx-x64"
 if (Test-Path $osxDir) {
     $tarPath = Join-Path $binDir "compilers-net8-osx-x64.tar.gz"
     if (Test-Path $tarPath) { Remove-Item $tarPath }
-    tar -czf $tarPath -C $osxDir .
+    tar -czf $tarPath --exclude='./settings.json' -C $osxDir .
     $sizeMB = [math]::Round((Get-Item $tarPath).Length / 1MB, 1)
     Write-Host "  Created: compilers-net8-osx-x64.tar.gz ($sizeMB MB)" -ForegroundColor Green
 }

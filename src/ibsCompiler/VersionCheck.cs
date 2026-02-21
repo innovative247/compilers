@@ -272,6 +272,8 @@ namespace ibsCompiler
             foreach (var entry in archive.Entries)
             {
                 if (string.IsNullOrEmpty(entry.Name)) continue;
+                if (entry.Name == "settings.json") continue; // Never overwrite user credentials
+
                 var destPath = Path.Combine(destDir, entry.Name);
 
                 // On Windows, rename running exe to .old before overwriting
@@ -291,7 +293,7 @@ namespace ibsCompiler
             var psi = new System.Diagnostics.ProcessStartInfo
             {
                 FileName = "tar",
-                Arguments = $"-xzf \"{tarGzPath}\" -C \"{destDir}\"",
+                Arguments = $"-xzf \"{tarGzPath}\" --exclude=./settings.json -C \"{destDir}\"",
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true

@@ -66,6 +66,7 @@ namespace ibsCompiler
         }
         public string Upgrade_no;
         public string OutFile;
+        public string ErrFile;
         public bool EchoInput;
         public int SeqFirst;
         public int SeqLast;

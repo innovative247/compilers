@@ -69,6 +69,14 @@ namespace ibsCompiler
                         batches.Add(batch);
                     current.Clear();
                 }
+                else if (!lineStartedInBlockComment && ExitRegex.IsMatch(line))
+                {
+                    // exit/quit: flush current batch and stop — same effect as go + end of file
+                    var batch = current.ToString();
+                    if (!string.IsNullOrWhiteSpace(batch))
+                        batches.Add(batch);
+                    break;
+                }
                 else
                 {
                     current.AppendLine(line);
@@ -120,10 +128,13 @@ namespace ibsCompiler
             // Sequence loop
             while (cmdvars.SeqFirst <= cmdvars.SeqLast)
             {
+                var runStart = DateTime.Now;
+                string runningMsg;
                 if (cmdvars.SeqLast < 1)
-                    ibs_compiler_common.WriteLine($"Running: {cmdvars.Command} on {cmdvars.ServerNameOnly}.{cmdvars.Database}", cmdvars.OutFile);
+                    runningMsg = $"Running: {cmdvars.Command} on {cmdvars.ServerNameOnly}.{cmdvars.Database}";
                 else
-                    ibs_compiler_common.WriteLine($"Running {cmdvars.SeqFirst} of {cmdvars.SeqLast}: {cmdvars.Command} on {cmdvars.ServerNameOnly}.{cmdvars.Database}", cmdvars.OutFile);
+                    runningMsg = $"Running {cmdvars.SeqFirst} of {cmdvars.SeqLast}: {cmdvars.Command} on {cmdvars.ServerNameOnly}.{cmdvars.Database}";
+                ibs_compiler_common.WriteLine(runningMsg, cmdvars.OutFile);
 
                 // Build SQL text in memory
                 var sqlLines = new List<string>();
@@ -145,7 +156,12 @@ namespace ibsCompiler
                     string? line;
                     while ((line = source.ReadLine()) != null)
                     {
-                        if (ExitRegex.IsMatch(line)) break;
+                        if (ExitRegex.IsMatch(line))
+                        {
+                            // Treat exit as an implicit go — flush accumulated content as a batch
+                            sqlLines.Add("go");
+                            break;
+                        }
                         // Convert Sybase-style // line comments to MSSQL-compatible --
                         if (profile.ServerType == SQLServerTypes.MSSQL)
                         {
@@ -172,6 +188,7 @@ namespace ibsCompiler
                     // temp tables, session state, etc.)
                     var batches = SplitBatches(sqlText);
                     bool anyFailed = false;
+                    var errorOutput = new System.Text.StringBuilder();
 
                     try
                     {
@@ -221,6 +238,8 @@ namespace ibsCompiler
                             else
                             {
                                 anyFailed = true;
+                                if (!string.IsNullOrWhiteSpace(result.Output))
+                                    errorOutput.AppendLine(result.Output.TrimEnd('\r', '\n'));
                             }
                         }
                     }
@@ -236,7 +255,15 @@ namespace ibsCompiler
 
                     if (anyFailed)
                     {
-                        ibs_compiler_common.WriteLine("ERROR! Failed to Run.", cmdvars.OutFile);
+                        if (!string.IsNullOrEmpty(cmdvars.ErrFile))
+                        {
+                            var runElapsed = DateTime.Now - runStart;
+                            ibs_compiler_common.WriteLineToDisk(cmdvars.ErrFile, runningMsg);
+                            if (errorOutput.Length > 0)
+                                ibs_compiler_common.WriteLineToDisk(cmdvars.ErrFile, errorOutput.ToString());
+                            ibs_compiler_common.WriteLineToDisk(cmdvars.ErrFile, $"Elapsed: {runElapsed:hh\\:mm\\:ss}");
+                            ibs_compiler_common.WriteLineToDisk(cmdvars.ErrFile, "");
+                        }
                         returncode = false;
                     }
                 }

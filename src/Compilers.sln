@@ -35,6 +35,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "iplanext", "iplanext\iplane
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "iwho", "iwho\iwho.csproj", "{2773FB31-3B79-483C-B61D-E9E057766021}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "iwatch", "iwatch\iwatch.csproj", "{A3B4C5D6-E7F8-9012-ABCD-EF0123456789}"
+EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "extract_msg", "extract_msg\extract_msg.csproj", "{FF219BEB-865B-4B5C-ABA5-0F96BCB19387}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "set_actions", "set_actions\set_actions.csproj", "{4DBEEC8E-22E6-47AF-948B-80C3E341426F}"
@@ -321,6 +323,18 @@ Global
 		{23152B13-FD79-4E7A-A069-1EA4B76C6ACB}.Release|x64.Build.0 = Release|Any CPU
 		{23152B13-FD79-4E7A-A069-1EA4B76C6ACB}.Release|x86.ActiveCfg = Release|Any CPU
 		{23152B13-FD79-4E7A-A069-1EA4B76C6ACB}.Release|x86.Build.0 = Release|Any CPU
+		{A3B4C5D6-E7F8-9012-ABCD-EF0123456789}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A3B4C5D6-E7F8-9012-ABCD-EF0123456789}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A3B4C5D6-E7F8-9012-ABCD-EF0123456789}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{A3B4C5D6-E7F8-9012-ABCD-EF0123456789}.Debug|x64.Build.0 = Debug|Any CPU
+		{A3B4C5D6-E7F8-9012-ABCD-EF0123456789}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{A3B4C5D6-E7F8-9012-ABCD-EF0123456789}.Debug|x86.Build.0 = Debug|Any CPU
+		{A3B4C5D6-E7F8-9012-ABCD-EF0123456789}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A3B4C5D6-E7F8-9012-ABCD-EF0123456789}.Release|Any CPU.Build.0 = Release|Any CPU
+		{A3B4C5D6-E7F8-9012-ABCD-EF0123456789}.Release|x64.ActiveCfg = Release|Any CPU
+		{A3B4C5D6-E7F8-9012-ABCD-EF0123456789}.Release|x64.Build.0 = Release|Any CPU
+		{A3B4C5D6-E7F8-9012-ABCD-EF0123456789}.Release|x86.ActiveCfg = Release|Any CPU
+		{A3B4C5D6-E7F8-9012-ABCD-EF0123456789}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

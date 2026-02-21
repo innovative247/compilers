@@ -111,7 +111,7 @@ if (-not $skipPythonCheck -and $pythonInstalled) {
             'set_table_locations', 'eloc', 'create_tbl_locations', 'set_options', 'eopt',
             'import_options', 'set_messages', 'compile_msg', 'install_msg', 'extract_msg',
             'set_required_fields', 'ereq', 'install_required_fields', 'i_run_upgrade',
-            'runcreate', 'transfer_data', 'iplan', 'iplanext', 'iwho'
+            'runcreate', 'transfer_data', 'iplan', 'iplanext', 'iwho', 'iwatch'
         )
 
         foreach ($d in $pythonScriptsDirs) {

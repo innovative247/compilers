@@ -121,12 +121,12 @@ namespace ibsCompiler.Database
 
             result.Output = output.ToString();
 
-            if (!captureOutput)
+            if (!captureOutput && !string.IsNullOrWhiteSpace(result.Output))
             {
                 var target = !string.IsNullOrEmpty(outputFile) ? outputFile : ibs_compiler_common.DefaultOutFile;
                 if (!string.IsNullOrEmpty(target))
                     ibs_compiler_common.WriteLineToDisk(target, result.Output);
-                else if (!string.IsNullOrEmpty(result.Output))
+                else
                     Console.Write(result.Output);
             }
 
@@ -188,12 +188,12 @@ namespace ibsCompiler.Database
 
             result.Output = _batchOutput.ToString();
 
-            if (!captureOutput)
+            if (!captureOutput && !string.IsNullOrWhiteSpace(result.Output))
             {
                 var target = !string.IsNullOrEmpty(outputFile) ? outputFile : ibs_compiler_common.DefaultOutFile;
                 if (!string.IsNullOrEmpty(target))
                     ibs_compiler_common.WriteLineToDisk(target, result.Output);
-                else if (!string.IsNullOrEmpty(result.Output))
+                else
                     Console.Write(result.Output);
             }
 

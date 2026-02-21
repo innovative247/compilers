@@ -51,6 +51,22 @@ namespace ibsCompiler
 
             var scriptName = cmdvars.Command;
             ibs_compiler_common.WriteLine(scriptName + " started", cmdvars.OutFile);
+
+            // Verify connection before processing - fail fast instead of logging errors for every line
+            try
+            {
+                var testResult = executor.ExecuteSql("SELECT 1", "master", captureOutput: true);
+                if (!testResult.Returncode)
+                {
+                    ibs_compiler_common.WriteLine("ERROR: Connection failed. " + testResult.Output?.Trim(), cmdvars.OutFile);
+                    return false;
+                }
+            }
+            catch (Exception ex)
+            {
+                ibs_compiler_common.WriteLine("ERROR: Connection failed. " + ex.Message, cmdvars.OutFile);
+                return false;
+            }
             var startTime = DateTime.Now;
 
             using var sourceFile = new StreamReader(cmdvars.Command);

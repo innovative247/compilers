@@ -17,11 +17,29 @@ namespace ibsCompiler
         private static SettingsFile _settings = new();
         private static string _settingsPath = "";
 
+        private static readonly HashSet<string> ReservedNames = new(StringComparer.OrdinalIgnoreCase)
+            { "VERSION", "UPDATE", "INSTALL", "CONFIGURE", "V" };
+
         public static int Run(string[] args)
         {
             try { Console.OutputEncoding = System.Text.Encoding.UTF8; } catch { }
 
             LoadSettings();
+
+            // Profile shortcut: set_profile GONZO  → open GONZO directly
+            //                   set_profile NEWNAME → open new profile wizard with name pre-filled
+            // (VersionCheck already intercepted: version, v, update, install, configure)
+            if (args.Length > 0)
+            {
+                var arg = args[0].ToUpperInvariant();
+                var match = FindProfile(arg);
+                if (match != null)
+                    ExistingProfileMenu(preselected: arg);
+                else if (Regex.IsMatch(arg, @"^[A-Z0-9_]+$"))
+                    CreateProfile(prefilledName: arg);
+                return 0;
+            }
+
             MainMenu();
             return 0;
         }
@@ -309,7 +327,7 @@ namespace ibsCompiler
         #endregion
 
         #region Create Profile
-        private static void CreateProfile()
+        private static void CreateProfile(string? prefilledName = null)
         {
             Console.WriteLine();
             PrintSubheader("Create New Profile");
@@ -324,21 +342,34 @@ namespace ibsCompiler
             PrintStep(1, "Profile Name");
             PrintDim("  Use a short, memorable name like GONZO, PROD, or SRM.");
             string name;
-            while (true)
+            if (prefilledName != null)
             {
-                Console.Write("  Profile name: ");
-                name = Console.ReadLine()?.Trim().ToUpper() ?? "";
-                if (string.IsNullOrEmpty(name) || !Regex.IsMatch(name, @"^[A-Z0-9_]+$"))
+                name = prefilledName;
+                Console.WriteLine($"  Profile name: {name}");
+            }
+            else
+            {
+                while (true)
                 {
-                    PrintWarning("Invalid name. Use alphanumeric characters and underscores only.");
-                    continue;
+                    Console.Write("  Profile name: ");
+                    name = Console.ReadLine()?.Trim().ToUpper() ?? "";
+                    if (string.IsNullOrEmpty(name) || !Regex.IsMatch(name, @"^[A-Z0-9_]+$"))
+                    {
+                        PrintWarning("Invalid name. Use alphanumeric characters and underscores only.");
+                        continue;
+                    }
+                    if (ReservedNames.Contains(name))
+                    {
+                        PrintError($"'{name}' is a reserved command name and cannot be used as a profile name.");
+                        continue;
+                    }
+                    if (_settings.Profiles.Keys.Any(k => string.Equals(k, name, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        PrintError($"Profile '{name}' already exists.");
+                        continue;
+                    }
+                    break;
                 }
-                if (_settings.Profiles.Keys.Any(k => string.Equals(k, name, StringComparison.OrdinalIgnoreCase)))
-                {
-                    PrintError($"Profile '{name}' already exists.");
-                    continue;
-                }
-                break;
             }
 
             // 2. Aliases
@@ -498,7 +529,7 @@ namespace ibsCompiler
         #endregion
 
         #region Existing Profile Menu
-        private static void ExistingProfileMenu()
+        private static void ExistingProfileMenu(string? preselected = null)
         {
             if (_settings.Profiles.Count == 0)
             {
@@ -506,11 +537,18 @@ namespace ibsCompiler
                 return;
             }
 
-            ListProfiles();
-
-            Console.Write("Enter profile name or alias (leave blank to cancel): ");
-            var input = Console.ReadLine()?.Trim().ToUpper();
-            if (string.IsNullOrEmpty(input)) return;
+            string? input;
+            if (preselected != null)
+            {
+                input = preselected;
+            }
+            else
+            {
+                ListProfiles();
+                Console.Write("Enter profile name or alias (leave blank to cancel): ");
+                input = Console.ReadLine()?.Trim().ToUpper();
+                if (string.IsNullOrEmpty(input)) return;
+            }
 
             var match = FindProfile(input);
             if (match == null)
@@ -788,18 +826,36 @@ namespace ibsCompiler
                 using var executor = SqlExecutorFactory.Create(resolved);
                 var result = executor.ExecuteSql("SELECT 1", "master", captureOutput: true);
                 if (result.Returncode)
-                    PrintSuccess("Connection successful!");
-                else
                 {
-                    PrintError("Connection failed.");
-                    if (!string.IsNullOrEmpty(result.Output))
-                        Console.WriteLine(result.Output);
+                    PrintSuccess("Connection successful!");
+                    return;
                 }
+
+                PrintError("Connection failed.");
+                if (!string.IsNullOrEmpty(result.Output))
+                    Console.WriteLine(result.Output);
             }
             catch (Exception ex)
             {
                 PrintError($"Connection failed: {ex.Message}");
             }
+
+            // Offer to update credentials on failure
+            Console.Write("\nUpdate credentials? [y/N]: ");
+            var retry = Console.ReadLine()?.Trim().ToUpper();
+            if (retry != "Y") return;
+
+            Console.Write($"  Username [{profile.Username}]: ");
+            var newUser = Console.ReadLine()?.Trim();
+            if (!string.IsNullOrEmpty(newUser)) profile.Username = newUser;
+
+            Console.Write("  Password [****]: ");
+            var newPass = ReadPassword();
+            Console.WriteLine();
+            if (!string.IsNullOrEmpty(newPass)) profile.Password = newPass;
+
+            if (SaveSettings())
+                TestConnection(profile);
         }
 
         private static void TestOptions(string profileName, ProfileData profile)
@@ -841,6 +897,50 @@ namespace ibsCompiler
                 PrintSuccess($"  options.{company}.{profileName} found ({CountLines(optProfile)} lines)");
             else
                 PrintDim($"  options.{company}.{profileName} not found (optional)");
+
+            // Prompt to resolve a placeholder
+            Console.WriteLine();
+            Console.Write("  Enter option to resolve [&users&]: ");
+            var optionInput = Console.ReadLine()?.Trim();
+            if (string.IsNullOrEmpty(optionInput))
+                optionInput = "&users&";
+
+            var resolved = new ResolvedProfile
+            {
+                ProfileName = profileName,
+                Host = profile.Host,
+                Port = profile.EffectivePort,
+                User = profile.Username,
+                Pass = profile.Password,
+                ServerType = profile.ServerType,
+                Company = company,
+                Language = profile.DefaultLanguage ?? "1",
+                IRPath = profile.SqlSource,
+                IsProfile = true
+            };
+
+            var cmdvars = new CommandVariables
+            {
+                User = profile.Username,
+                Pass = profile.Password,
+                ServerType = profile.ServerType,
+                Database = $"{company}pr",
+                Command = "TEST"
+            };
+            cmdvars.Server = $"{profile.Host}:{profile.EffectivePort}";
+
+            var myOptions = new Options(cmdvars, resolved, true);
+            if (!myOptions.GenerateOptionFiles())
+            {
+                PrintError("Could not load options files. Ensure SQL Source and table_locations are configured.");
+                return;
+            }
+
+            var result = myOptions.ReplaceOptions(optionInput);
+            if (result == optionInput)
+                PrintWarning($"  {optionInput} could not be resolved (not found in options files)");
+            else
+                PrintSuccess($"  {optionInput} = {result}");
         }
 
         private static int CountLines(string filePath)
