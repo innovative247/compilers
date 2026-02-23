@@ -103,12 +103,22 @@ namespace ibsCompiler
                 }
                 else if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
                 {
-                    System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                    // xdg-open requires a desktop session — not available on headless/SSH servers
+                    var hasDisplay = !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("DISPLAY")) ||
+                                     !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("WAYLAND_DISPLAY"));
+                    if (hasDisplay)
                     {
-                        FileName = "xdg-open",
-                        Arguments = $"\"{readmePath}\"",
-                        UseShellExecute = false
-                    });
+                        System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                        {
+                            FileName = "xdg-open",
+                            Arguments = $"\"{readmePath}\"",
+                            UseShellExecute = false
+                        });
+                    }
+                    else
+                    {
+                        Console.WriteLine($"readme.md: {readmePath}");
+                    }
                 }
                 else if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
                 {
