@@ -121,6 +121,99 @@ namespace ibsCompiler
             return argFilename;
         }
 
+        /// <summary>
+        /// Creates directory symlinks needed for SQL source short-path resolution.
+        /// Idempotent — only creates links that don't already exist and whose targets exist.
+        /// </summary>
+        /// <summary>
+        /// Symlink definitions: (link path relative to SqlSource, target name relative to link's parent).
+        /// </summary>
+        public static readonly (string Link, string Target)[] SymlinkDefinitions =
+        {
+            // Root level
+            ("css", "CSS"),
+            ("ibs", "IBS"),
+
+            // Inside CSS/
+            (Path.Combine("CSS", "ss"), "SQL_Sources"),
+            (Path.Combine("CSS", "setup"), "Setup"),
+
+            // Inside CSS/SQL_Sources/
+            (Path.Combine("CSS", "SQL_Sources", "ba"), "Basics"),
+            (Path.Combine("CSS", "SQL_Sources", "api3"), "Application_Program_Interface_V3"),
+            (Path.Combine("CSS", "SQL_Sources", "at"), "Alarm_Treatment"),
+            (Path.Combine("CSS", "SQL_Sources", "bl"), "Billing"),
+            (Path.Combine("CSS", "SQL_Sources", "ct"), "Create_Temp"),
+            (Path.Combine("CSS", "SQL_Sources", "dv"), "IBS_Development"),
+            (Path.Combine("CSS", "SQL_Sources", "fe"), "Front_End"),
+            (Path.Combine("CSS", "SQL_Sources", "in"), "Internal"),
+            (Path.Combine("CSS", "SQL_Sources", "ma"), "Co_Monitoring"),
+            (Path.Combine("CSS", "SQL_Sources", "mb"), "Mobile"),
+            (Path.Combine("CSS", "SQL_Sources", "mo"), "Monitoring"),
+            (Path.Combine("CSS", "SQL_Sources", "si"), "System_Init"),
+            (Path.Combine("CSS", "SQL_Sources", "sv"), "Service"),
+            (Path.Combine("CSS", "SQL_Sources", "tm"), "Telemarketing"),
+            (Path.Combine("CSS", "SQL_Sources", "ub"), "US_Basics"),
+
+            // Inside IBS/
+            (Path.Combine("IBS", "ss"), "SQL_Sources"),
+            (Path.Combine("IBS", "setup"), "Setup"),
+        };
+
+        public static (int Created, int Existing, int TargetMissing, int PermissionDenied) EnsureSymbolicLinks(string sqlSource)
+        {
+            if (string.IsNullOrEmpty(sqlSource) || !Directory.Exists(sqlSource))
+                return (0, 0, 0, 0);
+
+            int created = 0, existing = 0, targetMissing = 0, permissionDenied = 0;
+            bool windowsWarningShown = false;
+
+            foreach (var (link, target) in SymlinkDefinitions)
+            {
+                var linkPath = Path.Combine(sqlSource, link);
+                var linkParent = Path.GetDirectoryName(linkPath)!;
+                var targetPath = Path.Combine(linkParent, target);
+
+                // Skip if link already exists (as directory, file, or symlink)
+                if (Path.Exists(linkPath))
+                {
+                    existing++;
+                    continue;
+                }
+
+                // Skip if target directory doesn't exist (don't create dangling links)
+                if (!Directory.Exists(targetPath))
+                {
+                    targetMissing++;
+                    continue;
+                }
+
+                try
+                {
+                    Directory.CreateSymbolicLink(linkPath, target);
+                    created++;
+                }
+                catch (UnauthorizedAccessException)
+                {
+                    if (!windowsWarningShown)
+                    {
+                        Console.WriteLine("  Note: Symbolic link creation requires elevated privileges on Windows.");
+                        Console.WriteLine("  Run as Administrator, or enable Developer Mode in Windows Settings.");
+                        Console.WriteLine("  The compilers will still work using path expansion fallback.");
+                        windowsWarningShown = true;
+                    }
+                    permissionDenied++;
+                }
+                catch (IOException)
+                {
+                    // Link path became occupied between check and create, or other I/O issue
+                    permissionDenied++;
+                }
+            }
+
+            return (created, existing, targetMissing, permissionDenied);
+        }
+
         public static void MergeTextFiles(string sourceFile, string destinationFile)
         {
             try

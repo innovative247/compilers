@@ -519,6 +519,9 @@ namespace ibsCompiler
                 PrintSuccess($"Profile '{name}' created!");
                 DisplayProfile(name, profile);
 
+                if (!profile.RawMode)
+                    ibs_compiler_common.EnsureSymbolicLinks(profile.SqlSource ?? "");
+
                 // Test connection?
                 Console.Write("\nTest connection now? (Y/n): ");
                 var test = Console.ReadLine()?.Trim().ToUpper();
@@ -674,6 +677,9 @@ namespace ibsCompiler
             {
                 PrintSuccess($"Profile '{name}' updated.");
                 DisplayProfile(name, profile);
+
+                if (!profile.RawMode)
+                    ibs_compiler_common.EnsureSymbolicLinks(profile.SqlSource ?? "");
             }
         }
         #endregion
@@ -741,14 +747,14 @@ namespace ibsCompiler
                 if (profile.RawMode)
                     PrintDim("  (RAW MODE - preprocessing tests not available)");
                 Console.WriteLine();
-                PrintMenu(1, "Test SQL Source path");
-                PrintMenu(2, "Test connection");
+                PrintMenu(1, "SQL Source path");
+                PrintMenu(2, "Connection");
                 if (!profile.RawMode)
                 {
-                    PrintMenu(3, "Test options");
-                    PrintMenu(4, "Test table locations");
-                    PrintMenu(5, "Test changelog");
-                    PrintMenu(6, "Test symbolic links");
+                    PrintMenu(3, "Options");
+                    PrintMenu(4, "Table locations");
+                    PrintMenu(5, "Changelog");
+                    PrintMenu(6, "Symbolic links");
                 }
                 PrintMenu(98, "Back");
                 PrintMenu(99, "Exit");
@@ -1085,7 +1091,7 @@ namespace ibsCompiler
 
         private static void TestSymbolicLinks(ProfileData profile)
         {
-            Console.WriteLine("\nTesting symbolic links...");
+            Console.WriteLine("\nSetting up symbolic links...");
 
             if (string.IsNullOrEmpty(profile.SqlSource))
             {
@@ -1099,57 +1105,60 @@ namespace ibsCompiler
                 return;
             }
 
-            var cssDir = Path.Combine(profile.SqlSource, "css");
-            if (!Directory.Exists(cssDir))
-            {
-                PrintError($"css directory not found: {cssDir}");
-                return;
-            }
+            int existing = 0, created = 0, skipped = 0, failed = 0;
+            bool windowsWarningShown = false;
 
-            // Check css/setup directory
-            var setupDir = Path.Combine(profile.SqlSource, "css", "setup");
-            if (Directory.Exists(setupDir))
+            foreach (var (link, target) in ibs_compiler_common.SymlinkDefinitions)
             {
-                PrintSuccess($"css/setup directory exists: {setupDir}");
-                var entries = Directory.GetFileSystemEntries(setupDir);
-                Console.WriteLine($"  Contains {entries.Length} entries");
-            }
-            else
-            {
-                PrintWarning($"css/setup directory not found: {setupDir}");
-            }
+                var linkPath = Path.Combine(profile.SqlSource, link);
+                var linkParent = Path.GetDirectoryName(linkPath)!;
+                var targetPath = Path.Combine(linkParent, target);
 
-            // Check for common CSS directory links
-            var linkPaths = new[]
-            {
-                "css/ibs",
-                "css/css",
-            };
-
-            int existing = 0, missing = 0;
-            Console.WriteLine();
-            foreach (var linkRel in linkPaths)
-            {
-                var linkPath = Path.Combine(profile.SqlSource, linkRel);
-                if (Directory.Exists(linkPath) || File.Exists(linkPath))
+                if (Path.Exists(linkPath))
                 {
-                    Console.Write("  ");
-                    PrintSuccess($"{linkRel} exists");
+                    PrintSuccess($"  {link}");
                     existing++;
+                }
+                else if (!Directory.Exists(targetPath))
+                {
+                    PrintDim($"  {link} — target {target} not found");
+                    skipped++;
                 }
                 else
                 {
-                    Console.Write("  ");
-                    PrintWarning($"{linkRel} missing");
-                    missing++;
+                    // Target exists but link is missing — create it now
+                    try
+                    {
+                        Directory.CreateSymbolicLink(linkPath, target);
+                        PrintSuccess($"  {link} — created -> {target}");
+                        created++;
+                    }
+                    catch (UnauthorizedAccessException)
+                    {
+                        if (!windowsWarningShown)
+                        {
+                            PrintWarning("  Symbolic link creation requires elevated privileges on Windows.");
+                            PrintWarning("  Run as Administrator, or enable Developer Mode in Windows Settings.");
+                            windowsWarningShown = true;
+                        }
+                        PrintError($"  {link} — permission denied");
+                        failed++;
+                    }
+                    catch (IOException ex)
+                    {
+                        PrintError($"  {link} — {ex.Message}");
+                        failed++;
+                    }
                 }
             }
 
             Console.WriteLine();
-            if (missing == 0)
-                PrintSuccess("All expected CSS link paths exist!");
-            else
-                PrintWarning($"{missing} CSS link paths are missing. Run set_profile in Python to create symbolic links.");
+            if (created > 0)
+                PrintSuccess($"Created {created} symbolic links.");
+            if (failed > 0)
+                PrintWarning($"{failed} failed (insufficient permissions).");
+            if (created == 0 && failed == 0)
+                PrintSuccess($"All symbolic links are in place.");
         }
         #endregion
 
