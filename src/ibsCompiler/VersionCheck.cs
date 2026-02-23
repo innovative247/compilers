@@ -103,10 +103,12 @@ namespace ibsCompiler
                 }
                 else if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
                 {
-                    // xdg-open requires a desktop session — not available on headless/SSH servers
+                    // Use xdg-open only if both a display session is active AND xdg-open is installed.
+                    // DISPLAY can be set in SSH sessions without a real desktop, so check both.
                     var hasDisplay = !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("DISPLAY")) ||
                                      !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("WAYLAND_DISPLAY"));
-                    if (hasDisplay)
+                    var hasXdgOpen = ExistsInPath("xdg-open");
+                    if (hasDisplay && hasXdgOpen)
                     {
                         System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
                         {
@@ -117,7 +119,7 @@ namespace ibsCompiler
                     }
                     else
                     {
-                        // Headless/SSH — open in less (standard terminal pager)
+                        // Headless/SSH or no xdg-open — open in less (standard terminal pager)
                         System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
                         {
                             FileName = "less",
@@ -141,6 +143,17 @@ namespace ibsCompiler
                 Console.Error.WriteLine($"Could not open readme.md: {ex.Message}");
                 Console.Error.WriteLine($"  Path: {readmePath}");
             }
+        }
+
+        private static bool ExistsInPath(string executable)
+        {
+            var paths = (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator);
+            foreach (var dir in paths)
+            {
+                if (!string.IsNullOrEmpty(dir) && File.Exists(Path.Combine(dir, executable)))
+                    return true;
+            }
+            return false;
         }
 
         /// <summary>
