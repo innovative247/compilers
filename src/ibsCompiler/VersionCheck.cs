@@ -119,11 +119,13 @@ namespace ibsCompiler
                     }
                     else
                     {
-                        // Headless/SSH or no xdg-open — open in less (standard terminal pager)
+                        // Headless/SSH or no xdg-open — open in less (standard terminal pager).
+                        // -K makes less exit on Ctrl-C (without it, Ctrl-C is ignored by less
+                        // but kills the parent process, orphaning less in raw terminal mode).
                         System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
                         {
                             FileName = "less",
-                            Arguments = $"\"{readmePath}\"",
+                            Arguments = $"-K \"{readmePath}\"",
                             UseShellExecute = false
                         })?.WaitForExit();
                     }
