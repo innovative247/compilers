@@ -20,14 +20,14 @@ namespace ibsCompiler
         /// Returns true if the caller should continue running its normal logic.
         /// Returns false if a subcommand was handled (caller should exit with 0).
         /// </summary>
-        public static bool CheckForUpdates(string commandName, string[] args)
+        public static bool CheckForUpdates(string commandName, string[] args, string? usage = null)
         {
             // Clean up .old files from previous self-update (Windows)
             try { CleanupOldFiles(); } catch { }
 
             if (args.Length > 0)
             {
-                var sub = args[0].ToLowerInvariant().TrimStart('-');
+                var sub = args[0].ToLowerInvariant().TrimStart('-', '/');
                 switch (sub)
                 {
                     case "version":
@@ -43,6 +43,12 @@ namespace ibsCompiler
                     case "configure":
                         ConfigureCommand.Run();
                         return false;
+
+                    case "help":
+                    case "h":
+                    case "?":
+                        ShowHelp(commandName, usage);
+                        return false;
                 }
             }
 
@@ -50,6 +56,75 @@ namespace ibsCompiler
             try { DailyCheck(); } catch { /* silently ignore */ }
 
             return true;
+        }
+
+        private static void ShowHelp(string commandName, string? usage)
+        {
+            Console.WriteLine($"{commandName} {VersionInfo.Version}");
+            if (usage != null)
+            {
+                Console.WriteLine();
+                Console.WriteLine(usage);
+            }
+            Console.WriteLine();
+            Console.WriteLine("Subcommands:");
+            Console.WriteLine("  help        Show this help");
+            Console.WriteLine("  version     Show version");
+            Console.WriteLine("  update      Download and install latest version");
+            Console.WriteLine("  configure   Show configuration status, add to PATH");
+            OfferReadme();
+        }
+
+        private static void OfferReadme()
+        {
+            var readmePath = Path.Combine(GetExeDir(), "readme.md");
+            if (!File.Exists(readmePath)) return;
+
+            Console.WriteLine();
+            Console.Write("Open readme.md? [Y/n]: ");
+            var response = Console.ReadLine()?.Trim().ToLowerInvariant() ?? "";
+            if (response == "" || response.StartsWith("y"))
+                OpenReadme(readmePath);
+        }
+
+        private static void OpenReadme(string readmePath)
+        {
+            try
+            {
+                if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+                {
+                    // Opens with the user's registered default handler for .md files
+                    // (VS Code, Typora, Notepad++, etc.)
+                    System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                    {
+                        FileName = readmePath,
+                        UseShellExecute = true
+                    });
+                }
+                else if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+                {
+                    System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                    {
+                        FileName = "xdg-open",
+                        Arguments = $"\"{readmePath}\"",
+                        UseShellExecute = false
+                    });
+                }
+                else if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+                {
+                    System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                    {
+                        FileName = "open",
+                        Arguments = $"\"{readmePath}\"",
+                        UseShellExecute = false
+                    });
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"Could not open readme.md: {ex.Message}");
+                Console.Error.WriteLine($"  Path: {readmePath}");
+            }
         }
 
         /// <summary>

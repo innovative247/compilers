@@ -2,7 +2,8 @@ using ibsCompiler;
 using ibsCompiler.Configuration;
 using ibsCompiler.Database;
 
-if (!VersionCheck.CheckForUpdates("runsql", args)) return 0;
+const string Usage = "Usage: runsql <script> <database> <server/profile> [-U user] [-P pass] [-O outfile] [-e] [-F first] [-L last] [--changelog] [--preview] [-MSSQL|-SYBASE]";
+if (!VersionCheck.CheckForUpdates("runsql", args, Usage)) return 0;
 
 var arguments = args.ToList();
 var profileMgr = new ProfileManager();
@@ -11,7 +12,7 @@ var cmdvars = ibs_compiler_common.isql_variables(arguments, profileMgr);
 cmdvars.CommandName = "runsql";
 if (string.IsNullOrEmpty(cmdvars.Server))
 {
-    Console.Error.WriteLine("Usage: runsql <script> <database> <server/profile> [-U user] [-P pass] [-O outfile] [-e] [-F first] [-L last] [--changelog] [--preview] [-MSSQL|-SYBASE]");
+    Console.Error.WriteLine(Usage);
     return 1;
 }
 

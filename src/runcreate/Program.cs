@@ -2,7 +2,8 @@ using ibsCompiler;
 using ibsCompiler.Configuration;
 using ibsCompiler.Database;
 
-if (!VersionCheck.CheckForUpdates("runcreate", args)) return 0;
+const string Usage = "Usage: runcreate <script> <server/profile> [-U user] [-P pass] [-e] [-O outfile | outfile] [-bg]";
+if (!VersionCheck.CheckForUpdates("runcreate", args, Usage)) return 0;
 
 // --bg / -bg: re-launch self as independent background process and return immediately
 if (args.Any(a => a.Equals("--bg", StringComparison.OrdinalIgnoreCase) || a.Equals("-bg", StringComparison.OrdinalIgnoreCase)))
@@ -40,7 +41,7 @@ var cmdvars = ibs_compiler_common.runcreate_variables(arguments, profileMgr);
 cmdvars.CommandName = "runcreate";
 if (string.IsNullOrEmpty(cmdvars.Server))
 {
-    Console.Error.WriteLine("Usage: runcreate <script> <server/profile> [-U user] [-P pass] [-e] [-O outfile | outfile] [-bg]");
+    Console.Error.WriteLine(Usage);
     return 1;
 }
 

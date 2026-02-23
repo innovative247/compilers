@@ -1,13 +1,15 @@
 using ibsCompiler;
 using System.Runtime.InteropServices;
 
-if (!VersionCheck.CheckForUpdates("iwatch", args)) return 0;
+const string Usage =
+    "Usage: iwatch <filename>\n" +
+    "       iwatch -l [processname] [-t seconds]\n" +
+    "       iwatch -k <pid>";
+if (!VersionCheck.CheckForUpdates("iwatch", args, Usage)) return 0;
 
 if (args.Length == 0)
 {
-    Console.Error.WriteLine("Usage: iwatch <filename>");
-    Console.Error.WriteLine("       iwatch -l [processname] [-t seconds]");
-    Console.Error.WriteLine("       iwatch -k <pid>");
+    Console.Error.WriteLine(Usage);
     return 1;
 }
 

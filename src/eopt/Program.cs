@@ -2,7 +2,8 @@ using ibsCompiler;
 using ibsCompiler.Configuration;
 using ibsCompiler.Database;
 
-if (!VersionCheck.CheckForUpdates("eopt", args)) return 0;
+const string Usage = "Usage: eopt <server/profile> [-U user] [-P pass] [-O outfile] [-MSSQL|-SYBASE]";
+if (!VersionCheck.CheckForUpdates("eopt", args, Usage)) return 0;
 
 var arguments = args.ToList();
 var profileMgr = new ProfileManager();
@@ -10,7 +11,7 @@ var profileMgr = new ProfileManager();
 var cmdvars = ibs_compiler_common.compile_variables(arguments, profileMgr);
 if (string.IsNullOrEmpty(cmdvars.Server))
 {
-    Console.Error.WriteLine("Usage: eopt <server/profile> [-U user] [-P pass] [-O outfile] [-MSSQL|-SYBASE]");
+    Console.Error.WriteLine(Usage);
     return 1;
 }
 
