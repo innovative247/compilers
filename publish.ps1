@@ -155,8 +155,12 @@ if (Test-Path $linuxDir) {
     $tarPath = Join-Path $binDir "compilers-net8-linux-x64.tar.gz"
     if (Test-Path $tarPath) { Remove-Item $tarPath }
     tar -czf $tarPath --exclude='./settings.json' -C $linuxDir .
-    $sizeMB = [math]::Round((Get-Item $tarPath).Length / 1MB, 1)
-    Write-Host "  Created: compilers-net8-linux-x64.tar.gz ($sizeMB MB)" -ForegroundColor Green
+    if (Test-Path $tarPath) {
+        $sizeMB = [math]::Round((Get-Item $tarPath).Length / 1MB, 1)
+        Write-Host "  Created: compilers-net8-linux-x64.tar.gz ($sizeMB MB)" -ForegroundColor Green
+    } else {
+        Write-Host "  Warning: compilers-net8-linux-x64.tar.gz not created (known Windows tar issue; run manually)" -ForegroundColor Yellow
+    }
 }
 
 # macOS tar.gz (exclude settings.json)
@@ -165,8 +169,12 @@ if (Test-Path $osxDir) {
     $tarPath = Join-Path $binDir "compilers-net8-osx-x64.tar.gz"
     if (Test-Path $tarPath) { Remove-Item $tarPath }
     tar -czf $tarPath --exclude='./settings.json' -C $osxDir .
-    $sizeMB = [math]::Round((Get-Item $tarPath).Length / 1MB, 1)
-    Write-Host "  Created: compilers-net8-osx-x64.tar.gz ($sizeMB MB)" -ForegroundColor Green
+    if (Test-Path $tarPath) {
+        $sizeMB = [math]::Round((Get-Item $tarPath).Length / 1MB, 1)
+        Write-Host "  Created: compilers-net8-osx-x64.tar.gz ($sizeMB MB)" -ForegroundColor Green
+    } else {
+        Write-Host "  Warning: compilers-net8-osx-x64.tar.gz not created (known Windows tar issue; run manually)" -ForegroundColor Yellow
+    }
 }
 
 Write-Host ""
