@@ -81,9 +81,9 @@ namespace ibsCompiler
             if (!File.Exists(readmePath)) return;
 
             Console.WriteLine();
-            Console.Write("Open readme.md? [Y/n]: ");
+            Console.Write("Open readme.md? [y/N]: ");
             var response = Console.ReadLine()?.Trim().ToLowerInvariant() ?? "";
-            if (response == "" || response.StartsWith("y"))
+            if (response.StartsWith("y"))
                 OpenReadme(readmePath);
         }
 
