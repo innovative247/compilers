@@ -117,7 +117,13 @@ namespace ibsCompiler
                     }
                     else
                     {
-                        Console.WriteLine($"readme.md: {readmePath}");
+                        // Headless/SSH — open in less (standard terminal pager)
+                        System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                        {
+                            FileName = "less",
+                            Arguments = $"\"{readmePath}\"",
+                            UseShellExecute = false
+                        })?.WaitForExit();
                     }
                 }
                 else if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
