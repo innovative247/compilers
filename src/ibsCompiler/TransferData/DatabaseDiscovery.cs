@@ -32,7 +32,7 @@ namespace ibsCompiler.TransferData
         /// </summary>
         public static List<string> GetDatabases(ConnectionConfig conn)
         {
-            var sql = conn.ServerType == SQLServerTypes.MSSQL
+            var sql = conn.Platform.ToUpperInvariant() == "MSSQL"
                 ? "SELECT name FROM sys.databases WHERE database_id > 4 ORDER BY name"
                 : "SELECT name FROM master..sysdatabases WHERE dbid > 4 ORDER BY name";
 
@@ -44,7 +44,7 @@ namespace ibsCompiler.TransferData
         /// </summary>
         public static List<string> GetTables(ConnectionConfig conn, string database)
         {
-            var sql = conn.ServerType == SQLServerTypes.MSSQL
+            var sql = conn.Platform.ToUpperInvariant() == "MSSQL"
                 ? "SELECT name FROM sys.tables ORDER BY name"
                 : "SELECT name FROM sysobjects WHERE type='U' ORDER BY name";
 
@@ -117,12 +117,12 @@ namespace ibsCompiler.TransferData
         {
             return new ResolvedProfile
             {
-                ProfileName = $"{conn.Host}:{conn.EffectivePort}",
+                ProfileName = $"{conn.Host}:{conn.Port}",
                 Host = conn.Host,
-                Port = conn.EffectivePort,
+                Port = conn.Port,
                 User = conn.Username,
                 Pass = conn.Password,
-                ServerType = conn.ServerType,
+                ServerType = conn.Platform.ToUpperInvariant() == "MSSQL" ? SQLServerTypes.MSSQL : SQLServerTypes.SYBASE,
                 Company = "101",
                 Language = "1",
                 IRPath = "",

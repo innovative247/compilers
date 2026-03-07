@@ -118,13 +118,10 @@ namespace ibsCompiler.TransferData
                 return null!;
             }
 
-            var defaultPort = conn.ServerType == SQLServerTypes.MSSQL ? 1433 : 5000;
-            Console.Write($"  Port [{(conn.Port > 0 ? conn.Port : defaultPort)}]: ");
+            Console.Write($"  Port [{conn.Port}]: ");
             input = Console.ReadLine()?.Trim();
             if (!string.IsNullOrEmpty(input) && int.TryParse(input, out var port))
                 conn.Port = port;
-            else if (conn.Port == 0)
-                conn.Port = defaultPort;
 
             Console.Write($"  Username [{conn.Username}]: ");
             input = Console.ReadLine()?.Trim();

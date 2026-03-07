@@ -45,7 +45,7 @@ namespace ibsCompiler.TransferData
         {
             Directory.CreateDirectory(_dataDir);
             Console.WriteLine($"  === EXTRACT PHASE ===");
-            Console.WriteLine($"  Source: {_config.Source.Host}:{_config.Source.EffectivePort} ({_config.Source.Platform})");
+            Console.WriteLine($"  Source: {_config.Source.Host}:{_config.Source.Port} ({_config.Source.Platform})");
             Console.WriteLine($"  Data dir: {_dataDir}");
             Console.WriteLine();
 
@@ -120,7 +120,7 @@ namespace ibsCompiler.TransferData
             }
 
             Console.WriteLine($"  === INSERT PHASE ===");
-            Console.WriteLine($"  Destination: {_config.Destination.Host}:{_config.Destination.EffectivePort} ({_config.Destination.Platform})");
+            Console.WriteLine($"  Destination: {_config.Destination.Host}:{_config.Destination.Port} ({_config.Destination.Platform})");
             Console.WriteLine($"  Mode: {_config.Options.Mode}");
             Console.WriteLine();
 

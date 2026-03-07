@@ -35,11 +35,35 @@ namespace ibsCompiler.Configuration
                 var json = File.ReadAllText(path);
                 var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
                 _settings = JsonSerializer.Deserialize<SettingsFile>(json, options) ?? new SettingsFile();
+                CleanupSettings();
             }
             catch
             {
                 _settings = new SettingsFile();
             }
+        }
+
+        /// <summary>
+        /// Normalizes settings.json in-place: uppercases PLATFORM, makes PORT explicit,
+        /// and removes any unrecognized keys left over from older schema versions.
+        /// Runs silently on every load — failures are ignored.
+        /// </summary>
+        private void CleanupSettings()
+        {
+            if (_settingsPath == null || _settings.Profiles.Count == 0) return;
+            try
+            {
+                foreach (var profile in _settings.Profiles.Values)
+                {
+                    if (profile.Platform != null)
+                        profile.Platform = profile.Platform.ToUpperInvariant();
+                }
+
+                var writeOptions = new JsonSerializerOptions { WriteIndented = true };
+                var json = JsonSerializer.Serialize(_settings, writeOptions);
+                File.WriteAllText(_settingsPath, json);
+            }
+            catch { }
         }
 
         /// <summary>
@@ -118,10 +142,10 @@ namespace ibsCompiler.Configuration
                 {
                     ProfileName = profile.Value.ProfileName,
                     Host = p.Host,
-                    Port = p.EffectivePort,
+                    Port = p.Port,
                     User = string.IsNullOrEmpty(cmdvars.User) || cmdvars.User == "sbn0" ? p.Username : cmdvars.User,
                     Pass = string.IsNullOrEmpty(cmdvars.Pass) || cmdvars.Pass == "ibsibs" ? p.Password : cmdvars.Pass,
-                    ServerType = cmdvars.ServerType != default ? cmdvars.ServerType : p.ServerType,
+                    ServerType = cmdvars.ServerType != default ? cmdvars.ServerType : (p.Platform?.ToUpper() == "MSSQL" ? SQLServerTypes.MSSQL : SQLServerTypes.SYBASE),
                     Company = p.Company ?? "101",
                     Language = p.DefaultLanguage ?? "1",
                     IRPath = p.SqlSource ?? "",

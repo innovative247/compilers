@@ -70,8 +70,8 @@ namespace ibsCompiler.TransferData
             Console.WriteLine();
             Console.WriteLine($"  Project: {name}");
             Console.WriteLine();
-            Console.WriteLine($"  Source:       {config.Source.Platform} {config.Source.Host}:{config.Source.EffectivePort}  user={config.Source.Username}");
-            Console.WriteLine($"  Destination:  {config.Destination.Platform} {config.Destination.Host}:{config.Destination.EffectivePort}  user={config.Destination.Username}");
+            Console.WriteLine($"  Source:       {config.Source.Platform} {config.Source.Host}:{config.Source.Port}  user={config.Source.Username}");
+            Console.WriteLine($"  Destination:  {config.Destination.Platform} {config.Destination.Host}:{config.Destination.Port}  user={config.Destination.Username}");
             Console.WriteLine($"  Mode:         {config.Options.Mode}  batch={config.Options.BatchSize}");
             Console.WriteLine();
 

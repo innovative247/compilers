@@ -308,7 +308,7 @@ namespace ibsCompiler
             if (!profile.RawMode)
                 PrintField(Icons.GEAR, "Company:", profile.Company ?? "unknown");
             PrintField(Icons.DATABASE, "Platform:", profile.Platform ?? "unknown", ConsoleColor.Cyan);
-            PrintField(Icons.ARROW, "Server:", $"{profile.Host}:{profile.EffectivePort}", ConsoleColor.Green);
+            PrintField(Icons.ARROW, "Server:", $"{profile.Host}:{profile.Port}", ConsoleColor.Green);
             PrintField(Icons.BULLET, "Username:", profile.Username ?? "unknown");
 
             if (!profile.RawMode)
@@ -636,7 +636,7 @@ namespace ibsCompiler
             val = Console.ReadLine()?.Trim();
             if (!string.IsNullOrEmpty(val)) profile.Host = val;
 
-            Console.Write($"  Port [{profile.EffectivePort}]: ");
+            Console.Write($"  Port [{profile.Port}]: ");
             val = Console.ReadLine()?.Trim();
             if (!string.IsNullOrEmpty(val) && int.TryParse(val, out var port)) profile.Port = port;
 
@@ -818,10 +818,10 @@ namespace ibsCompiler
             var resolved = new ResolvedProfile
             {
                 Host = profile.Host,
-                Port = profile.EffectivePort,
+                Port = profile.Port,
                 User = profile.Username,
                 Pass = profile.Password,
-                ServerType = profile.ServerType,
+                ServerType = profile.Platform?.ToUpper() == "MSSQL" ? SQLServerTypes.MSSQL : SQLServerTypes.SYBASE,
                 Company = profile.Company ?? "101",
                 Language = profile.DefaultLanguage ?? "1",
                 IRPath = profile.SqlSource ?? ""
@@ -915,10 +915,10 @@ namespace ibsCompiler
             {
                 ProfileName = profileName,
                 Host = profile.Host,
-                Port = profile.EffectivePort,
+                Port = profile.Port,
                 User = profile.Username,
                 Pass = profile.Password,
-                ServerType = profile.ServerType,
+                ServerType = profile.Platform?.ToUpper() == "MSSQL" ? SQLServerTypes.MSSQL : SQLServerTypes.SYBASE,
                 Company = company,
                 Language = profile.DefaultLanguage ?? "1",
                 IRPath = profile.SqlSource,
@@ -929,11 +929,11 @@ namespace ibsCompiler
             {
                 User = profile.Username,
                 Pass = profile.Password,
-                ServerType = profile.ServerType,
+                ServerType = profile.Platform?.ToUpper() == "MSSQL" ? SQLServerTypes.MSSQL : SQLServerTypes.SYBASE,
                 Database = $"{company}pr",
                 Command = "TEST"
             };
-            cmdvars.Server = $"{profile.Host}:{profile.EffectivePort}";
+            cmdvars.Server = $"{profile.Host}:{profile.Port}";
 
             var myOptions = new Options(cmdvars, resolved, true);
             if (!myOptions.GenerateOptionFiles())
@@ -972,10 +972,10 @@ namespace ibsCompiler
             {
                 ProfileName = profileName,
                 Host = profile.Host,
-                Port = profile.EffectivePort,
+                Port = profile.Port,
                 User = profile.Username,
                 Pass = profile.Password,
-                ServerType = profile.ServerType,
+                ServerType = profile.Platform?.ToUpper() == "MSSQL" ? SQLServerTypes.MSSQL : SQLServerTypes.SYBASE,
                 Company = profile.Company ?? "101",
                 Language = profile.DefaultLanguage ?? "1",
                 IRPath = profile.SqlSource ?? "",
@@ -987,11 +987,11 @@ namespace ibsCompiler
             {
                 User = profile.Username,
                 Pass = profile.Password,
-                ServerType = profile.ServerType,
+                ServerType = profile.Platform?.ToUpper() == "MSSQL" ? SQLServerTypes.MSSQL : SQLServerTypes.SYBASE,
                 Database = $"{profile.Company}pr",
                 Command = "TEST"
             };
-            cmdvars.Server = $"{profile.Host}:{profile.EffectivePort}";
+            cmdvars.Server = $"{profile.Host}:{profile.Port}";
 
             // Resolve placeholders via Options
             var myOptions = new Options(cmdvars, resolved, true);

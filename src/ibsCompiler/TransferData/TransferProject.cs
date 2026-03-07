@@ -16,15 +16,14 @@ namespace ibsCompiler.TransferData
     {
         public string Platform { get; set; } = "MSSQL";
         public string Host { get; set; } = "";
-        public int Port { get; set; }
+        public int Port
+        {
+            get => _port > 0 ? _port : (Platform.ToUpperInvariant() == "MSSQL" ? 1433 : 5000);
+            set => _port = value;
+        }
+        private int _port;
         public string Username { get; set; } = "sbn0";
         public string Password { get; set; } = "ibsibs";
-
-        public SQLServerTypes ServerType =>
-            Platform.ToUpperInvariant() == "MSSQL" ? SQLServerTypes.MSSQL : SQLServerTypes.SYBASE;
-
-        public int EffectivePort =>
-            Port > 0 ? Port : (ServerType == SQLServerTypes.MSSQL ? 1433 : 5000);
     }
 
     public class DatabaseMapping

@@ -42,7 +42,12 @@ namespace ibsCompiler.Configuration
         public string Host { get; set; } = "";
 
         [JsonPropertyName("PORT")]
-        public int Port { get; set; }
+        public int Port
+        {
+            get => _port > 0 ? _port : (Platform?.ToUpper() == "MSSQL" ? 1433 : 5000);
+            set => _port = value;
+        }
+        private int _port;
 
         [JsonPropertyName("USERNAME")]
         public string Username { get; set; } = "sbn0";
@@ -61,12 +66,6 @@ namespace ibsCompiler.Configuration
 
         [JsonPropertyName("ALIASES")]
         public List<string> Aliases { get; set; } = new();
-
-        public SQLServerTypes ServerType =>
-            Platform?.ToUpper() == "MSSQL" ? SQLServerTypes.MSSQL : SQLServerTypes.SYBASE;
-
-        public int EffectivePort =>
-            Port > 0 ? Port : (ServerType == SQLServerTypes.MSSQL ? 1433 : 5000);
     }
 
     public class SettingsFile
