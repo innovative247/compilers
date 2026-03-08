@@ -30,11 +30,11 @@ Write-Host ""
 Write-Host "=== Creating Linux/macOS archives ===" -ForegroundColor Cyan
 
 Push-Location $binDir
-tar -czf compilers-net8-linux-x64.tar.gz -C linux-x64 .
+wsl tar -czf compilers-net8-linux-x64.tar.gz -C linux-x64 .
 if ($LASTEXITCODE -ne 0) { Write-Host "Failed to create linux tar.gz" -ForegroundColor Red; Pop-Location; exit 1 }
 Write-Host "  Created: compilers-net8-linux-x64.tar.gz" -ForegroundColor Green
 
-tar -czf compilers-net8-osx-x64.tar.gz -C osx-x64 .
+wsl tar -czf compilers-net8-osx-x64.tar.gz -C osx-x64 .
 if ($LASTEXITCODE -ne 0) { Write-Host "Failed to create osx tar.gz" -ForegroundColor Red; Pop-Location; exit 1 }
 Write-Host "  Created: compilers-net8-osx-x64.tar.gz" -ForegroundColor Green
 Pop-Location
