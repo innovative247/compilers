@@ -337,7 +337,8 @@ namespace ibsCompiler
                 }
                 else if (choice == "3")
                 {
-                    // Skip straight to compile
+                    // Check for missing options before compiling
+                    RunSyncCheck(defFile, companyFile, platformFile);
                 }
                 else if (int.TryParse(choice, out var num) && editFileMenuItems.ContainsKey(num))
                 {
@@ -553,6 +554,67 @@ namespace ibsCompiler
 
             if (ConsoleYesNo($"Edit {newName}?", defaultYes: false))
                 LaunchEditor(newPath);
+        }
+
+        /// <summary>
+        /// Checks options.def against options.{company} for missing options.
+        /// Shows the differences and offers to sync before import.
+        /// </summary>
+        private static void RunSyncCheck(string defFile, string companyFile, string platformFile)
+        {
+            if (!File.Exists(defFile) || !File.Exists(companyFile))
+                return;
+
+            var defLines = LoadOptionsFile(defFile);
+            var companyLines = LoadOptionsFile(companyFile);
+
+            // Exclude platform-specific options from the comparison
+            var mergeOptions = new List<string>(defLines);
+            if (File.Exists(platformFile))
+            {
+                var platformLines = LoadOptionsFile(platformFile);
+                mergeOptions = RemoveOptions(mergeOptions, platformLines);
+            }
+
+            var missingInCompany = FindNewOptions(mergeOptions, companyLines);
+            var missingInDef = FindNewOptions(companyLines, mergeOptions);
+
+            if (missingInCompany.Count == 0 && missingInDef.Count == 0)
+            {
+                Console.WriteLine($"\noptions.def and {Path.GetFileName(companyFile)} are in sync.");
+                return;
+            }
+
+            Console.WriteLine($"\nDifferences between options.def and {Path.GetFileName(companyFile)}:");
+
+            if (missingInCompany.Count > 0)
+            {
+                Console.WriteLine($"\n  In options.def but NOT in {Path.GetFileName(companyFile)} ({missingInCompany.Count}):");
+                foreach (var line in missingInCompany)
+                    Console.WriteLine($"    {line}");
+            }
+
+            if (missingInDef.Count > 0)
+            {
+                Console.WriteLine($"\n  In {Path.GetFileName(companyFile)} but NOT in options.def ({missingInDef.Count}):");
+                foreach (var line in missingInDef)
+                    Console.WriteLine($"    {line}");
+            }
+
+            if (missingInCompany.Count > 0 &&
+                ConsoleYesNo($"\nSync {missingInCompany.Count} missing option(s) from options.def into {Path.GetFileName(companyFile)}?"))
+            {
+                Console.WriteLine("\nWe will go through each option. You can customize the value before adding.");
+                var customized = PromptAndCustomizeOptions(missingInCompany);
+                if (customized.Count > 0)
+                {
+                    var merged = InsertNewOptions(companyLines, customized, null);
+                    SaveOptionsFile(companyFile, merged);
+                    Console.WriteLine($"\n{customized.Count} option(s) added to {Path.GetFileName(companyFile)}");
+                    if (ConsoleYesNo($"Edit {Path.GetFileName(companyFile)}?", defaultYes: false))
+                        LaunchEditor(companyFile);
+                }
+            }
         }
 
         private static void RunEditMode(string profileFile, string companyFile)
