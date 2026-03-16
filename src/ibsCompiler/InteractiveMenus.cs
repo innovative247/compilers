@@ -292,15 +292,24 @@ namespace ibsCompiler
             var defFile = ibs_compiler_common.GetPath_OptionsDefault(profile);
             var platformFile = ibs_compiler_common.GetPath_OptionsSQL(cmdvars, profile);
 
+            // Build dynamic "Edit options.<file>" menu items
+            var editFileMenuItems = BuildOptionsFileMenu(profile);
+
             // Mode selection
             Console.WriteLine();
             Console.WriteLine("What do you want to do?");
             Console.WriteLine("  1. Add new options (create in options.def)");
             Console.WriteLine("  2. Edit existing options");
             Console.WriteLine("  3. Import");
+
+            // Dynamic file-edit menu items starting at 4
+            foreach (var item in editFileMenuItems)
+                Console.WriteLine($"  {item.Key}. Edit {item.Value.Name}");
+
             Console.WriteLine("  99. Exit");
 
-            Console.Write("\nChoose [1-3, 99]: ");
+            var maxChoice = editFileMenuItems.Count > 0 ? editFileMenuItems.Keys.Max() : 3;
+            Console.Write($"\nChoose [1-{maxChoice}, 99]: ");
             var choice = Console.ReadLine()?.Trim() ?? "";
 
             if (choice == "1")
@@ -314,6 +323,10 @@ namespace ibsCompiler
             else if (choice == "3")
             {
                 // Skip straight to compile
+            }
+            else if (int.TryParse(choice, out var num) && editFileMenuItems.ContainsKey(num))
+            {
+                LaunchEditor(editFileMenuItems[num].FullPath);
             }
             else
             {
@@ -332,6 +345,43 @@ namespace ibsCompiler
             Console.WriteLine("Compiling options...");
             compile_options_main.Run(cmdvars, profile, executor);
             return 0;
+        }
+
+        /// <summary>
+        /// Discovers options files in /Setup for the current company and builds
+        /// numbered menu items: options.def, options.{company}, options.{company}.{db}...
+        /// </summary>
+        private static SortedDictionary<int, (string Name, string FullPath)> BuildOptionsFileMenu(ResolvedProfile profile)
+        {
+            var items = new SortedDictionary<int, (string Name, string FullPath)>();
+            var setupDir = ibs_compiler_common.GetPath_Setup(profile);
+            if (!Directory.Exists(setupDir))
+                return items;
+
+            int menuNum = 4;
+
+            // options.def
+            var defPath = Path.Combine(setupDir, "options.def");
+            if (File.Exists(defPath))
+                items[menuNum++] = ("options.def", defPath);
+
+            // options.<company>
+            var company = profile.Company;
+            var companyPath = Path.Combine(setupDir, $"options.{company}");
+            if (File.Exists(companyPath))
+                items[menuNum++] = ($"options.{company}", companyPath);
+
+            // options.<company>.<database> files — discover dynamically
+            var prefix = $"options.{company}.";
+            var companyDbFiles = Directory.GetFiles(setupDir, $"options.{company}.*")
+                .Where(f => Path.GetFileName(f).StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                .OrderBy(f => Path.GetFileName(f), StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            foreach (var file in companyDbFiles)
+                items[menuNum++] = (Path.GetFileName(file), file);
+
+            return items;
         }
 
         private static void RunEditMode(string profileFile, string companyFile)
