@@ -559,7 +559,7 @@ namespace ibsCompiler
 
         /// <summary>
         /// Checks options.def against options.{company} for missing options.
-        /// Uses interactive checkbox for selecting which to sync/remove.
+        /// Shows a single combined checkbox list with Add/Remove sections.
         /// </summary>
         private static void RunSyncCheck(string defFile, string companyFile, string platformFile)
         {
@@ -587,56 +587,98 @@ namespace ibsCompiler
                 return;
             }
 
-            // Options in options.def but missing from company file — offer to add
+            var totalDiffs = missingInCompany.Count + extraInCompany.Count;
+
+            // Build combined row list with section headers
+            var rows = new List<string>();
+            var headerIndices = new HashSet<int>();
+            var addIndices = new HashSet<int>();    // track which rows are "add" items
+            var removeIndices = new HashSet<int>(); // track which rows are "remove" items
+
             if (missingInCompany.Count > 0)
             {
-                Console.WriteLine($"\n{missingInCompany.Count} option(s) in options.def missing from {companyName}:");
-                var selected = InteractiveCheckbox.Select(
-                    $"Select options to add to {companyName}:",
-                    missingInCompany,
-                    new HashSet<string>(missingInCompany)); // pre-select all
-
-                if (selected != null && selected.Count > 0)
+                headerIndices.Add(rows.Count);
+                rows.Add($"Add to {companyName}");
+                foreach (var line in missingInCompany)
                 {
-                    Console.WriteLine("\nCustomize values before adding:");
-                    var customized = PromptAndCustomizeOptions(selected);
-                    if (customized.Count > 0)
-                    {
-                        companyLines = LoadOptionsFile(companyFile); // reload in case of prior changes
-                        var merged = InsertNewOptions(companyLines, customized, null);
-                        SaveOptionsFile(companyFile, merged);
-                        Console.WriteLine($"\n{customized.Count} option(s) added to {companyName}");
-                    }
+                    addIndices.Add(rows.Count);
+                    rows.Add(line);
                 }
             }
 
-            // Options in company file but not in options.def — offer to remove
             if (extraInCompany.Count > 0)
             {
-                Console.WriteLine($"\n{extraInCompany.Count} option(s) in {companyName} not found in options.def:");
-                var selected = InteractiveCheckbox.Select(
-                    $"Select options to REMOVE from {companyName}:",
-                    extraInCompany);  // none pre-selected
-
-                if (selected != null && selected.Count > 0)
+                if (rows.Count > 0)
                 {
-                    companyLines = LoadOptionsFile(companyFile); // reload
-                    var removeNames = new HashSet<string>();
-                    foreach (var line in selected)
-                    {
-                        var name = ExtractOptionName(line);
-                        if (name != "") removeNames.Add(name);
-                    }
+                    headerIndices.Add(rows.Count);
+                    rows.Add(""); // blank separator
+                }
+                headerIndices.Add(rows.Count);
+                rows.Add($"Remove from {companyName}");
+                foreach (var line in extraInCompany)
+                {
+                    removeIndices.Add(rows.Count);
+                    rows.Add(line);
+                }
+            }
 
-                    var cleaned = companyLines.Where(line =>
+            var selected = InteractiveCheckbox.SelectWithSections(
+                $"\nThere are {totalDiffs} difference(s) between options.def and {companyName}:",
+                rows,
+                headerIndices);
+
+            if (selected == null || selected.Count == 0)
+                return;
+
+            // Process adds
+            var toAdd = new List<string>();
+            foreach (var line in selected)
+            {
+                var idx = rows.IndexOf(line);
+                if (addIndices.Contains(idx))
+                    toAdd.Add(line);
+            }
+
+            // Process removes
+            var removeNames = new HashSet<string>();
+            foreach (var line in selected)
+            {
+                var idx = rows.IndexOf(line);
+                if (removeIndices.Contains(idx))
+                {
+                    var name = ExtractOptionName(line);
+                    if (name != "") removeNames.Add(name);
+                }
+            }
+
+            if (toAdd.Count > 0 || removeNames.Count > 0)
+            {
+                companyLines = LoadOptionsFile(companyFile);
+
+                // Remove selected options
+                if (removeNames.Count > 0)
+                {
+                    companyLines = companyLines.Where(line =>
                     {
                         var name = ExtractOptionName(line);
                         return name == "" || !removeNames.Contains(name);
                     }).ToList();
-
-                    SaveOptionsFile(companyFile, cleaned);
-                    Console.WriteLine($"\n{selected.Count} option(s) removed from {companyName}");
+                    Console.WriteLine($"{removeNames.Count} option(s) removed from {companyName}");
                 }
+
+                // Add selected options
+                if (toAdd.Count > 0)
+                {
+                    Console.WriteLine("\nCustomize values before adding:");
+                    var customized = PromptAndCustomizeOptions(toAdd);
+                    if (customized.Count > 0)
+                    {
+                        companyLines = InsertNewOptions(companyLines, customized, null);
+                        Console.WriteLine($"{customized.Count} option(s) added to {companyName}");
+                    }
+                }
+
+                SaveOptionsFile(companyFile, companyLines);
             }
 
             if (ConsoleYesNo($"\nEdit {companyName}?", defaultYes: false))
