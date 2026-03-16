@@ -295,6 +295,10 @@ namespace ibsCompiler
             // Build dynamic "Edit options.<file>" menu items
             var editFileMenuItems = BuildOptionsFileMenu(profile);
 
+            // Build dynamic "Copy options.<file>" menu items (excludes options.def)
+            var setupDir = ibs_compiler_common.GetPath_Setup(profile);
+            var copyMenuItems = BuildCopyOptionsMenu(editFileMenuItems, setupDir);
+
             // Mode selection
             Console.WriteLine();
             Console.WriteLine("What do you want to do?");
@@ -306,9 +310,15 @@ namespace ibsCompiler
             foreach (var item in editFileMenuItems)
                 Console.WriteLine($"  {item.Key}. Edit {item.Value.Name}");
 
+            // Dynamic copy menu items
+            foreach (var item in copyMenuItems)
+                Console.WriteLine($"  {item.Key}. Copy {item.Value.Name}");
+
             Console.WriteLine("  99. Exit");
 
-            var maxChoice = editFileMenuItems.Count > 0 ? editFileMenuItems.Keys.Max() : 3;
+            var maxChoice = copyMenuItems.Count > 0 ? copyMenuItems.Keys.Max()
+                          : editFileMenuItems.Count > 0 ? editFileMenuItems.Keys.Max()
+                          : 3;
             Console.Write($"\nChoose [1-{maxChoice}, 99]: ");
             var choice = Console.ReadLine()?.Trim() ?? "";
 
@@ -327,6 +337,10 @@ namespace ibsCompiler
             else if (int.TryParse(choice, out var num) && editFileMenuItems.ContainsKey(num))
             {
                 LaunchEditor(editFileMenuItems[num].FullPath);
+            }
+            else if (int.TryParse(choice, out var copyNum) && copyMenuItems.ContainsKey(copyNum))
+            {
+                RunCopyOptionsFile(copyMenuItems[copyNum], setupDir);
             }
             else
             {
@@ -382,6 +396,67 @@ namespace ibsCompiler
                 items[menuNum++] = (Path.GetFileName(file), file);
 
             return items;
+        }
+
+        /// <summary>
+        /// Builds copy menu items from the edit menu items, excluding options.def.
+        /// Menu numbers continue after the last edit menu item.
+        /// </summary>
+        private static SortedDictionary<int, (string Name, string FullPath)> BuildCopyOptionsMenu(
+            SortedDictionary<int, (string Name, string FullPath)> editItems, string setupDir)
+        {
+            var items = new SortedDictionary<int, (string Name, string FullPath)>();
+            if (editItems.Count == 0 || !Directory.Exists(setupDir))
+                return items;
+
+            int menuNum = editItems.Keys.Max() + 1;
+
+            foreach (var edit in editItems)
+            {
+                // Skip options.def — cannot be copied
+                if (edit.Value.Name.Equals("options.def", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                items[menuNum++] = edit.Value;
+            }
+
+            return items;
+        }
+
+        /// <summary>
+        /// Copies an options file to a new name entered by the user.
+        /// The new name must start with "options." and must not already exist.
+        /// </summary>
+        private static void RunCopyOptionsFile((string Name, string FullPath) source, string setupDir)
+        {
+            Console.WriteLine($"\nCopying: {source.Name}");
+            Console.Write("Enter new file name (e.g. options.202.NEWSERVER): ");
+            var newName = Console.ReadLine()?.Trim() ?? "";
+
+            if (string.IsNullOrEmpty(newName))
+            {
+                Console.WriteLine("Cancelled.");
+                return;
+            }
+
+            if (!newName.StartsWith("options.", StringComparison.OrdinalIgnoreCase))
+            {
+                Console.WriteLine("File name must start with \"options.\"");
+                return;
+            }
+
+            var newPath = Path.Combine(setupDir, newName);
+            if (File.Exists(newPath))
+            {
+                Console.WriteLine($"File already exists: {newName}");
+                return;
+            }
+
+            File.Copy(source.FullPath, newPath);
+            Console.WriteLine($"Created: {newName}");
+
+            if (ConsoleYesNo($"Edit {newName}?", defaultYes: false))
+                LaunchEditor(newPath);
         }
 
         private static void RunEditMode(string profileFile, string companyFile)
