@@ -291,74 +291,170 @@ namespace ibsCompiler
             var profileFile = ibs_compiler_common.GetPath_OptionsServer(cmdvars, profile);
             var defFile = ibs_compiler_common.GetPath_OptionsDefault(profile);
             var platformFile = ibs_compiler_common.GetPath_OptionsSQL(cmdvars, profile);
-
-            // Build dynamic "Edit options.<file>" menu items
-            var editFileMenuItems = BuildOptionsFileMenu(profile);
-
-            // Build dynamic "Copy options.<file>" menu items (excludes options.def)
             var setupDir = ibs_compiler_common.GetPath_Setup(profile);
-            var copyMenuItems = BuildCopyOptionsMenu(editFileMenuItems, setupDir);
 
-            // Mode selection
-            Console.WriteLine();
-            Console.WriteLine("What do you want to do?");
-            Console.WriteLine("  1. Add new options (create in options.def)");
-            Console.WriteLine("  2. Edit existing options");
-            Console.WriteLine("  3. Import");
-
-            // Dynamic file-edit menu items starting at 4
-            foreach (var item in editFileMenuItems)
-                Console.WriteLine($"  {item.Key}. Edit {item.Value.Name}");
-
-            // Dynamic copy menu items
-            foreach (var item in copyMenuItems)
-                Console.WriteLine($"  {item.Key}. Copy {item.Value.Name}");
-
-            Console.WriteLine("  99. Exit");
-
-            var maxChoice = copyMenuItems.Count > 0 ? copyMenuItems.Keys.Max()
-                          : editFileMenuItems.Count > 0 ? editFileMenuItems.Keys.Max()
-                          : 3;
-            Console.Write($"\nChoose [1-{maxChoice}, 99]: ");
-            var choice = Console.ReadLine()?.Trim() ?? "";
-
-            if (choice == "1")
+            while (true)
             {
-                RunAddMode(defFile, companyFile, profileFile, platformFile);
+                // Rebuild dynamic menus each iteration (files may have been added by Copy)
+                var editFileMenuItems = BuildOptionsFileMenu(profile);
+                var copyMenuItems = BuildCopyOptionsMenu(editFileMenuItems, setupDir);
+
+                // Mode selection
+                Console.WriteLine();
+                Console.WriteLine("What do you want to do?");
+                Console.WriteLine("  1. Add new options (create in options.def)");
+                Console.WriteLine("  2. Edit existing options");
+                Console.WriteLine("  3. Import");
+
+                // Dynamic file-edit menu items starting at 4
+                foreach (var item in editFileMenuItems)
+                    Console.WriteLine($"  {item.Key}. Edit {item.Value.Name}");
+
+                // Dynamic copy menu items
+                foreach (var item in copyMenuItems)
+                    Console.WriteLine($"  {item.Key}. Copy {item.Value.Name}");
+
+                Console.WriteLine("  99. Exit");
+
+                var maxChoice = copyMenuItems.Count > 0 ? copyMenuItems.Keys.Max()
+                              : editFileMenuItems.Count > 0 ? editFileMenuItems.Keys.Max()
+                              : 3;
+                Console.Write($"\nChoose [1-{maxChoice}, 99]: ");
+                var choice = Console.ReadLine()?.Trim() ?? "";
+
+                if (choice == "99")
+                {
+                    Console.WriteLine("Finished.");
+                    return 0;
+                }
+                else if (choice == "1")
+                {
+                    RunAddMode(defFile, companyFile, profileFile, platformFile);
+                }
+                else if (choice == "2")
+                {
+                    RunEditMode(profileFile, companyFile);
+                }
+                else if (choice == "3")
+                {
+                    // Skip straight to compile
+                }
+                else if (int.TryParse(choice, out var num) && editFileMenuItems.ContainsKey(num))
+                {
+                    var editedFile = editFileMenuItems[num];
+                    LaunchEditor(editedFile.FullPath);
+
+                    // If options.def was edited, offer to merge into company/server files
+                    if (editedFile.Name.Equals("options.def", StringComparison.OrdinalIgnoreCase))
+                        RunMergeFromDef(defFile, companyFile, profileFile, platformFile);
+                }
+                else if (int.TryParse(choice, out var copyNum) && copyMenuItems.ContainsKey(copyNum))
+                {
+                    RunCopyOptionsFile(copyMenuItems[copyNum], setupDir);
+                    continue; // back to menu, no import prompt
+                }
+                else
+                {
+                    continue; // invalid input, show menu again
+                }
+
+                // Prompt to compile/import into database
+                if (ConsoleYesNo($"Import options into {profileName.ToUpper()}?"))
+                {
+                    Console.WriteLine("Compiling options...");
+                    compile_options_main.Run(cmdvars, profile, executor);
+                }
+
+                // Return to main menu
             }
-            else if (choice == "2")
+        }
+
+        /// <summary>
+        /// After editing options.def directly, offers to merge new options into
+        /// the company and server/profile files.
+        /// </summary>
+        private static void RunMergeFromDef(string defFile, string companyFile, string profileFile, string platformFile)
+        {
+            if (!ConsoleYesNo($"\nMerge new options from options.def into company/server files?"))
+                return;
+
+            // Prompt for MOD info (needed for MOD markers on merged options)
+            Console.WriteLine("\nMOD information for merged options:");
+            var modInfo = PromptModificationInfo();
+            string? modNum = modInfo?["mod_num"];
+            string? chgLine = modInfo != null ? modInfo["chg_line"] : null;
+
+            var defLines = LoadOptionsFile(defFile);
+
+            // Merge into company file
+            if (File.Exists(companyFile) && ConsoleYesNo($"\nMerge into {Path.GetFileName(companyFile)}?"))
             {
-                RunEditMode(profileFile, companyFile);
-            }
-            else if (choice == "3")
-            {
-                // Skip straight to compile
-            }
-            else if (int.TryParse(choice, out var num) && editFileMenuItems.ContainsKey(num))
-            {
-                LaunchEditor(editFileMenuItems[num].FullPath);
-            }
-            else if (int.TryParse(choice, out var copyNum) && copyMenuItems.ContainsKey(copyNum))
-            {
-                RunCopyOptionsFile(copyMenuItems[copyNum], setupDir);
-            }
-            else
-            {
-                Console.WriteLine("Finished.");
-                return 0;
+                var companyLines = LoadOptionsFile(companyFile);
+
+                var mergeOptions = new List<string>(defLines);
+                if (File.Exists(platformFile))
+                {
+                    Console.WriteLine("Excluding platform-specific options...");
+                    var platformLines = LoadOptionsFile(platformFile);
+                    mergeOptions = RemoveOptions(mergeOptions, platformLines);
+                }
+
+                var optionsToAdd = FindNewOptions(mergeOptions, companyLines);
+                if (optionsToAdd.Count == 0)
+                {
+                    Console.WriteLine("No new options to add. Company file is up to date.");
+                }
+                else
+                {
+                    Console.WriteLine($"\n{optionsToAdd.Count} new option(s) found. We will go through each one.");
+                    var customized = PromptAndCustomizeOptions(optionsToAdd);
+                    if (customized.Count > 0)
+                    {
+                        var merged = InsertNewOptions(companyLines, customized, modNum);
+                        if (chgLine != null)
+                            merged = AddChgToHeader(merged, chgLine);
+                        SaveOptionsFile(companyFile, merged);
+                        Console.WriteLine($"\n{customized.Count} option(s) merged into {Path.GetFileName(companyFile)}");
+                        if (ConsoleYesNo($"Edit {Path.GetFileName(companyFile)}?", defaultYes: false))
+                            LaunchEditor(companyFile);
+                    }
+                    else
+                    {
+                        Console.WriteLine("\nNo options were added.");
+                    }
+                }
             }
 
-            // Prompt to compile/import into database (default: Yes)
-            if (choice != "3" && !ConsoleYesNo($"Import options into {profileName.ToUpper()}?"))
+            // Merge into profile/server file
+            if (File.Exists(profileFile) && ConsoleYesNo($"\nMerge into {Path.GetFileName(profileFile)}?", defaultYes: false))
             {
-                Console.WriteLine("Finished.");
-                return 0;
+                defLines = LoadOptionsFile(defFile);
+                var profileLines = LoadOptionsFile(profileFile);
+                var optionsToAdd = FindNewOptions(defLines, profileLines);
+                if (optionsToAdd.Count == 0)
+                {
+                    Console.WriteLine("No new options to add. Profile file is up to date.");
+                }
+                else
+                {
+                    Console.WriteLine($"\n{optionsToAdd.Count} new option(s) found. We will go through each one.");
+                    var customized = PromptAndCustomizeOptions(optionsToAdd);
+                    if (customized.Count > 0)
+                    {
+                        var merged = InsertNewOptions(profileLines, customized, modNum);
+                        if (chgLine != null)
+                            merged = AddChgToHeader(merged, chgLine);
+                        SaveOptionsFile(profileFile, merged);
+                        Console.WriteLine($"\n{customized.Count} option(s) merged into {Path.GetFileName(profileFile)}");
+                        if (ConsoleYesNo($"Edit {Path.GetFileName(profileFile)}?", defaultYes: false))
+                            LaunchEditor(profileFile);
+                    }
+                    else
+                    {
+                        Console.WriteLine("\nNo options were added.");
+                    }
+                }
             }
-
-            // Compile
-            Console.WriteLine("Compiling options...");
-            compile_options_main.Run(cmdvars, profile, executor);
-            return 0;
         }
 
         /// <summary>
