@@ -150,12 +150,21 @@ namespace ibsCompiler.TransferData
 
             int cursorPos = 0; // index into selectableIndices
             int scrollOffset = 0;
-            int visibleRows = Math.Min(rows.Count, Math.Max(Console.WindowHeight - 4, 5));
+            // Reserve lines for footer (blank + instructions)
+            int visibleRows = Math.Min(rows.Count, Math.Max(Console.WindowHeight - 6, 5));
 
             Console.WriteLine(prompt);
             Console.WriteLine();
 
-            int startRow = Console.CursorTop;
+            // Pre-write all lines (list + footer) so the console buffer scrolls as needed
+            for (int i = 0; i < visibleRows; i++)
+                Console.WriteLine();
+            Console.WriteLine();
+            Console.WriteLine("  [Space]=toggle  [A]=all  [N]=none  [Enter]=confirm  [Esc]=cancel");
+            int footerEnd = Console.CursorTop;
+
+            // Calculate startRow now that all lines are in the buffer
+            int startRow = footerEnd - 2 - visibleRows;
 
             void Render()
             {
@@ -191,12 +200,6 @@ namespace ibsCompiler.TransferData
                 int cursorRowIdx = selectableIndices[cursorPos];
                 Console.SetCursorPosition(0, startRow + (cursorRowIdx - scrollOffset));
             }
-
-            // Print instructions below the list area
-            Console.SetCursorPosition(0, startRow + visibleRows);
-            Console.WriteLine();
-            Console.WriteLine("  [Space]=toggle  [A]=all  [N]=none  [Enter]=confirm  [Esc]=cancel");
-            int footerEnd = Console.CursorTop;
 
             try
             {
