@@ -272,22 +272,68 @@ namespace ibsCompiler
         #endregion
 
         #region List Profiles
-        private static void ListProfiles()
+        /// <summary>
+        /// Displays a compact numbered list.
+        /// Returns the ordered list of profile names (index 0 = item 1).
+        /// </summary>
+        private static List<string> ListProfiles()
         {
-            if (_settings.Profiles.Count == 0)
+            var names = _settings.Profiles.Keys.ToList();
+            if (names.Count == 0)
             {
                 PrintWarning("No profiles configured yet.");
                 Console.WriteLine();
                 Console.Write("  Run ");
                 WriteBright("set_profile");
                 Console.WriteLine(" and select option 1 to create your first profile.");
-                return;
+                return names;
             }
+
             Console.WriteLine();
-            PrintSubheader($"Configured Profiles ({_settings.Profiles.Count})");
-            foreach (var kvp in _settings.Profiles)
-                DisplayProfile(kvp.Key, kvp.Value);
+            PrintSubheader($"Configured Profiles ({names.Count})");
             Console.WriteLine();
+
+            for (int i = 0; i < names.Count; i++)
+            {
+                var name = names[i];
+                var profile = _settings.Profiles[name];
+
+                // Number + profile name
+                var numLabel = $"{i + 1,2}. ";
+                Console.Write($"  {numLabel}");
+                WriteBright(name);
+                if (profile.Aliases?.Count > 0)
+                {
+                    Console.Write("  ");
+                    var prev = Console.ForegroundColor;
+                    Console.ForegroundColor = ConsoleColor.DarkGray;
+                    Console.Write($"(aliases: {string.Join(", ", profile.Aliases)})");
+                    Console.ForegroundColor = prev;
+                }
+                Console.WriteLine();
+
+                // Compact fields — indent 10 spaces to sit under the name
+                if (!profile.RawMode && !string.IsNullOrEmpty(profile.Company))
+                    PrintListField("Company:", profile.Company);
+                PrintListField("Platform:", profile.Platform ?? "unknown", ConsoleColor.Cyan);
+                PrintListField("Server:", $"{profile.Host}:{profile.Port}", ConsoleColor.Green);
+                PrintListField("Username:", profile.Username ?? "unknown");
+                if (!profile.RawMode && !string.IsNullOrEmpty(profile.SqlSource))
+                    PrintListField("SQL Source:", profile.SqlSource, ConsoleColor.Cyan);
+
+                Console.WriteLine();
+            }
+
+            return names;
+        }
+
+        private static void PrintListField(string label, string? value, ConsoleColor valueColor = ConsoleColor.Gray)
+        {
+            Console.Write($"          {label,-13}");
+            var prev = Console.ForegroundColor;
+            Console.ForegroundColor = valueColor;
+            Console.WriteLine(value ?? "");
+            Console.ForegroundColor = prev;
         }
 
         private static void DisplayProfile(string name, ProfileData profile)
@@ -320,9 +366,6 @@ namespace ibsCompiler
                 Console.WriteLine(sqlSource);
                 Console.ForegroundColor = prev2;
             }
-
-            if (profile.RawMode)
-                PrintField(Icons.WARNING, "Raw Mode:", "Yes", ConsoleColor.Yellow);
         }
         #endregion
 
@@ -541,23 +584,43 @@ namespace ibsCompiler
             }
 
             string? input;
+            (string Name, ProfileData Profile)? match;
+
             if (preselected != null)
             {
                 input = preselected;
+                match = FindProfile(input);
+                if (match == null)
+                {
+                    PrintError($"Profile '{input}' not found.");
+                    return;
+                }
             }
             else
             {
-                ListProfiles();
-                Console.Write("Enter profile name or alias (leave blank to cancel): ");
-                input = Console.ReadLine()?.Trim().ToUpper();
-                if (string.IsNullOrEmpty(input)) return;
-            }
+                while (true)
+                {
+                    var names = ListProfiles();
+                    if (names.Count == 0) return;
 
-            var match = FindProfile(input);
-            if (match == null)
-            {
-                PrintError($"Profile '{input}' not found.");
-                return;
+                    Console.Write($"Select [1-{names.Count}, name, or blank to cancel]: ");
+                    input = Console.ReadLine()?.Trim();
+                    if (string.IsNullOrEmpty(input)) return;
+
+                    // Try as 1-based number first
+                    if (int.TryParse(input, out var idx) && idx >= 1 && idx <= names.Count)
+                    {
+                        match = FindProfile(names[idx - 1]);
+                        if (match != null) break;
+                    }
+
+                    // Try as name or alias
+                    match = FindProfile(input.ToUpperInvariant());
+                    if (match != null) break;
+
+                    PrintError($"Profile '{input}' not found.");
+                    Console.WriteLine();
+                }
             }
 
             var (profileName, profile) = match.Value;
@@ -827,24 +890,44 @@ namespace ibsCompiler
                 IRPath = profile.SqlSource ?? ""
             };
 
-            try
-            {
-                using var executor = SqlExecutorFactory.Create(resolved);
-                var result = executor.ExecuteSql("SELECT 1", "master", captureOutput: true);
-                if (result.Returncode)
+            // Try queries in order — Sybase Replication Servers reject SELECT entirely
+            // but still connect via TDS and accept admin commands. Use master as the
+            // database for all attempts; RS ignores the database name in the login packet.
+            (string query, string db)[] attempts = resolved.ServerType == SQLServerTypes.SYBASE
+                ? new[]
                 {
-                    PrintSuccess("Connection successful!");
-                    return;
+                    ("SELECT @@servername", "master"),                    // ASE: all versions
+                    ("admin version",       "master"),                    // Replication Server
+                    ("SELECT 1 FROM sysusers WHERE suid = 1", "master"), // ancient ASE fallback
                 }
+                : new[]
+                {
+                    ("SELECT 1", "master"),
+                };
 
-                PrintError("Connection failed.");
-                if (!string.IsNullOrEmpty(result.Output))
-                    Console.WriteLine(result.Output);
-            }
-            catch (Exception ex)
+            string lastOutput = "";
+            foreach (var (query, db) in attempts)
             {
-                PrintError($"Connection failed: {ex.Message}");
+                try
+                {
+                    using var executor = SqlExecutorFactory.Create(resolved);
+                    var result = executor.ExecuteSql(query, db, captureOutput: true);
+                    if (result.Returncode)
+                    {
+                        PrintSuccess("Connection successful!");
+                        return;
+                    }
+                    lastOutput = result.Output;
+                }
+                catch (Exception ex)
+                {
+                    lastOutput = ex.Message;
+                }
             }
+
+            PrintError("Connection failed.");
+            if (!string.IsNullOrEmpty(lastOutput))
+                Console.WriteLine(lastOutput);
 
             // Offer to update credentials on failure
             Console.Write("\nUpdate credentials? [y/N]: ");
@@ -1519,6 +1602,9 @@ namespace ibsCompiler
             }
 
             InteractiveMenus.LaunchEditor(_settingsPath);
+
+            // Reload settings after external edit
+            LoadSettings();
         }
         #endregion
 
