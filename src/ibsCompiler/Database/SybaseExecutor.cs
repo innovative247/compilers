@@ -22,7 +22,15 @@ namespace ibsCompiler.Database
             Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
         }
 
-        private string BuildConnectionString(string database, bool includeCharset = true)
+        // CHARSET POLICY — do NOT hardcode a charset (e.g. "utf8") in the connection string.
+        // The Sybase TDS protocol negotiates charset automatically: when the client omits it,
+        // the server responds with its configured charset via a TDS_ENV_CHARSET token, and
+        // EnvChangeTokenHandler + CodePagesEncodingProvider resolve the correct .NET Encoding.
+        // Hardcoding utf8 causes connection failures on servers running other codepages (e.g.
+        // cp850) because the server rejects the mismatch outright. Letting the server decide
+        // is the only universal approach — it works for utf8, cp850, iso_1, and any other
+        // charset the server is configured with.
+        private string BuildConnectionString(string database)
         {
             var sb = new StringBuilder();
             sb.Append($"Data Source={_profile.Host}");
@@ -31,8 +39,6 @@ namespace ibsCompiler.Database
             sb.Append($";Password={_profile.Pass}");
             if (!string.IsNullOrEmpty(database))
                 sb.Append($";Database={database}");
-            if (includeCharset)
-                sb.Append(";Charset=utf8");
             sb.Append(";Pooling=false");
             return sb.ToString();
         }
@@ -219,7 +225,7 @@ namespace ibsCompiler.Database
                 tableName = parts[1];
             }
 
-            var connStr = BuildConnectionString(database, includeCharset: false);
+            var connStr = BuildConnectionString(database);
             using var connection = new AseConnection(connStr);
             connection.Open();
 
