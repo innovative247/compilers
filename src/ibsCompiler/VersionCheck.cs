@@ -250,12 +250,21 @@ namespace ibsCompiler
             try { File.WriteAllText(stateFile, state.ToJsonString(new JsonSerializerOptions { WriteIndented = true })); }
             catch { /* ignore write errors */ }
 
-            // Compare versions
+            // Compare versions — prompt to update if newer
             if (IsNewer(latestVersion, currentVersion))
             {
                 Console.Error.WriteLine();
                 Console.Error.WriteLine($"  A new version is available: v{latestVersion} (current: v{currentVersion})");
-                Console.Error.WriteLine($"  Run any command with 'update' to install: set_profile update");
+                Console.Error.Write("  Update now? [y/N]: ");
+                var answer = Console.ReadLine()?.Trim().ToLowerInvariant() ?? "";
+                if (answer.StartsWith("y"))
+                {
+                    RunSelfUpdate().GetAwaiter().GetResult();
+                }
+                else
+                {
+                    Console.Error.WriteLine("  Run any command with 'update' to install later.");
+                }
                 Console.Error.WriteLine();
             }
         }

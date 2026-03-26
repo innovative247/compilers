@@ -416,8 +416,6 @@ namespace ibsCompiler.Database
                 rows.Add(row);
             }
 
-            if (rows.Count == 0) return;
-
             // Column headers
             for (int i = 0; i < colCount; i++)
             {
