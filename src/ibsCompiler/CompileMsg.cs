@@ -4,12 +4,23 @@ using ibsCompiler.Database;
 namespace ibsCompiler
 {
     /// <summary>
+    /// How compile_msg should resolve a pre-existing &gui_messages_save& table:
+    ///   Prompt  - interactive 3-way menu (default for human use; original behavior)
+    ///   Keep    - keep saved translations, skip the save step (what batch:true uses)
+    ///   Discard - DELETE the save table and re-save from current DB
+    ///   Cancel  - exit early, no DB changes (headless-only safety brake)
+    /// </summary>
+    public enum OnSavedTranslations { Prompt, Keep, Discard, Cancel }
+
+    /// <summary>
     /// Port of F4.8 compile_msg.cs.
     /// Message compilation with multiple BCP table operations and backups.
     /// </summary>
     public static class compile_msg_main
     {
-        public static void Run(CommandVariables cmdvars, ResolvedProfile profile, ISqlExecutor executor, bool batch = false)
+        public static void Run(CommandVariables cmdvars, ResolvedProfile profile, ISqlExecutor executor,
+                               bool batch = false,
+                               OnSavedTranslations onSaved = OnSavedTranslations.Prompt)
         {
             var myOptions = new Options(cmdvars, profile, true);
             if (!myOptions.GenerateOptionFiles()) return;
@@ -83,50 +94,58 @@ namespace ibsCompiler
             {
                 ibs_compiler_common.WriteLine("No saved translations found.", cmdvars.OutFile);
             }
-            else if (batch)
-            {
-                // Batch mode (called from runcreate) — auto-select: keep saved translations
-                ibs_compiler_common.WriteLine($"WARNING: {saveTable} contains {savedCount} rows from a prior failed compile.", cmdvars.OutFile);
-                ibs_compiler_common.WriteLine("Keeping existing saved translations, skipping save step.", cmdvars.OutFile);
-                skipSave = true;
-            }
             else
             {
-                Console.WriteLine();
-                Console.WriteLine($"WARNING: {saveTable} contains {savedCount} rows.");
-                Console.WriteLine("This means a previous message compile did not complete successfully.");
-                Console.WriteLine("Translated messages were saved but never restored.");
-                Console.WriteLine();
-                Console.WriteLine("How do you want to proceed?");
-                Console.WriteLine("  1) Continue, keep saved translations (compile will restore them at the end)");
-                Console.WriteLine("  2) Discard saved translations, re-save from current database");
-                Console.WriteLine("  3) Cancel (investigate and fix manually)");
-                Console.WriteLine();
-
-                while (true)
+                // Resolve the choice. batch:true is a legacy shortcut for Keep;
+                // headless callers pass onSaved directly. Both bypass the prompt.
+                var resolved = batch ? OnSavedTranslations.Keep : onSaved;
+                if (resolved == OnSavedTranslations.Prompt)
                 {
-                    Console.Write("Enter choice (1, 2, or 3): ");
-                    var choice = Console.ReadLine()?.Trim() ?? "";
-                    if (choice == "1")
+                    Console.WriteLine();
+                    Console.WriteLine($"WARNING: {saveTable} contains {savedCount} rows.");
+                    Console.WriteLine("This means a previous message compile did not complete successfully.");
+                    Console.WriteLine("Translated messages were saved but never restored.");
+                    Console.WriteLine();
+                    Console.WriteLine("How do you want to proceed?");
+                    Console.WriteLine("  1) Continue, keep saved translations (compile will restore them at the end)");
+                    Console.WriteLine("  2) Discard saved translations, re-save from current database");
+                    Console.WriteLine("  3) Cancel (investigate and fix manually)");
+                    Console.WriteLine();
+
+                    while (true)
                     {
+                        Console.Write("Enter choice (1, 2, or 3): ");
+                        var choice = Console.ReadLine()?.Trim() ?? "";
+                        if (choice == "1") { resolved = OnSavedTranslations.Keep;    break; }
+                        if (choice == "2") { resolved = OnSavedTranslations.Discard; break; }
+                        if (choice == "3") { resolved = OnSavedTranslations.Cancel;  break; }
+                        Console.WriteLine("Invalid choice. Please enter 1, 2, or 3.");
+                    }
+                }
+                else
+                {
+                    // Headless: announce the saved-translation state once so the agent
+                    // sees a deterministic marker in the output.
+                    ibs_compiler_common.WriteLine(
+                        $"WARNING: {saveTable} contains {savedCount} rows from a prior failed compile.",
+                        cmdvars.OutFile);
+                }
+
+                switch (resolved)
+                {
+                    case OnSavedTranslations.Keep:
                         ibs_compiler_common.WriteLine("Keeping existing saved translations, skipping save step.", cmdvars.OutFile);
                         skipSave = true;
                         break;
-                    }
-                    if (choice == "2")
-                    {
+                    case OnSavedTranslations.Discard:
                         ibs_compiler_common.WriteLine("Discarding saved translations...", cmdvars.OutFile);
                         var deleteSql = $"DELETE {saveTable}";
                         ibs_compiler_common.WriteLine($"Executing {deleteSql}", cmdvars.OutFile);
                         executor.ExecuteSql(deleteSql, cmdvars.Database);
                         break;
-                    }
-                    if (choice == "3")
-                    {
-                        Console.WriteLine("Cancelled.");
+                    case OnSavedTranslations.Cancel:
+                        ibs_compiler_common.WriteLine("Cancelled.", cmdvars.OutFile);
                         return;
-                    }
-                    Console.WriteLine("Invalid choice. Please enter 1, 2, or 3.");
                 }
             }
 

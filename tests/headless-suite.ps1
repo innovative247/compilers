@@ -201,6 +201,14 @@ function Initialize-Suite {
     'placeholder header'  | Set-Content -Path (Join-Path $setup 'css.required_fields')     -Encoding UTF8
     'placeholder detail'  | Set-Content -Path (Join-Path $setup 'css.required_fields_dtl') -Encoding UTF8
 
+    # Message files - compile_msg checks every extension exists before running.
+    # Empty placeholders are sufficient for codepath-reach assertions.
+    foreach ($ext in @('.ibs_msg','.ibs_msgrp','.jam_msg','.jam_msgrp',
+                       '.sqr_msg','.sqr_msgrp','.sql_msg','.sql_msgrp',
+                       '.gui_msg','.gui_msgrp')) {
+        New-Item -ItemType File -Path (Join-Path $setup "css$ext") -Force | Out-Null
+    }
+
     # Fake editor for SKIP-AGENT regression tests.
     #
     # AGENT CONTRACT: an agent NEVER passes --edit-header / --edit-detail.
@@ -987,17 +995,116 @@ function Test-Messages {
         if ($r.ExitCode -eq 0) { throw 'unknown profile should exit non-zero' }
     }
 
-    # All set_messages tests are GAPs until the headless CLI ships.
-    foreach ($id in @(
-        'set_messages.import',
-        'set_messages.import_keep_saved',
-        'set_messages.import_discard_saved',
-        'set_messages.import_cancel_saved',
-        'set_messages.export',
-        'set_messages.gonzo_export',
-        'set_messages.gonzo_import_blocked'
-    )) {
-        Skip-Case $id 'set_messages CLI not implemented — see feature-map.md §4' -As GAP
+    # ===== set_messages headless mode =====
+    # Non-GONZO tests run against TEST_LOCAL (non-raw, scratch sql-source with
+    # all 10 css.<type>_msg* placeholder files seeded in Initialize-Suite).
+    # The Atlas DB has no SBN message tables, so the BCP step will error - we
+    # verify codepath reach via stdout markers, not full DB round-trip.
+
+    Test-Case 'set_messages.import' {
+        $r = Invoke-Cli set_messages '--import' $script:TestProfile
+        $combined = "$($r.StdOut)`n$($r.StdErr)"
+        if ($combined -notmatch 'Compiling messages|Starting compile_msg|Source files:|saved translations') {
+            throw "--import codepath not reached. stdout: $($r.StdOut) stderr: $($r.StdErr)"
+        }
+    }
+    Test-Case 'set_messages.import_keep_saved' {
+        $r = Invoke-Cli set_messages '--import' '--on-saved' 'keep' $script:TestProfile
+        $combined = "$($r.StdOut)`n$($r.StdErr)"
+        # Either the saved-translations branch fired (then 'keep' was honored),
+        # or there were no saved rows. Either way: codepath reached, no prompt.
+        if ($combined -notmatch 'Compiling messages|Starting compile_msg|Source files:') {
+            throw "--import --on-saved keep codepath not reached. stdout: $($r.StdOut)"
+        }
+        # Critical: no interactive prompt text leaked out.
+        if ($combined -match 'Enter choice \(1, 2, or 3\)') {
+            throw 'headless --on-saved should bypass the 3-way prompt, but it appeared'
+        }
+    }
+    Test-Case 'set_messages.import_discard_saved' {
+        $r = Invoke-Cli set_messages '--import' '--on-saved' 'discard' $script:TestProfile
+        $combined = "$($r.StdOut)`n$($r.StdErr)"
+        if ($combined -notmatch 'Compiling messages|Starting compile_msg|Source files:') {
+            throw "--import --on-saved discard codepath not reached. stdout: $($r.StdOut)"
+        }
+        if ($combined -match 'Enter choice \(1, 2, or 3\)') {
+            throw 'headless --on-saved should bypass the 3-way prompt'
+        }
+    }
+    Test-Case 'set_messages.import_cancel_saved' {
+        # --on-saved cancel: if saved rows exist, exits without changes.
+        # On TEST_LOCAL (no gui_messages_save table), there are no saved rows
+        # so the cancel branch never fires - the import proceeds normally.
+        # Either way: no prompt, deterministic exit.
+        $r = Invoke-Cli set_messages '--import' '--on-saved' 'cancel' $script:TestProfile
+        if ($r.StdOut -match 'Enter choice \(1, 2, or 3\)') {
+            throw 'headless --on-saved should bypass the 3-way prompt'
+        }
+    }
+    Test-Case 'set_messages.export' {
+        $r = Invoke-Cli set_messages '--export' '--yes' $script:TestProfile
+        $combined = "$($r.StdOut)`n$($r.StdErr)"
+        if ($combined -notmatch 'Exporting messages|ibs_messages|extract|BCP') {
+            throw "--export codepath not reached. stdout: $($r.StdOut) stderr: $($r.StdErr)"
+        }
+        # Critical: --yes bypasses the 'Are you sure?' prompt.
+        if ($r.StdOut -match 'Are you sure') {
+            throw '--yes should bypass the export confirmation prompt'
+        }
+    }
+    Test-Case 'set_messages.gonzo_import_blocked' {
+        # GONZO --import must be rejected BEFORE any DB call. Uses real GONZO
+        # profile (name-based detection); no Sybase connection happens because
+        # the rejection fires at the headless-dispatch validation step.
+        $r = Invoke-Cli set_messages '--import' 'GONZO'
+        if ($r.ExitCode -eq 0) { throw '--import against GONZO must be rejected' }
+        $combined = "$($r.StdOut)`n$($r.StdErr)"
+        if ($combined -notmatch 'GONZO|not allowed|canonical') {
+            throw "stderr should explain GONZO rejection. output: $combined"
+        }
+    }
+    Skip-Case 'set_messages.gonzo_export' 'cannot run safely - would BCP-OUT all message tables from real GONZO and overwrite the canonical CSS/Setup/css.*_msg* files on disk; manual verification only'
+
+    # Bonus error-path tests (every validation surface in RunSetMessagesHeadless)
+    Test-Case 'set_messages.error_mutex' {
+        $r = Invoke-Cli set_messages '--import' '--export' $script:TestProfile
+        if ($r.ExitCode -eq 0) { throw '--import + --export together must be rejected' }
+        if ($r.StdErr -notmatch 'mutually exclusive') { throw "stderr should mention mutual exclusion: $($r.StdErr)" }
+    }
+    Test-Case 'set_messages.error_no_primary_action' {
+        # --on-saved alone (no --import / --export) is a misuse. The headless
+        # dispatcher catches it cleanly instead of falling through to the
+        # interactive menu (which would hang on stdin).
+        $r = Invoke-Cli set_messages '--on-saved' 'keep' $script:TestProfile
+        if ($r.ExitCode -eq 0) { throw 'meaningless --on-saved (no primary action) must be rejected' }
+        if ($r.StdErr -notmatch '--import|--export') { throw "stderr should list valid primary actions: $($r.StdErr)" }
+    }
+    Test-Case 'set_messages.error_export_without_yes' {
+        $r = Invoke-Cli set_messages '--export' $script:TestProfile
+        if ($r.ExitCode -eq 0) { throw 'non-GONZO --export without --yes must be rejected' }
+        if ($r.StdErr -notmatch '--yes') { throw "stderr should mention --yes: $($r.StdErr)" }
+    }
+    Test-Case 'set_messages.error_bad_on_saved' {
+        $r = Invoke-Cli set_messages '--import' '--on-saved' 'bogus' $script:TestProfile
+        if ($r.ExitCode -eq 0) { throw '--on-saved bogus must be rejected' }
+        if ($r.StdErr -notmatch 'keep|discard|cancel') { throw "stderr should list valid values: $($r.StdErr)" }
+    }
+    Test-Case 'set_messages.error_bad_profile' {
+        $r = Invoke-Cli set_messages '--import' 'NO_SUCH_PROFILE_XYZ'
+        if ($r.ExitCode -eq 0) { throw 'unknown profile must exit non-zero' }
+    }
+
+    # compile_msg.exe accepts the same flags (both binaries route to RunSetMessages).
+    Test-Case 'compile_msg.import_smoke' {
+        $r = Invoke-Cli compile_msg '--import' $script:TestProfile
+        $combined = "$($r.StdOut)`n$($r.StdErr)"
+        if ($combined -notmatch 'Compiling messages|Starting compile_msg|Source files:') {
+            throw "compile_msg --import codepath not reached. stdout: $($r.StdOut)"
+        }
+    }
+    Test-Case 'compile_msg.gonzo_import_blocked' {
+        $r = Invoke-Cli compile_msg '--import' 'GONZO'
+        if ($r.ExitCode -eq 0) { throw 'compile_msg --import GONZO must be rejected' }
     }
 }
 

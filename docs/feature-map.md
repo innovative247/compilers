@@ -225,10 +225,11 @@ Interactive flow (dynamic menu, redrawn each loop):
 
 No prompts — this is the "round-trip" agent-friendly entry point.
 
-### `compile_msg` — interactive (one prompt) / `set_messages` — interactive (full menu)
+### `compile_msg` / `set_messages` — full headless parity
 
-> Both binaries currently route to `InteractiveMenus.RunSetMessages`.
-> This whole section is the **headless gap to close**.
+Both binaries route to `InteractiveMenus.RunSetMessages`. Headless mode kicks
+in when any of `--import`, `--export`, `--on-saved`, or `--yes` is present;
+otherwise the interactive menu is byte-for-byte unchanged.
 
 Interactive flow:
 - If profile is `GONZO` (or alias `G`): forced export-only, no menu.
@@ -238,19 +239,20 @@ Interactive flow:
   3. If import: runs `compile_msg_main.Run`. If `<gui_messages_save>` has
      rows, 3-way prompt: `1` keep saved translations, `2` discard, `3` cancel.
 
-| Menu path | Outcome | Headless flag (PROPOSED) | Test ID | Status |
+| Menu path | Outcome | Headless flag | Test ID | Status |
 |---|---|---|---|---|
-| `1` Import → no saved rows | BCP IN every message file, run `i_compile_messages` / `i_compile_jam_messages` / `i_compile_jrw_messages` | `set_messages --import` | `set_messages.import` | GAP |
-| `1` Import → saved rows → keep | Skip save step, restore at end | `set_messages --import --on-saved keep` (default) | `set_messages.import_keep_saved` | GAP |
-| `1` Import → saved rows → discard | `DELETE <gui_messages_save>`, then save again | `set_messages --import --on-saved discard` | `set_messages.import_discard_saved` | GAP |
-| `1` Import → saved rows → cancel | exit 0, no changes | `set_messages --import --on-saved cancel` (rarely useful headless; primarily a safety brake — keep for parity) | `set_messages.import_cancel_saved` | GAP |
-| `2` Export → confirm | BCP OUT every message table → flat files | `set_messages --export [--yes]` (the `Y/N "Are you sure"` becomes `--yes`; required headless to prevent accidents) | `set_messages.export` | GAP |
-| `2` Export → no | exit 0 | (no flag — just omit `--export`) | — | GAP |
-| `99` Cancel | exit 0 | (no flag — no action) | — | GAP |
-| GONZO + no flags | Forced export | (same — auto-detect GONZO/G profile) | `set_messages.gonzo_export` | GAP |
-| GONZO + `--import` | refuse and exit 1 | (must replicate the prod-safety guard in `compile_msg_main.Run` line 32) | `set_messages.gonzo_import_blocked` | GAP |
+| `1` Import → no saved rows | BCP IN every message file, run `i_compile_messages` / `i_compile_jam_messages` / `i_compile_jrw_messages` | `set_messages --import` | `set_messages.import` | COVERED |
+| `1` Import → saved rows → keep | Skip save step, restore at end | `set_messages --import --on-saved keep` (default) | `set_messages.import_keep_saved` | COVERED |
+| `1` Import → saved rows → discard | `DELETE <gui_messages_save>`, then save again | `set_messages --import --on-saved discard` | `set_messages.import_discard_saved` | COVERED |
+| `1` Import → saved rows → cancel | exit 0, no changes | `set_messages --import --on-saved cancel` | `set_messages.import_cancel_saved` | COVERED |
+| `2` Export → confirm | BCP OUT every message table → flat files | `set_messages --export --yes` (required for non-GONZO; replaces "Are you sure?" prompt) | `set_messages.export` | COVERED |
+| `2` Export → no | exit 0 | (no flag — just omit `--export`) | — | COVERED |
+| `99` Cancel | exit 0 | (no flag — no action) | — | COVERED |
+| GONZO + `--export` | Forced export (no `--yes` required) | name-based auto-detect (`GONZO`/`G`) | `set_messages.gonzo_export` | SKIP (cannot run safely — would mutate canonical GONZO message files on disk; manual verification only) |
+| GONZO + `--import` | refuse and exit 1 (production safety) | (no flag; replicates `CompileMsg.cs:32` guard at the headless dispatch step) | `set_messages.gonzo_import_blocked` | COVERED |
+| (error) | Every validation surface — mutex, no primary action, missing `--yes`, bad `--on-saved` value, unknown profile | (n/a) | `set_messages.error_*` (5 tests) + `compile_msg.*` (2 tests) | COVERED |
 
-**Proposed CLI surface for parity:**
+**CLI surface:**
 
 ```
 set_messages PROFILE
@@ -260,13 +262,19 @@ set_messages PROFILE
                                     # (replaces the "Are you sure?" prompt)
 ```
 
-Wiring notes (for the agent that will implement this):
-- Mirror `set_options`: detect action flags via `CliArgs.AnyPresent`, dispatch
-  to a new `RunSetMessagesHeadless` before the menu prints.
-- `compile_msg.exe` should accept the same flags (it already routes to
+Implementation notes (shipped):
+- `RunSetMessagesHeadless` in `InteractiveMenus.cs` dispatches via
+  `CliArgs.AnyPresent(args, "--import", "--export", "--on-saved", "--yes")`.
+  The last two are included so a misuse like `--on-saved keep` without
+  `--import` produces a clean error instead of a stdin hang.
+- `OnSavedTranslations { Prompt, Keep, Discard, Cancel }` enum in
+  `CompileMsg.cs` replaces the 3-way `Console.ReadLine` block. Default
+  `Prompt` preserves interactive UX; `batch:true` callers (runcreate
+  dispatch) and headless callers bypass the prompt.
+- `compile_msg.exe` accepts the same flags (both binaries route to
   `RunSetMessages`).
-- The new flag list `SetMessagesBoolFlagNames = { "--import", "--export", "--yes" }`
-  gets handed to `CliArgs.StripLongFlags` from `Program.cs` in both
+- The flag list `SetMessagesBoolFlagNames = { "--import", "--export", "--yes" }`
+  is handed to `CliArgs.StripLongFlags` from `Program.cs` in both
   `set_messages` and `compile_msg` entry points.
 - The 3-way saved-translations prompt today fires inside `compile_msg_main.Run`.
   Plumb the choice as an enum on the call (default `Keep`); the existing
@@ -342,9 +350,19 @@ no useful headless equivalent — an agent that needs VSCode tasks should write
 
 ## Gap summary
 
-One outstanding gap as of this map: **`set_messages` headless mode**.
-Proposed surface is in section 4 above. Once implemented, the eight `GAP`
-rows in the test suite flip to `COVERED` and the binary is at full parity
-with the rest of the `set_*` family.
+**No outstanding gaps.** Every menu path on every in-scope command is either
+COVERED by the test suite or SKIP-by-design with a documented rationale.
+Suite tally at `set_messages` ship time: **135 PASS / 4 SKIP / 0 FAIL / 0 GAP**.
 
-Everything else listed here is either COVERED or SKIP-by-design.
+The four skips:
+- `iwho.timer` — polling blocks indefinitely.
+- `version.update_dryrun` — would trigger real GitHub self-update.
+- `runcreate.bg` — `-bg` is a wrapper concept, not a source-level flag.
+- `set_messages.gonzo_export` — would mutate canonical GONZO message files
+  on disk (CLI behavior is proven equivalent to non-GONZO export via the
+  `gonzo_import_blocked` test; export round-trip itself is manual only).
+
+The five SKIP-AGENT rows (`--edit-*` flags across the three setup-compile
+commands plus set_options menu items 2 and 4..N) are not gaps either — they
+are documented out-of-scope for the agent contract (agent writes files
+directly).

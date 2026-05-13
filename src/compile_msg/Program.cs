@@ -8,6 +8,11 @@ if (!VersionCheck.CheckForUpdates("compile_msg", args, Usage)) return 0;
 var arguments = args.ToList();
 var profileMgr = new ProfileManager();
 
+// Snapshot args so RunSetMessages can inspect long-flag actions; then strip the
+// long flags before compile_variables so they don't poison the positional fallback.
+var headlessArgs = arguments.ToList();
+CliArgs.StripLongFlags(arguments, InteractiveMenus.SetMessagesBoolFlagNames);
+
 var cmdvars = ibs_compiler_common.compile_variables(arguments, profileMgr);
 if (string.IsNullOrEmpty(cmdvars.Server))
 {
@@ -17,4 +22,4 @@ if (string.IsNullOrEmpty(cmdvars.Server))
 
 var profile = profileMgr.Resolve(cmdvars);
 using var executor = SqlExecutorFactory.Create(profile);
-return InteractiveMenus.RunSetMessages(cmdvars, profile, executor);
+return InteractiveMenus.RunSetMessages(cmdvars, profile, executor, headlessArgs);

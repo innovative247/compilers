@@ -1764,15 +1764,36 @@ namespace ibsCompiler
         #region set_messages (compile_msg)
 
         /// <summary>
+        /// Long flags accepted by <see cref="RunSetMessages"/>'s headless mode.
+        /// Program.cs entry points (set_messages, compile_msg) hand this to
+        /// <see cref="CliArgs.StripLongFlags"/> so the legacy positional-server
+        /// fallback in compile_variables() doesn't swallow them.
+        /// </summary>
+        public static readonly string[] SetMessagesBoolFlagNames = new[]
+        {
+            "--import", "--export", "--yes",
+        };
+
+        /// <summary>
         /// Interactive menu for compile_msg/set_messages.
         /// Matches Python set_messages.py main():
         ///   1. Mode selection: Import or Export
         ///   2. GONZO protection for imports
         ///   3. Run compile_msg or export
+        /// When ANY headless action flag is present (--import or --export) the
+        /// menu is bypassed entirely and the requested action is performed
+        /// unattended. Without flags the menu UX is unchanged byte-for-byte.
         /// </summary>
-        public static int RunSetMessages(CommandVariables cmdvars, ResolvedProfile profile, ISqlExecutor executor)
+        public static int RunSetMessages(CommandVariables cmdvars, ResolvedProfile profile, ISqlExecutor executor,
+                                         List<string>? args = null)
         {
             if (CheckRawMode(profile)) return 1;
+
+            // Headless CLI dispatch when ANY long flag is present. Including
+            // --on-saved / --yes here means a misuse like "--on-saved keep" without
+            // --import gets a clean error, not a stdin hang in the interactive menu.
+            if (args != null && CliArgs.AnyPresent(args, "--import", "--export", "--on-saved", "--yes"))
+                return RunSetMessagesHeadless(args, cmdvars, profile, executor);
 
             var profileName = profile.IsProfile ? profile.ProfileName : cmdvars.ServerNameOnly;
             var isGonzo = IsGonzoProfile(profileName);
@@ -1891,6 +1912,95 @@ namespace ibsCompiler
             }
 
             Console.WriteLine($"Export complete. {totalRows} total rows exported.");
+        }
+
+        /// <summary>
+        /// Drives every action reachable through RunSetMessages' interactive menu
+        /// via command-line flags. Composable:
+        ///   set_messages PROFILE --import [--on-saved keep|discard|cancel]
+        ///   set_messages PROFILE --export [--yes]
+        /// Honors the same GONZO production-safety guards as the interactive flow.
+        /// </summary>
+        private static int RunSetMessagesHeadless(
+            List<string> args,
+            CommandVariables cmdvars, ResolvedProfile profile, ISqlExecutor executor)
+        {
+            var doImport = CliArgs.HasFlag(args, "--import");
+            var doExport = CliArgs.HasFlag(args, "--export");
+            var onSavedRaw = CliArgs.GetOption(args, "--on-saved");
+            var doYes = CliArgs.HasFlag(args, "--yes");
+
+            // Mutex: exactly one primary action.
+            if (doImport && doExport)
+            {
+                Console.Error.WriteLine("ERROR: --import and --export are mutually exclusive.");
+                return 1;
+            }
+            if (!doImport && !doExport)
+            {
+                Console.Error.WriteLine("ERROR: set_messages headless requires --import or --export.");
+                return 1;
+            }
+
+            var profileName = profile.IsProfile ? profile.ProfileName : cmdvars.ServerNameOnly;
+            var isGonzo = profileName.Equals("GONZO", StringComparison.OrdinalIgnoreCase)
+                       || profileName.Equals("G", StringComparison.OrdinalIgnoreCase);
+
+            if (doImport)
+            {
+                // GONZO production-safety: importing into GONZO is forbidden.
+                // (compile_msg_main.Run also enforces this on the SBN side, but
+                // we surface the rejection here for a cleaner agent error.)
+                if (isGonzo)
+                {
+                    Console.Error.WriteLine($"ERROR: --import is not allowed against {profileName} (GONZO is the canonical message source; export-only).");
+                    return 1;
+                }
+
+                // Parse --on-saved (only meaningful with --import).
+                OnSavedTranslations onSaved;
+                if (string.IsNullOrEmpty(onSavedRaw))
+                {
+                    onSaved = OnSavedTranslations.Keep;
+                }
+                else
+                {
+                    switch (onSavedRaw.Trim().ToLowerInvariant())
+                    {
+                        case "keep":    onSaved = OnSavedTranslations.Keep;    break;
+                        case "discard": onSaved = OnSavedTranslations.Discard; break;
+                        case "cancel":  onSaved = OnSavedTranslations.Cancel;  break;
+                        default:
+                            Console.Error.WriteLine($"ERROR: --on-saved must be 'keep', 'discard', or 'cancel' (got '{onSavedRaw}').");
+                            return 1;
+                    }
+                }
+
+                // Verify the source files exist before invoking the compile.
+                var mainDir = ibs_compiler_common.GetPath_Setup(profile);
+                var mainMes = Path.Combine(mainDir, "css");
+                if (!File.Exists(mainMes + ".ibs_msg"))
+                {
+                    Console.Error.WriteLine($"ERROR: Message files not found at expected location: {mainDir}");
+                    return 1;
+                }
+
+                Console.WriteLine("Compiling messages...");
+                compile_msg_main.Run(cmdvars, profile, executor, batch: false, onSaved: onSaved);
+                return 0;
+            }
+
+            // --export
+            // Non-GONZO export overwrites local files - require --yes to confirm.
+            if (!isGonzo && !doYes)
+            {
+                Console.Error.WriteLine($"ERROR: --export against {profileName} will overwrite local message files. Pass --yes to confirm.");
+                return 1;
+            }
+            Console.WriteLine($"Exporting messages from {profileName}...");
+            RunMessageExport(cmdvars, profile, executor);
+            Console.WriteLine("compile_msg DONE.");
+            return 0;
         }
 
         #endregion
