@@ -8,6 +8,9 @@ if (!VersionCheck.CheckForUpdates("eloc", args, Usage)) return 0;
 var arguments = args.ToList();
 var profileMgr = new ProfileManager();
 
+var headlessArgs = arguments.ToList();
+CliArgs.StripLongFlags(arguments, InteractiveMenus.EditCompileBoolFlagNames);
+
 var cmdvars = ibs_compiler_common.compile_variables(arguments, profileMgr);
 if (string.IsNullOrEmpty(cmdvars.Server))
 {
@@ -18,4 +21,4 @@ if (string.IsNullOrEmpty(cmdvars.Server))
 if (!profileMgr.ValidateProfile(cmdvars.Server)) return 1;
 var profile = profileMgr.Resolve(cmdvars);
 using var executor = SqlExecutorFactory.Create(profile);
-return InteractiveMenus.RunSetTableLocations(cmdvars, profile, executor);
+return InteractiveMenus.RunSetTableLocations(cmdvars, profile, executor, headlessArgs);

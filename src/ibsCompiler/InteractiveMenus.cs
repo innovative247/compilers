@@ -134,9 +134,10 @@ namespace ibsCompiler
         ///   3. Prompt to compile into database (default: Yes)
         ///   4. Run compile_actions
         /// </summary>
-        public static int RunSetActions(CommandVariables cmdvars, ResolvedProfile profile, ISqlExecutor executor)
+        public static int RunSetActions(CommandVariables cmdvars, ResolvedProfile profile, ISqlExecutor executor, List<string>? args = null)
         {
             if (CheckRawMode(profile)) return 1;
+            args ??= new List<string>();
 
             var profileName = profile.IsProfile ? profile.ProfileName : cmdvars.ServerNameOnly;
             var actionsFile = ibs_compiler_common.GetPath_Actions(cmdvars, profile);
@@ -154,16 +155,20 @@ namespace ibsCompiler
                 return 1;
             }
 
+            var cliHeader  = CliArgs.ResolveBool(args, EditCompileTrueHeader, EditCompileFalseHeader);
+            var cliDetail  = CliArgs.ResolveBool(args, EditCompileTrueDetail, EditCompileFalseDetail);
+            var cliCompile = CliArgs.ResolveBool(args, new[] { "--compile" }, new[] { "--no-compile" });
+
             // Prompt to edit actions file (default: Yes)
-            if (ConsoleYesNo($"Edit {actionsFile}?"))
+            if (cliHeader ?? ConsoleYesNo($"Edit {actionsFile}?"))
                 LaunchEditor(actionsFile);
 
             // Prompt to edit actions_dtl file (default: Yes)
-            if (ConsoleYesNo($"Edit {actionsDtlFile}?"))
+            if (cliDetail ?? ConsoleYesNo($"Edit {actionsDtlFile}?"))
                 LaunchEditor(actionsDtlFile);
 
             // Prompt to compile into database (default: Yes)
-            if (!ConsoleYesNo($"Compile actions into {profileName.ToUpper()}?"))
+            if (!(cliCompile ?? ConsoleYesNo($"Compile actions into {profileName.ToUpper()}?")))
             {
                 Console.WriteLine("Finished.");
                 return 0;
@@ -174,6 +179,27 @@ namespace ibsCompiler
             compile_actions_main.Run(cmdvars, profile, executor);
             return 0;
         }
+
+        // Shared edit/compile flag vocabulary used by set_actions, set_required_fields,
+        // and set_table_locations. Header/detail are split because eloc only has the
+        // header file. Program.cs entry points hand these (and the compile pair) to
+        // CliArgs.StripLongFlags.
+        private static readonly string[] EditCompileTrueHeader  = new[] { "--edit-header" };
+        private static readonly string[] EditCompileFalseHeader = new[] { "--no-edit-header", "--skip-edit" };
+        private static readonly string[] EditCompileTrueDetail  = new[] { "--edit-detail" };
+        private static readonly string[] EditCompileFalseDetail = new[] { "--no-edit-detail", "--skip-edit" };
+
+        /// <summary>
+        /// Long flags accepted by RunSetActions / RunSetRequiredFields /
+        /// RunSetTableLocations. All are pure bool flags — no value follows.
+        /// </summary>
+        public static readonly string[] EditCompileBoolFlagNames = new[]
+        {
+            "--edit-header", "--no-edit-header",
+            "--edit-detail", "--no-edit-detail",
+            "--compile",     "--no-compile",
+            "--skip-edit",
+        };
 
         #endregion
 
@@ -187,9 +213,10 @@ namespace ibsCompiler
         ///   3. Prompt to compile into database (default: Yes)
         ///   4. Run compile_required_fields
         /// </summary>
-        public static int RunSetRequiredFields(CommandVariables cmdvars, ResolvedProfile profile, ISqlExecutor executor)
+        public static int RunSetRequiredFields(CommandVariables cmdvars, ResolvedProfile profile, ISqlExecutor executor, List<string>? args = null)
         {
             if (CheckRawMode(profile)) return 1;
+            args ??= new List<string>();
 
             var profileName = profile.IsProfile ? profile.ProfileName : cmdvars.ServerNameOnly;
             var setupDir = ibs_compiler_common.GetPath_Setup(profile);
@@ -208,16 +235,20 @@ namespace ibsCompiler
                 return 1;
             }
 
+            var cliHeader  = CliArgs.ResolveBool(args, EditCompileTrueHeader, EditCompileFalseHeader);
+            var cliDetail  = CliArgs.ResolveBool(args, EditCompileTrueDetail, EditCompileFalseDetail);
+            var cliCompile = CliArgs.ResolveBool(args, new[] { "--compile" }, new[] { "--no-compile" });
+
             // Prompt to edit required_fields file (default: Yes)
-            if (ConsoleYesNo($"Edit {rfFile}?"))
+            if (cliHeader ?? ConsoleYesNo($"Edit {rfFile}?"))
                 LaunchEditor(rfFile);
 
             // Prompt to edit required_fields_dtl file (default: Yes)
-            if (ConsoleYesNo($"Edit {rfDtlFile}?"))
+            if (cliDetail ?? ConsoleYesNo($"Edit {rfDtlFile}?"))
                 LaunchEditor(rfDtlFile);
 
             // Prompt to compile into database (default: Yes)
-            if (!ConsoleYesNo($"Compile required_fields into {profileName.ToUpper()}?"))
+            if (!(cliCompile ?? ConsoleYesNo($"Compile required_fields into {profileName.ToUpper()}?")))
             {
                 Console.WriteLine("Finished.");
                 return 0;
@@ -240,9 +271,10 @@ namespace ibsCompiler
         ///   2. Prompt to compile into database (default: Yes)
         ///   3. Run compile_table_locations
         /// </summary>
-        public static int RunSetTableLocations(CommandVariables cmdvars, ResolvedProfile profile, ISqlExecutor executor)
+        public static int RunSetTableLocations(CommandVariables cmdvars, ResolvedProfile profile, ISqlExecutor executor, List<string>? args = null)
         {
             if (CheckRawMode(profile)) return 1;
+            args ??= new List<string>();
 
             var profileName = profile.IsProfile ? profile.ProfileName : cmdvars.ServerNameOnly;
             var locationsFile = ibs_compiler_common.GetPath_TableLocations(profile);
@@ -253,12 +285,15 @@ namespace ibsCompiler
                 return 1;
             }
 
+            var cliHeader  = CliArgs.ResolveBool(args, EditCompileTrueHeader, EditCompileFalseHeader);
+            var cliCompile = CliArgs.ResolveBool(args, new[] { "--compile" }, new[] { "--no-compile" });
+
             // Prompt to edit the source file (default: Yes)
-            if (ConsoleYesNo($"Edit {locationsFile}?"))
+            if (cliHeader ?? ConsoleYesNo($"Edit {locationsFile}?"))
                 LaunchEditor(locationsFile);
 
             // Prompt to compile into database (default: Yes)
-            if (!ConsoleYesNo($"Compile table_locations into {profileName.ToUpper()}?"))
+            if (!(cliCompile ?? ConsoleYesNo($"Compile table_locations into {profileName.ToUpper()}?")))
             {
                 Console.WriteLine("Cancelled.");
                 return 0;
@@ -275,6 +310,20 @@ namespace ibsCompiler
         #region set_options (eopt)
 
         /// <summary>
+        /// Long-flag names accepted by <see cref="RunSetOptions"/>'s headless mode
+        /// that take NO value (bool/presence flags). Program.cs entry points hand
+        /// this to <see cref="CliArgs.StripLongFlags"/> so the legacy positional
+        /// server-name fallback in compile_variables() doesn't swallow them.
+        /// </summary>
+        public static readonly string[] SetOptionsBoolFlagNames = new[]
+        {
+            "--static", "--dynamic",
+            "--merge-company", "--merge-profile",
+            "--import", "--sync",
+            "--all-adds", "--all-removes",
+        };
+
+        /// <summary>
         /// Interactive menu for eopt/set_options.
         /// Matches Python set_options.py main():
         ///   1. Mode selection: Add new options, Edit existing, or Exit
@@ -283,7 +332,7 @@ namespace ibsCompiler
         ///   4. Prompt to import into database (default: Yes)
         ///   5. Run compile_options
         /// </summary>
-        public static int RunSetOptions(CommandVariables cmdvars, ResolvedProfile profile, ISqlExecutor executor)
+        public static int RunSetOptions(CommandVariables cmdvars, ResolvedProfile profile, ISqlExecutor executor, List<string>? args = null)
         {
             if (CheckRawMode(profile)) return 1;
 
@@ -293,6 +342,16 @@ namespace ibsCompiler
             var defFile = ibs_compiler_common.GetPath_OptionsDefault(profile);
             var platformFile = ibs_compiler_common.GetPath_OptionsSQL(cmdvars, profile);
             var setupDir = ibs_compiler_common.GetPath_Setup(profile);
+
+            // Headless CLI dispatch — only when an action flag is explicitly provided.
+            // Without flags the existing interactive menu runs unchanged.
+            if (args != null && CliArgs.AnyPresent(args,
+                    "--add", "--sync", "--merge-company", "--merge-profile",
+                    "--copy", "--import"))
+            {
+                return RunSetOptionsHeadless(args, cmdvars, profile, executor,
+                    defFile, companyFile, profileFile, platformFile, setupDir);
+            }
 
             while (true)
             {
@@ -843,7 +902,7 @@ namespace ibsCompiler
 
         private static void SaveOptionsFile(string path, List<string> lines)
         {
-            using var writer = new StreamWriter(path, false);
+            using var writer = ibs_compiler_common.OpenSourceWriter(path);
             foreach (var line in lines)
                 writer.WriteLine(line);
         }
@@ -1185,6 +1244,517 @@ namespace ibsCompiler
                 }
             }
             return customized;
+        }
+
+        #endregion
+
+        #region Headless CLI
+
+        /// <summary>
+        /// Drives every action reachable through RunSetOptions' interactive menu via
+        /// command-line flags. Composable: e.g.
+        ///   set_options PROFILE --add jake1 --type value --dynamic --default test1
+        ///                       --mod-num 07.95.27639 --mod-name USER --mod-reason "Test"
+        ///                       --merge-company --import
+        /// produces the same options.def, options.&lt;company&gt;, and DB rows as walking the
+        /// interactive Add → merge → import path.
+        /// </summary>
+        private static int RunSetOptionsHeadless(
+            List<string> args,
+            CommandVariables cmdvars, ResolvedProfile profile, ISqlExecutor executor,
+            string defFile, string companyFile, string profileFile, string platformFile, string setupDir)
+        {
+            // ---- Pull every recognized flag once up front ----
+            var copyFrom    = CliArgs.GetOption(args, "--copy");
+            var copyTo      = CliArgs.GetOption(args, "--to");
+
+            var addName     = CliArgs.GetOption(args, "--add");
+            var addType     = CliArgs.GetOption(args, "--type");
+            var isStatic    = CliArgs.HasFlag(args, "--static");
+            var isDynamic   = CliArgs.HasFlag(args, "--dynamic");
+            var defaultVal  = CliArgs.GetOption(args, "--default");
+            var stateVal    = CliArgs.GetOption(args, "--state");
+            var description = CliArgs.GetOption(args, "--description");
+
+            var modNum      = CliArgs.GetOption(args, "--mod-num");
+            var modUser     = CliArgs.GetOption(args, "--mod-name");
+            var modReason   = CliArgs.GetOption(args, "--mod-reason");
+
+            var mergeCompany = CliArgs.HasFlag(args, "--merge-company");
+            var mergeProfile = CliArgs.HasFlag(args, "--merge-profile");
+            var customizeRaw = CliArgs.GetMulti(args, "--customize");
+
+            var doSync       = CliArgs.HasFlag(args, "--sync");
+            var allAdds      = CliArgs.HasFlag(args, "--all-adds");
+            var allRemoves   = CliArgs.HasFlag(args, "--all-removes");
+            var addOnlyRaw   = CliArgs.GetOption(args, "--add-only");
+            var removeRaw    = CliArgs.GetOption(args, "--remove");
+
+            var doImport     = CliArgs.HasFlag(args, "--import");
+
+            // ---- Validate mutually exclusive primary actions ----
+            int primary = 0;
+            if (addName != null) primary++;
+            if (doSync) primary++;
+            if (copyFrom != null) primary++;
+            if (primary > 1)
+            {
+                Console.Error.WriteLine("ERROR: --add, --sync, and --copy are mutually exclusive primary actions.");
+                return 1;
+            }
+
+            var customizations = ParseCustomizations(customizeRaw);
+            if (customizations == null) return 1;
+
+            // ---- 1. --copy --to ----
+            if (copyFrom != null)
+            {
+                if (string.IsNullOrEmpty(copyTo))
+                {
+                    Console.Error.WriteLine("ERROR: --copy requires --to <newname>.");
+                    return 1;
+                }
+                if (!copyTo.StartsWith("options.", StringComparison.OrdinalIgnoreCase))
+                {
+                    Console.Error.WriteLine("ERROR: --to value must start with \"options.\"");
+                    return 1;
+                }
+                var srcPath = Path.Combine(setupDir, copyFrom);
+                if (!File.Exists(srcPath))
+                {
+                    Console.Error.WriteLine($"ERROR: source file does not exist: {srcPath}");
+                    return 1;
+                }
+                var dstPath = Path.Combine(setupDir, copyTo);
+                if (File.Exists(dstPath))
+                {
+                    Console.Error.WriteLine($"ERROR: destination already exists: {dstPath}");
+                    return 1;
+                }
+                File.Copy(srcPath, dstPath);
+                Console.WriteLine($"Created: {copyTo}");
+                return 0;
+            }
+
+            // ---- MOD info (required for --add and merges; collected once, shared) ----
+            Dictionary<string, string>? modInfo = null;
+            bool needsMod = addName != null || mergeCompany || mergeProfile;
+            if (needsMod)
+            {
+                modInfo = BuildModInfo(modNum, modUser, modReason);
+                if (modInfo == null) return 1;
+            }
+
+            // ---- 2. --add ----
+            if (addName != null)
+            {
+                if (!File.Exists(defFile))
+                {
+                    Console.Error.WriteLine($"ERROR: options.def not found: {defFile}");
+                    return 1;
+                }
+
+                string? optionLine = BuildOptionLineFromArgs(
+                    addName, addType, isStatic, isDynamic, defaultVal, stateVal, description,
+                    LoadOptionsFile(defFile));
+                if (optionLine == null) return 1;
+
+                var defLines = LoadOptionsFile(defFile);
+                defLines = AddChgToHeader(defLines, modInfo!["chg_line"]);
+                defLines.Add($"# {modInfo["mod_num"]} -->");
+                defLines.Add(optionLine);
+                defLines.Add($"# {modInfo["mod_num"]} <--");
+                SaveOptionsFile(defFile, defLines);
+                Console.WriteLine($"Added to {Path.GetFileName(defFile)}: {optionLine}");
+            }
+
+            // ---- 3. --merge-company ----
+            if (mergeCompany)
+            {
+                if (!File.Exists(companyFile))
+                {
+                    Console.Error.WriteLine($"ERROR: company file not found: {companyFile}");
+                    return 1;
+                }
+                MergeFromDefHeadless(defFile, companyFile, platformFile,
+                                     excludePlatform: true,
+                                     customizations, modInfo!);
+            }
+
+            // ---- 4. --merge-profile ----
+            if (mergeProfile)
+            {
+                if (!File.Exists(profileFile))
+                {
+                    Console.Error.WriteLine($"ERROR: profile file not found: {profileFile}");
+                    return 1;
+                }
+                MergeFromDefHeadless(defFile, profileFile, platformFile,
+                                     excludePlatform: false,
+                                     customizations, modInfo!);
+            }
+
+            // ---- 5. --sync ----
+            if (doSync)
+            {
+                if (!File.Exists(defFile) || !File.Exists(companyFile))
+                {
+                    Console.Error.WriteLine("ERROR: --sync requires both options.def and the company file to exist.");
+                    return 1;
+                }
+                var addOnly = ParseNameList(addOnlyRaw);
+                var removeList = ParseNameList(removeRaw);
+                if (!allAdds && !allRemoves && addOnly.Count == 0 && removeList.Count == 0)
+                {
+                    Console.Error.WriteLine("ERROR: --sync needs at least one of --all-adds, --all-removes, --add-only, --remove.");
+                    return 1;
+                }
+                SyncCompanyHeadless(defFile, companyFile, platformFile,
+                                    allAdds, allRemoves, addOnly, removeList, customizations);
+            }
+
+            // ---- 6. --import ----
+            if (doImport)
+            {
+                Console.WriteLine("Compiling options...");
+                compile_options_main.Run(cmdvars, profile, executor);
+            }
+
+            return 0;
+        }
+
+        /// <summary>
+        /// Builds an option line from CLI args using the same rules as
+        /// CreateNewOptionInteractive (validates name length, uniqueness, type, etc).
+        /// Returns null and prints an error if validation fails.
+        /// </summary>
+        private static string? BuildOptionLineFromArgs(
+            string name, string? type, bool isStatic, bool isDynamic,
+            string? defaultVal, string? stateVal, string? description,
+            List<string> existingDef)
+        {
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                Console.Error.WriteLine("ERROR: --add requires a name.");
+                return null;
+            }
+            if (name.Length > 8)
+            {
+                Console.Error.WriteLine("ERROR: option name must be 8 characters or less.");
+                return null;
+            }
+            var existingNames = new HashSet<string>();
+            foreach (var line in existingDef)
+            {
+                var n = ExtractOptionName(line);
+                if (n != "") existingNames.Add(n);
+            }
+            if (existingNames.Contains(name.ToLower()))
+            {
+                Console.Error.WriteLine($"ERROR: option '{name}' already exists in options.def.");
+                return null;
+            }
+
+            if (string.IsNullOrEmpty(type))
+            {
+                Console.Error.WriteLine("ERROR: --add requires --type value|onoff.");
+                return null;
+            }
+            type = type.ToLowerInvariant();
+            bool isValueOption;
+            if (type == "value") isValueOption = true;
+            else if (type == "onoff" || type == "on-off" || type == "on/off") isValueOption = false;
+            else
+            {
+                Console.Error.WriteLine("ERROR: --type must be 'value' or 'onoff'.");
+                return null;
+            }
+
+            if (isStatic && isDynamic)
+            {
+                Console.Error.WriteLine("ERROR: --static and --dynamic are mutually exclusive.");
+                return null;
+            }
+            if (!isStatic && !isDynamic)
+            {
+                Console.Error.WriteLine("ERROR: --add requires --static or --dynamic.");
+                return null;
+            }
+            bool dynamicFlag = isDynamic;
+
+            string defaultPart;
+            if (isValueOption)
+            {
+                if (defaultVal == null)
+                {
+                    Console.Error.WriteLine("ERROR: value-type --add requires --default <value>.");
+                    return null;
+                }
+                if (defaultVal.Length > 2000)
+                {
+                    Console.Error.WriteLine("ERROR: --default exceeds 2000 characters.");
+                    return null;
+                }
+                defaultPart = defaultVal;
+            }
+            else
+            {
+                if (string.IsNullOrEmpty(stateVal))
+                {
+                    Console.Error.WriteLine("ERROR: onoff-type --add requires --state on|off.");
+                    return null;
+                }
+                var sv = stateVal.ToLowerInvariant();
+                if (sv == "on" || sv == "+") defaultPart = "+";
+                else if (sv == "off" || sv == "-") defaultPart = "-";
+                else
+                {
+                    Console.Error.WriteLine("ERROR: --state must be 'on' or 'off'.");
+                    return null;
+                }
+            }
+
+            var desc = string.IsNullOrWhiteSpace(description) ? "No description" : description!.Trim();
+
+            string prefix = isValueOption
+                ? (dynamicFlag ? "V:" : "v:")
+                : (dynamicFlag ? "C:" : "c:");
+            return isValueOption
+                ? $"{prefix}{name} <<{defaultPart}>> {desc}"
+                : $"{prefix}{name} {defaultPart} {desc}";
+        }
+
+        /// <summary>
+        /// Validates --mod-num / --mod-name / --mod-reason and constructs the same
+        /// dictionary PromptModificationInfo() returns. All three are required.
+        /// </summary>
+        private static Dictionary<string, string>? BuildModInfo(string? modNum, string? name, string? reason)
+        {
+            if (string.IsNullOrWhiteSpace(modNum))
+            {
+                Console.Error.WriteLine("ERROR: --mod-num is required for this operation.");
+                return null;
+            }
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                Console.Error.WriteLine("ERROR: --mod-name is required for this operation.");
+                return null;
+            }
+            if (string.IsNullOrWhiteSpace(reason))
+            {
+                Console.Error.WriteLine("ERROR: --mod-reason is required for this operation.");
+                return null;
+            }
+            var dateStr = DateTime.Now.ToString("yyMMdd");
+            var upperName = name!.Trim().ToUpper();
+            var trimmedReason = reason!.Trim();
+            var trimmedMod = modNum!.Trim();
+            return new Dictionary<string, string>
+            {
+                ["date"] = dateStr,
+                ["name"] = upperName,
+                ["mod_num"] = trimmedMod,
+                ["reason"] = trimmedReason,
+                ["chg_line"] = $"CHG {dateStr} {upperName}    {trimmedMod}    {trimmedReason}"
+            };
+        }
+
+        /// <summary>
+        /// Parses --customize NAME=VALUE flags into a name→value map. Returns null
+        /// (and prints) on malformed input.
+        /// </summary>
+        private static Dictionary<string, string>? ParseCustomizations(List<string> raw)
+        {
+            var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var item in raw)
+            {
+                var eq = item.IndexOf('=');
+                if (eq <= 0)
+                {
+                    Console.Error.WriteLine($"ERROR: --customize must be NAME=VALUE (got '{item}').");
+                    return null;
+                }
+                map[item.Substring(0, eq).Trim()] = item.Substring(eq + 1);
+            }
+            return map;
+        }
+
+        private static HashSet<string> ParseNameList(string? raw)
+        {
+            var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (string.IsNullOrWhiteSpace(raw)) return set;
+            foreach (var part in raw!.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                set.Add(part);
+            return set;
+        }
+
+        /// <summary>
+        /// Headless equivalent of the merge blocks in RunAddMode / RunMergeFromDef.
+        /// Reads new options from defFile that aren't already in targetFile, applies
+        /// any --customize overrides, and inserts under MOD markers.
+        /// </summary>
+        private static void MergeFromDefHeadless(
+            string defFile, string targetFile, string platformFile,
+            bool excludePlatform,
+            Dictionary<string, string> customizations,
+            Dictionary<string, string> modInfo)
+        {
+            var defLines = LoadOptionsFile(defFile);
+            var targetLines = LoadOptionsFile(targetFile);
+
+            var pool = new List<string>(defLines);
+            if (excludePlatform && File.Exists(platformFile))
+            {
+                Console.WriteLine("Excluding platform-specific options...");
+                pool = RemoveOptions(pool, LoadOptionsFile(platformFile));
+            }
+
+            var optionsToAdd = FindNewOptions(pool, targetLines);
+            if (optionsToAdd.Count == 0)
+            {
+                Console.WriteLine($"No new options to add. {Path.GetFileName(targetFile)} is up to date.");
+                return;
+            }
+
+            var customized = new List<string>();
+            foreach (var line in optionsToAdd)
+                customized.Add(ApplyCustomization(line, customizations));
+
+            var merged = InsertNewOptions(targetLines, customized, modInfo["mod_num"]);
+            merged = AddChgToHeader(merged, modInfo["chg_line"]);
+            SaveOptionsFile(targetFile, merged);
+            Console.WriteLine($"{customized.Count} option(s) merged into {Path.GetFileName(targetFile)}");
+        }
+
+        /// <summary>
+        /// Headless equivalent of RunSyncCheck. Selectors:
+        ///   --all-adds          → add every missing-in-company option
+        ///   --all-removes       → remove every extra-in-company option
+        ///   --add-only A,B,C    → restrict adds to these names
+        ///   --remove A,B,C      → remove only these names
+        /// </summary>
+        private static void SyncCompanyHeadless(
+            string defFile, string companyFile, string platformFile,
+            bool allAdds, bool allRemoves,
+            HashSet<string> addOnly, HashSet<string> removeList,
+            Dictionary<string, string> customizations)
+        {
+            var companyName = Path.GetFileName(companyFile);
+            var defLines = LoadOptionsFile(defFile);
+            var companyLines = LoadOptionsFile(companyFile);
+
+            var pool = new List<string>(defLines);
+            if (File.Exists(platformFile))
+                pool = RemoveOptions(pool, LoadOptionsFile(platformFile));
+
+            var missing = FindNewOptions(pool, companyLines);
+            var extra = FindNewOptions(companyLines, pool);
+
+            // Adds
+            var toAdd = new List<string>();
+            if (allAdds)
+                toAdd.AddRange(missing);
+            else if (addOnly.Count > 0)
+            {
+                foreach (var line in missing)
+                    if (addOnly.Contains(ExtractOptionName(line))) toAdd.Add(line);
+            }
+
+            // Removes
+            var removeNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (allRemoves)
+            {
+                foreach (var line in extra)
+                {
+                    var n = ExtractOptionName(line);
+                    if (n != "") removeNames.Add(n);
+                }
+            }
+            else if (removeList.Count > 0)
+            {
+                foreach (var line in extra)
+                {
+                    var n = ExtractOptionName(line);
+                    if (n != "" && removeList.Contains(n)) removeNames.Add(n);
+                }
+            }
+
+            if (toAdd.Count == 0 && removeNames.Count == 0)
+            {
+                Console.WriteLine($"No matching changes to apply to {companyName}.");
+                return;
+            }
+
+            companyLines = LoadOptionsFile(companyFile);
+            if (removeNames.Count > 0)
+            {
+                companyLines = companyLines.Where(line =>
+                {
+                    var n = ExtractOptionName(line);
+                    return n == "" || !removeNames.Contains(n);
+                }).ToList();
+                Console.WriteLine($"{removeNames.Count} option(s) removed from {companyName}");
+            }
+
+            if (toAdd.Count > 0)
+            {
+                var customized = new List<string>();
+                foreach (var line in toAdd)
+                    customized.Add(ApplyCustomization(line, customizations));
+                companyLines = InsertNewOptions(companyLines, customized, null);
+                Console.WriteLine($"{customized.Count} option(s) added to {companyName}");
+            }
+
+            SaveOptionsFile(companyFile, companyLines);
+        }
+
+        /// <summary>
+        /// Non-prompting equivalent of PromptOptionValue: when the caller passes
+        /// --customize NAME=VALUE for an option being merged, replace its default
+        /// value/state. Keeps the original line otherwise.
+        /// </summary>
+        private static string ApplyCustomization(string optionLine, Dictionary<string, string> customizations)
+        {
+            if (customizations.Count == 0) return optionLine;
+
+            var line = optionLine.Trim();
+            if (line.Length < 3) return optionLine;
+            var prefix = line.Substring(0, 2);
+            var optType = prefix.ToLower();
+            if (optType != "v:" && optType != "c:") return optionLine;
+
+            var content = line.Substring(2).Trim();
+            var spaceIdx = content.IndexOf(' ');
+            if (spaceIdx == -1) return optionLine;
+            var optName = content.Substring(0, spaceIdx).Trim();
+            var rest = content.Substring(spaceIdx).Trim();
+
+            if (!customizations.TryGetValue(optName, out var newVal)) return optionLine;
+
+            if (optType == "v:")
+            {
+                var s = rest.IndexOf("<<");
+                var e = rest.IndexOf(">>");
+                var description = (s != -1 && e != -1) ? rest.Substring(e + 2).Trim() : rest;
+                return $"{prefix}{optName} <<{newVal}>> {description}";
+            }
+            else
+            {
+                var sv = newVal.ToLowerInvariant();
+                string state;
+                if (sv == "on" || sv == "+") state = "+";
+                else if (sv == "off" || sv == "-") state = "-";
+                else
+                {
+                    Console.Error.WriteLine($"WARNING: --customize {optName}={newVal} ignored (onoff option needs on|off).");
+                    return optionLine;
+                }
+                string description;
+                if (rest.StartsWith("-") || rest.StartsWith("+"))
+                    description = rest.Substring(1).Trim();
+                else description = rest;
+                return $"{prefix}{optName} {state} {description}";
+            }
         }
 
         #endregion

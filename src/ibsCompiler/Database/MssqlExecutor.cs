@@ -364,7 +364,7 @@ namespace ibsCompiler.Database
 
             using var cmd = new SqlCommand($"SELECT * FROM {tableName}", connection);
             using var reader = cmd.ExecuteReader();
-            using var writer = new StreamWriter(dataFile, false);
+            using var writer = ibs_compiler_common.OpenSourceWriter(dataFile);
 
             int rowCount = 0;
             while (reader.Read())

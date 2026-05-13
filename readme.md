@@ -306,6 +306,19 @@ hash -r
 
 ---
 
+## Documentation
+
+Deep-reference documentation for developers:
+
+| Document | Contents |
+|----------|----------|
+| [docs/architecture.md](docs/architecture.md) | ADO.NET providers, profile system internals, symbolic links, caching, command architecture, build/distribution |
+| [docs/commands-reference.md](docs/commands-reference.md) | Detailed usage, file formats, and behavior for every command |
+| [docs/options-system.md](docs/options-system.md) | Placeholder syntax, option file hierarchy, file format reference, sequence processing, caching |
+| [docs/troubleshooting.md](docs/troubleshooting.md) | Common issues, error messages, diagnostic commands |
+
+---
+
 ## Project Structure
 
 ```

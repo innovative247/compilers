@@ -35,6 +35,14 @@ namespace ibsCompiler
             writer.WriteLine(normalized);
         }
 
+        /// <summary>
+        /// Opens a StreamWriter for any committed CSS source file (messages, options,
+        /// actions, required_fields, table_locations, etc). Forces LF terminators so
+        /// files are byte-identical regardless of host OS.
+        /// </summary>
+        public static StreamWriter OpenSourceWriter(string path, bool append = false)
+            => new StreamWriter(path, append) { NewLine = "\n" };
+
         public static bool ConsoleYesNo(string question)
         {
             while (true)
@@ -219,7 +227,7 @@ namespace ibsCompiler
             try
             {
                 using var source = new StreamReader(sourceFile);
-                using var dest = new StreamWriter(destinationFile, true);
+                using var dest = OpenSourceWriter(destinationFile, append: true);
                 string? line;
                 while ((line = source.ReadLine()) != null)
                     dest.WriteLine(line);
@@ -229,7 +237,7 @@ namespace ibsCompiler
 
         public static bool SaveArrayToDisk(List<string> sourceFile, string destinationFile)
         {
-            using var dest = new StreamWriter(destinationFile, false);
+            using var dest = OpenSourceWriter(destinationFile);
             foreach (var line in sourceFile)
                 dest.WriteLine(line);
             return true;

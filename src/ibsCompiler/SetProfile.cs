@@ -26,6 +26,16 @@ namespace ibsCompiler
 
             LoadSettings();
 
+            // Headless dispatch — any of these flags routes to the non-interactive
+            // CRUD/test handlers. Profile shortcut and the wizard remain unchanged
+            // when no headless flag is provided.
+            var argList = args.ToList();
+            if (CliArgs.AnyPresent(argList,
+                    "--create", "--edit", "--view", "--copy", "--delete", "--test"))
+            {
+                return RunHeadless(argList);
+            }
+
             // Profile shortcut: set_profile GONZO  → open GONZO directly
             //                   set_profile NEWNAME → open new profile wizard with name pre-filled
             // (VersionCheck already intercepted: version, v, update, install, configure)
@@ -43,6 +53,18 @@ namespace ibsCompiler
             MainMenu();
             return 0;
         }
+
+        /// <summary>
+        /// Long flags accepted by headless mode that take NO value. Program.cs hands
+        /// these to <see cref="CliArgs.StripLongFlags"/> so any value flags don't
+        /// accidentally consume the wrong tokens.
+        /// </summary>
+        public static readonly string[] BoolFlagNames = new[]
+        {
+            "--raw", "--no-raw",
+            "--test",
+            "--yes",
+        };
 
         #region Icons
         private static class Icons
@@ -875,7 +897,7 @@ namespace ibsCompiler
             }
         }
 
-        private static void TestConnection(ProfileData profile)
+        private static void TestConnection(ProfileData profile, bool allowCredentialRetry = true)
         {
             Console.Write("Testing connection... ");
             var resolved = new ResolvedProfile
@@ -929,6 +951,8 @@ namespace ibsCompiler
             if (!string.IsNullOrEmpty(lastOutput))
                 Console.WriteLine(lastOutput);
 
+            if (!allowCredentialRetry) return;
+
             // Offer to update credentials on failure
             Console.Write("\nUpdate credentials? [y/N]: ");
             var retry = Console.ReadLine()?.Trim().ToUpper();
@@ -947,7 +971,7 @@ namespace ibsCompiler
                 TestConnection(profile);
         }
 
-        private static void TestOptions(string profileName, ProfileData profile)
+        private static void TestOptions(string profileName, ProfileData profile, string? presetPlaceholder = null)
         {
             Console.WriteLine("\nTesting options files...");
 
@@ -987,12 +1011,20 @@ namespace ibsCompiler
             else
                 PrintDim($"  options.{company}.{profileName} not found (optional)");
 
-            // Prompt to resolve a placeholder
-            Console.WriteLine();
-            Console.Write("  Enter option to resolve [&users&]: ");
-            var optionInput = Console.ReadLine()?.Trim();
-            if (string.IsNullOrEmpty(optionInput))
-                optionInput = "&users&";
+            // Resolve a placeholder. Headless callers preset it; interactive
+            // callers fall through to the prompt with "&users&" as default.
+            string optionInput;
+            if (presetPlaceholder != null)
+            {
+                optionInput = string.IsNullOrEmpty(presetPlaceholder) ? "&users&" : presetPlaceholder;
+            }
+            else
+            {
+                Console.WriteLine();
+                Console.Write("  Enter option to resolve [&users&]: ");
+                var input = Console.ReadLine()?.Trim();
+                optionInput = string.IsNullOrEmpty(input) ? "&users&" : input;
+            }
 
             var resolved = new ResolvedProfile
             {
@@ -1680,6 +1712,436 @@ namespace ibsCompiler
             }
             return password.ToString();
         }
+        #endregion
+
+        #region Headless CLI
+
+        /// <summary>
+        /// Dispatcher for non-interactive set_profile commands. Mirrors the menu
+        /// actions exactly: same validation, same settings.json mutation, same
+        /// symlink creation. Only difference is no prompts.
+        /// </summary>
+        private static int RunHeadless(List<string> args)
+        {
+            var createName = CliArgs.GetOption(args, "--create");
+            var editName   = CliArgs.GetOption(args, "--edit");
+            var viewName   = CliArgs.GetOption(args, "--view");
+            var copyName   = CliArgs.GetOption(args, "--copy");
+            var deleteName = CliArgs.GetOption(args, "--delete");
+            var testName   = CliArgs.GetOption(args, "--test");
+
+            int primary = 0;
+            if (createName != null) primary++;
+            if (editName != null)   primary++;
+            if (viewName != null)   primary++;
+            if (copyName != null)   primary++;
+            if (deleteName != null) primary++;
+            if (testName != null)   primary++;
+            if (primary > 1)
+            {
+                Console.Error.WriteLine("ERROR: --create, --edit, --view, --copy, --delete, --test are mutually exclusive.");
+                return 1;
+            }
+            if (primary == 0)
+            {
+                Console.Error.WriteLine("ERROR: headless mode requires one of --create, --edit, --view, --copy, --delete, --test.");
+                return 1;
+            }
+
+            if (createName != null) return CreateHeadless(createName, args);
+            if (editName != null)   return EditHeadless(editName, args);
+            if (viewName != null)   return ViewHeadless(viewName);
+            if (copyName != null)   return CopyHeadless(copyName, args);
+            if (deleteName != null) return DeleteHeadless(deleteName, args);
+            if (testName != null)   return TestHeadless(testName, args);
+            return 1;
+        }
+
+        /// <summary>
+        /// Headless equivalent of the Test sub-menu. <c>--what</c> selects which
+        /// test to run (or 'all' for the full sequence). Each test calls the
+        /// existing helper, suppressing prompts (credential retry on connection
+        /// failure, "enter option" on options test).
+        /// </summary>
+        private static int TestHeadless(string rawName, List<string> args)
+        {
+            var match = FindProfile(rawName.Trim().ToUpperInvariant());
+            if (match == null)
+            {
+                Console.Error.WriteLine($"ERROR: profile '{rawName}' not found.");
+                return 1;
+            }
+            var (name, profile) = match.Value;
+
+            var what = CliArgs.GetOption(args, "--what");
+            if (string.IsNullOrEmpty(what))
+            {
+                Console.Error.WriteLine("ERROR: --test requires --what <sql-source|connection|options|table-locations|changelog|symlinks|all>.");
+                return 1;
+            }
+            what = what.Trim().ToLowerInvariant();
+
+            var resolve = CliArgs.GetOption(args, "--resolve");
+
+            void Run(string kind)
+            {
+                switch (kind)
+                {
+                    case "sql-source":       TestSqlSource(profile); break;
+                    case "connection":       TestConnection(profile, allowCredentialRetry: false); break;
+                    case "options":
+                        if (profile.RawMode) PrintDim("  (skipped: profile is in raw mode)");
+                        else TestOptions(name, profile, presetPlaceholder: resolve ?? "&users&");
+                        break;
+                    case "table-locations":
+                        if (profile.RawMode) PrintDim("  (skipped: profile is in raw mode)");
+                        else TestTableLocations(profile);
+                        break;
+                    case "changelog":
+                        if (profile.RawMode) PrintDim("  (skipped: profile is in raw mode)");
+                        else TestChangelog(name, profile);
+                        break;
+                    case "symlinks":
+                        if (profile.RawMode) PrintDim("  (skipped: profile is in raw mode)");
+                        else TestSymbolicLinks(profile);
+                        break;
+                    default:
+                        Console.Error.WriteLine($"ERROR: unknown --what value '{kind}'.");
+                        Environment.Exit(1);
+                        break;
+                }
+            }
+
+            if (what == "all")
+            {
+                foreach (var k in new[] { "sql-source", "connection", "options", "table-locations", "changelog", "symlinks" })
+                {
+                    Console.WriteLine();
+                    WriteBright($"-- {k} --");
+                    Run(k);
+                }
+            }
+            else
+            {
+                Run(what);
+            }
+            return 0;
+        }
+
+        private static int CreateHeadless(string rawName, List<string> args)
+        {
+            var name = rawName.Trim().ToUpperInvariant();
+            if (string.IsNullOrEmpty(name) || !Regex.IsMatch(name, @"^[A-Z0-9_]+$"))
+            {
+                Console.Error.WriteLine($"ERROR: invalid profile name '{rawName}' — alphanumeric and underscore only.");
+                return 1;
+            }
+            if (ReservedNames.Contains(name))
+            {
+                Console.Error.WriteLine($"ERROR: '{name}' is a reserved command name.");
+                return 1;
+            }
+            if (_settings.Profiles.Keys.Any(k => string.Equals(k, name, StringComparison.OrdinalIgnoreCase)))
+            {
+                Console.Error.WriteLine($"ERROR: profile '{name}' already exists.");
+                return 1;
+            }
+
+            var profile = new ProfileData { DefaultLanguage = "1" };
+            if (!ApplyConnectionFlags(profile, args, isCreate: true)) return 1;
+
+            // Aliases (multi)
+            var aliasFlags = CliArgs.GetMulti(args, "--alias");
+            if (aliasFlags.Count > 0)
+            {
+                var aliases = new List<string>();
+                foreach (var a in aliasFlags)
+                {
+                    foreach (var part in a.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                        aliases.Add(part.ToUpperInvariant());
+                }
+                foreach (var alias in aliases)
+                {
+                    foreach (var kvp in _settings.Profiles)
+                    {
+                        if (string.Equals(kvp.Key, name, StringComparison.OrdinalIgnoreCase)) continue;
+                        if (kvp.Key.ToUpperInvariant() == alias)
+                        {
+                            Console.Error.WriteLine($"ERROR: alias '{alias}' conflicts with profile name '{kvp.Key}'.");
+                            return 1;
+                        }
+                        if (kvp.Value.Aliases?.Any(x => x.ToUpperInvariant() == alias) == true)
+                        {
+                            Console.Error.WriteLine($"ERROR: alias '{alias}' already used by profile '{kvp.Key}'.");
+                            return 1;
+                        }
+                    }
+                }
+                profile.Aliases = aliases;
+            }
+            else
+            {
+                profile.Aliases = new List<string>();
+            }
+
+            _settings.Profiles[name] = profile;
+            if (!SaveSettings()) return 1;
+            PrintSuccess($"Profile '{name}' created.");
+            DisplayProfile(name, profile);
+
+            if (!profile.RawMode)
+                ibs_compiler_common.EnsureSymbolicLinks(profile.SqlSource ?? "");
+
+            // --test deferred to Phase 4. The flag is recognized here so a script
+            // can pass it idempotently; for now we just consume it silently.
+            CliArgs.HasFlag(args, "--test");
+            return 0;
+        }
+
+        private static int EditHeadless(string rawName, List<string> args)
+        {
+            var match = FindProfile(rawName.Trim().ToUpperInvariant());
+            if (match == null)
+            {
+                Console.Error.WriteLine($"ERROR: profile '{rawName}' not found.");
+                return 1;
+            }
+            var (name, profile) = match.Value;
+
+            if (!ApplyConnectionFlags(profile, args, isCreate: false)) return 1;
+
+            // Aliases — three modes: --no-aliases (clear), --alias VAL (replace), or absent (keep)
+            if (CliArgs.HasFlag(args, "--no-aliases"))
+            {
+                profile.Aliases = new List<string>();
+            }
+            else
+            {
+                var aliasFlags = CliArgs.GetMulti(args, "--alias");
+                if (aliasFlags.Count > 0)
+                {
+                    var aliases = new List<string>();
+                    foreach (var a in aliasFlags)
+                        foreach (var part in a.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                            aliases.Add(part.ToUpperInvariant());
+                    foreach (var alias in aliases)
+                    {
+                        foreach (var kvp in _settings.Profiles)
+                        {
+                            if (string.Equals(kvp.Key, name, StringComparison.OrdinalIgnoreCase)) continue;
+                            if (kvp.Key.ToUpperInvariant() == alias)
+                            {
+                                Console.Error.WriteLine($"ERROR: alias '{alias}' conflicts with profile name '{kvp.Key}'.");
+                                return 1;
+                            }
+                            if (kvp.Value.Aliases?.Any(x => x.ToUpperInvariant() == alias) == true)
+                            {
+                                Console.Error.WriteLine($"ERROR: alias '{alias}' already used by profile '{kvp.Key}'.");
+                                return 1;
+                            }
+                        }
+                    }
+                    profile.Aliases = aliases;
+                }
+            }
+
+            if (!SaveSettings()) return 1;
+            PrintSuccess($"Profile '{name}' updated.");
+            DisplayProfile(name, profile);
+            if (!profile.RawMode)
+                ibs_compiler_common.EnsureSymbolicLinks(profile.SqlSource ?? "");
+            return 0;
+        }
+
+        private static int ViewHeadless(string rawName)
+        {
+            var match = FindProfile(rawName.Trim().ToUpperInvariant());
+            if (match == null)
+            {
+                Console.Error.WriteLine($"ERROR: profile '{rawName}' not found.");
+                return 1;
+            }
+            DisplayProfile(match.Value.Name, match.Value.Profile);
+            return 0;
+        }
+
+        private static int CopyHeadless(string sourceName, List<string> args)
+        {
+            var dst = CliArgs.GetOption(args, "--to");
+            if (string.IsNullOrEmpty(dst))
+            {
+                Console.Error.WriteLine("ERROR: --copy requires --to <newname>.");
+                return 1;
+            }
+            var match = FindProfile(sourceName.Trim().ToUpperInvariant());
+            if (match == null)
+            {
+                Console.Error.WriteLine($"ERROR: source profile '{sourceName}' not found.");
+                return 1;
+            }
+            var newName = dst.Trim().ToUpperInvariant();
+            if (string.IsNullOrEmpty(newName) || !Regex.IsMatch(newName, @"^[A-Z0-9_]+$"))
+            {
+                Console.Error.WriteLine($"ERROR: invalid destination name '{dst}'.");
+                return 1;
+            }
+            if (ReservedNames.Contains(newName))
+            {
+                Console.Error.WriteLine($"ERROR: '{newName}' is a reserved command name.");
+                return 1;
+            }
+            if (_settings.Profiles.Keys.Any(k => string.Equals(k, newName, StringComparison.OrdinalIgnoreCase)))
+            {
+                Console.Error.WriteLine($"ERROR: profile '{newName}' already exists.");
+                return 1;
+            }
+
+            var json = JsonSerializer.Serialize(match.Value.Profile);
+            var newProfile = JsonSerializer.Deserialize<ProfileData>(json)!;
+            newProfile.Aliases = new List<string>();
+            _settings.Profiles[newName] = newProfile;
+
+            if (!SaveSettings()) return 1;
+            PrintSuccess($"Profile '{match.Value.Name}' copied to '{newName}'.");
+            return 0;
+        }
+
+        private static int DeleteHeadless(string rawName, List<string> args)
+        {
+            if (!CliArgs.HasFlag(args, "--yes"))
+            {
+                Console.Error.WriteLine("ERROR: --delete requires --yes to confirm (no interactive prompt in headless mode).");
+                return 1;
+            }
+            var match = FindProfile(rawName.Trim().ToUpperInvariant());
+            if (match == null)
+            {
+                Console.Error.WriteLine($"ERROR: profile '{rawName}' not found.");
+                return 1;
+            }
+            _settings.Profiles.Remove(match.Value.Name);
+            if (!SaveSettings()) return 1;
+            PrintSuccess($"Profile '{match.Value.Name}' deleted.");
+            return 0;
+        }
+
+        /// <summary>
+        /// Applies --platform, --host, --port, --user, --password, --company,
+        /// --language, --sql-source, --raw / --no-raw to the given profile. On
+        /// create, required fields are enforced. On edit, every flag is optional
+        /// and only changed fields are written.
+        /// </summary>
+        private static bool ApplyConnectionFlags(ProfileData profile, List<string> args, bool isCreate)
+        {
+            // Raw mode (must be resolved before company/sql-source defaults)
+            var rawTri = CliArgs.ResolveBool(args, new[] { "--raw" }, new[] { "--no-raw" });
+            if (rawTri.HasValue) profile.RawMode = rawTri.Value;
+            else if (isCreate) profile.RawMode = false;
+
+            var platform = CliArgs.GetOption(args, "--platform");
+            if (platform != null)
+            {
+                var p = platform.Trim().ToUpperInvariant();
+                if (p == "MSSQL" || p == "SYBASE") profile.Platform = p;
+                else
+                {
+                    Console.Error.WriteLine("ERROR: --platform must be 'mssql' or 'sybase'.");
+                    return false;
+                }
+            }
+            else if (isCreate)
+            {
+                Console.Error.WriteLine("ERROR: --create requires --platform mssql|sybase.");
+                return false;
+            }
+
+            var host = CliArgs.GetOption(args, "--host");
+            if (host != null)
+            {
+                if (string.IsNullOrWhiteSpace(host))
+                {
+                    Console.Error.WriteLine("ERROR: --host cannot be empty.");
+                    return false;
+                }
+                profile.Host = host.Trim();
+            }
+            else if (isCreate)
+            {
+                Console.Error.WriteLine("ERROR: --create requires --host.");
+                return false;
+            }
+
+            var port = CliArgs.GetOption(args, "--port");
+            if (port != null)
+            {
+                if (!int.TryParse(port, out var p))
+                {
+                    Console.Error.WriteLine("ERROR: --port must be a number.");
+                    return false;
+                }
+                profile.Port = p;
+            }
+            else if (isCreate)
+            {
+                profile.Port = profile.Platform == "MSSQL" ? 1433 : 5000;
+            }
+
+            var user = CliArgs.GetOption(args, "--user");
+            if (user != null)
+            {
+                if (string.IsNullOrWhiteSpace(user))
+                {
+                    Console.Error.WriteLine("ERROR: --user cannot be empty.");
+                    return false;
+                }
+                profile.Username = user.Trim();
+            }
+            else if (isCreate)
+            {
+                Console.Error.WriteLine("ERROR: --create requires --user.");
+                return false;
+            }
+
+            var pass = CliArgs.GetOption(args, "--password");
+            if (pass != null) profile.Password = pass;
+            else if (isCreate)
+            {
+                Console.Error.WriteLine("ERROR: --create requires --password.");
+                return false;
+            }
+
+            var lang = CliArgs.GetOption(args, "--language");
+            if (lang != null) profile.DefaultLanguage = lang.Trim();
+            else if (isCreate && string.IsNullOrEmpty(profile.DefaultLanguage)) profile.DefaultLanguage = "1";
+
+            if (profile.RawMode)
+            {
+                profile.Company = "0";
+                profile.SqlSource = "";
+            }
+            else
+            {
+                var company = CliArgs.GetOption(args, "--company");
+                if (company != null) profile.Company = company.Trim();
+                else if (isCreate) profile.Company = "101";
+
+                var sqlSrc = CliArgs.GetOption(args, "--sql-source");
+                if (sqlSrc != null)
+                {
+                    var resolved = sqlSrc.Trim();
+                    if (resolved == "." || resolved == "./" || resolved == ".\\")
+                        resolved = Directory.GetCurrentDirectory();
+                    profile.SqlSource = resolved;
+                }
+                else if (isCreate)
+                {
+                    Console.Error.WriteLine("ERROR: --create requires --sql-source <path> (or --raw to skip).");
+                    return false;
+                }
+            }
+            return true;
+        }
+
         #endregion
     }
 }

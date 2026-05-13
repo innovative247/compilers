@@ -17,3 +17,7 @@ settings.json
 
 # macOS
 .DS_Store
+
+# Test-suite artifacts (regression-suite stdout + iplanext trace files written to cwd)
+suite.out
+PLANTRACE.*
