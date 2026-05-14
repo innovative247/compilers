@@ -13,9 +13,16 @@ namespace ibsCompiler.Database
         private static readonly Regex ExitRegex = new(@"^\s*(exit|quit)\s*$", RegexOptions.IgnoreCase);
         private static readonly string? SqlCmdInitScript = LoadSqlCmdInit();
 
+        // Per-call output sink wired up by ExecuteSql/ExecuteBatch. The persistent
+        // connection's InfoMessage handler routes through this so PRINT/RAISERROR
+        // messages stream as the server emits them.
+        private Action<string>? _emit;
+
         // Persistent connection for batch-at-a-time execution (OpenConnection/ExecuteBatch/CloseConnection)
         private SqlConnection? _persistentConn;
-        private StringBuilder? _batchOutput;
+
+        // Width cap for streamed result-set columns (mirrors isql -w300).
+        private const int MaxColumnWidth = 256;
 
         public MssqlExecutor(ResolvedProfile profile)
         {
@@ -58,95 +65,55 @@ namespace ibsCompiler.Database
         {
             var result = new ExecReturn { Returncode = true, Output = "" };
             var output = new StringBuilder();
+            var sink = OutputSink.Build(output, captureOutput, outputFile);
+            _emit = sink.Emit;
 
             try
             {
                 using var connection = new SqlConnection(BuildConnectionString(database));
-                connection.InfoMessage += (sender, e) =>
-                {
-                    foreach (SqlError err in e.Errors)
-                    {
-                        if (err.Class >= 11) continue; // errors handled by SqlException catch
-                        var msg = err.Message;
-                        if (msg.StartsWith("Changed database context")) continue;
-                        output.AppendLine(msg);
-                    }
-                };
+                connection.InfoMessage += OnInfoMessage;
                 connection.Open();
                 ExecuteInitScript(connection);
 
-                // Split on GO batch separator
                 var batches = SplitBatches(sqlText);
                 foreach (var batch in batches)
                 {
                     if (string.IsNullOrWhiteSpace(batch)) continue;
-                    // exit/quit are isql client commands — stop processing
                     if (ExitRegex.IsMatch(batch.Trim())) break;
                     try
                     {
                         using var cmd = new SqlCommand(batch, connection);
-                        cmd.CommandTimeout = 0; // no timeout for long-running scripts
+                        cmd.CommandTimeout = 0;
 
                         using var reader = cmd.ExecuteReader();
-                        do
-                        {
-                            if (reader.FieldCount > 0)
-                            {
-                                // Format result set as text output (similar to sqlcmd)
-                                FormatResultSet(reader, output);
-                            }
-                        } while (reader.NextResult());
+                        StreamReaderAsync(reader, sink.Emit).GetAwaiter().GetResult();
                     }
                     catch (SqlException ex)
                     {
-                        foreach (SqlError err in ex.Errors)
-                        {
-                            var msg = $"Msg {err.Number}, Level {err.Class}, State {err.State}";
-                            if (err.Procedure != null && err.Procedure.Length > 0)
-                                msg += $", Procedure {err.Procedure}";
-                            if (err.LineNumber > 0)
-                                msg += $", Line {err.LineNumber}";
-                            output.AppendLine(msg);
-                            output.AppendLine(err.Message);
-                        }
+                        EmitSqlException(ex, sink.Emit);
                         result.Returncode = false;
                     }
                 }
             }
             catch (Exception ex)
             {
-                output.AppendLine($"ERROR! {ex.Message}");
+                sink.Emit($"ERROR! {ex.Message}");
                 result.Returncode = false;
+            }
+            finally
+            {
+                _emit = null;
+                sink.Dispose();
             }
 
             result.Output = output.ToString();
-
-            if (!captureOutput && !string.IsNullOrWhiteSpace(result.Output))
-            {
-                var target = !string.IsNullOrEmpty(outputFile) ? outputFile : ibs_compiler_common.DefaultOutFile;
-                if (!string.IsNullOrEmpty(target))
-                    ibs_compiler_common.WriteLineToDisk(target, result.Output);
-                else
-                    Console.Write(result.Output);
-            }
-
             return result;
         }
 
         public void OpenConnection(string database)
         {
-            _batchOutput = new StringBuilder();
             _persistentConn = new SqlConnection(BuildConnectionString(database));
-            _persistentConn.InfoMessage += (sender, e) =>
-            {
-                foreach (SqlError err in e.Errors)
-                {
-                    if (err.Class >= 11) continue; // errors handled by SqlException catch
-                    var msg = err.Message;
-                    if (msg.StartsWith("Changed database context")) continue;
-                    _batchOutput.AppendLine(msg);
-                }
-            };
+            _persistentConn.InfoMessage += OnInfoMessage;
             _persistentConn.Open();
             ExecuteInitScript(_persistentConn);
         }
@@ -154,7 +121,9 @@ namespace ibsCompiler.Database
         public ExecReturn ExecuteBatch(string batch, bool captureOutput = false, string outputFile = "")
         {
             var result = new ExecReturn { Returncode = true, Output = "" };
-            _batchOutput!.Clear();
+            var output = new StringBuilder();
+            var sink = OutputSink.Build(output, captureOutput, outputFile);
+            _emit = sink.Emit;
 
             try
             {
@@ -164,39 +133,21 @@ namespace ibsCompiler.Database
                     cmd.CommandTimeout = 0;
 
                     using var reader = cmd.ExecuteReader();
-                    do
-                    {
-                        if (reader.FieldCount > 0)
-                            FormatResultSet(reader, _batchOutput);
-                    } while (reader.NextResult());
+                    StreamReaderAsync(reader, sink.Emit).GetAwaiter().GetResult();
                 }
             }
             catch (SqlException ex)
             {
-                foreach (SqlError err in ex.Errors)
-                {
-                    var msg = $"Msg {err.Number}, Level {err.Class}, State {err.State}";
-                    if (err.Procedure != null && err.Procedure.Length > 0)
-                        msg += $", Procedure {err.Procedure}";
-                    if (err.LineNumber > 0)
-                        msg += $", Line {err.LineNumber}";
-                    _batchOutput.AppendLine(msg);
-                    _batchOutput.AppendLine(err.Message);
-                }
+                EmitSqlException(ex, sink.Emit);
                 result.Returncode = false;
             }
-
-            result.Output = _batchOutput.ToString();
-
-            if (!captureOutput && !string.IsNullOrWhiteSpace(result.Output))
+            finally
             {
-                var target = !string.IsNullOrEmpty(outputFile) ? outputFile : ibs_compiler_common.DefaultOutFile;
-                if (!string.IsNullOrEmpty(target))
-                    ibs_compiler_common.WriteLineToDisk(target, result.Output);
-                else
-                    Console.Write(result.Output);
+                _emit = null;
+                sink.Dispose();
             }
 
+            result.Output = output.ToString();
             return result;
         }
 
@@ -204,7 +155,33 @@ namespace ibsCompiler.Database
         {
             _persistentConn?.Dispose();
             _persistentConn = null;
-            _batchOutput = null;
+        }
+
+        private void OnInfoMessage(object sender, SqlInfoMessageEventArgs e)
+        {
+            var emit = _emit;
+            if (emit == null) return;
+            foreach (SqlError err in e.Errors)
+            {
+                if (err.Class >= 11) continue; // errors handled by SqlException catch
+                var msg = err.Message;
+                if (msg.StartsWith("Changed database context")) continue;
+                emit(msg);
+            }
+        }
+
+        private static void EmitSqlException(SqlException ex, Action<string> emit)
+        {
+            foreach (SqlError err in ex.Errors)
+            {
+                var msg = $"Msg {err.Number}, Level {err.Class}, State {err.State}";
+                if (err.Procedure != null && err.Procedure.Length > 0)
+                    msg += $", Procedure {err.Procedure}";
+                if (err.LineNumber > 0)
+                    msg += $", Line {err.LineNumber}";
+                emit(msg);
+                emit(err.Message);
+            }
         }
 
         public ExecReturn BulkCopy(string table, BcpDirection direction, string dataFile, string formatFile = "")
@@ -387,69 +364,86 @@ namespace ibsCompiler.Database
                 .ToArray();
         }
 
-        private static void FormatResultSet(SqlDataReader reader, StringBuilder output)
+        private static async System.Threading.Tasks.Task StreamReaderAsync(SqlDataReader reader, Action<string> emit)
         {
-            var colCount = reader.FieldCount;
-            var colWidths = new int[colCount];
-            var colNames = new string[colCount];
-            var colIsNumeric = new bool[colCount];
+            do
+            {
+                if (reader.FieldCount > 0)
+                    await StreamOneResultSetAsync(reader, emit);
+            } while (await reader.NextResultAsync());
+        }
+
+        private static async System.Threading.Tasks.Task StreamOneResultSetAsync(SqlDataReader reader, Action<string> emit)
+        {
+            int colCount = reader.FieldCount;
+            var schema = reader.GetSchemaTable();
+            var widths = new int[colCount];
+            var names = new string[colCount];
+            var isNumeric = new bool[colCount];
+
             for (int i = 0; i < colCount; i++)
             {
-                colNames[i] = reader.GetName(i);
-                colWidths[i] = Math.Max(colNames[i].Length, 10);
+                names[i] = reader.GetName(i);
                 var t = reader.GetFieldType(i);
-                colIsNumeric[i] = t == typeof(int) || t == typeof(long) || t == typeof(short) ||
-                                  t == typeof(decimal) || t == typeof(double) || t == typeof(float) ||
-                                  t == typeof(byte);
-            }
+                isNumeric[i] = t == typeof(int) || t == typeof(long) || t == typeof(short) ||
+                               t == typeof(decimal) || t == typeof(double) || t == typeof(float) ||
+                               t == typeof(byte);
 
-            // Read all rows to determine column widths
-            var rows = new List<string[]>();
-            while (reader.Read())
-            {
-                var row = new string[colCount];
-                for (int i = 0; i < colCount; i++)
+                int colSize = 30; // sane default if schema lookup fails
+                if (schema != null && i < schema.Rows.Count)
                 {
-                    row[i] = reader.IsDBNull(i) ? "NULL" : (reader[i].ToString() ?? "").TrimEnd();
-                    colWidths[i] = Math.Max(colWidths[i], row[i].Length);
+                    var raw = schema.Rows[i]["ColumnSize"];
+                    if (raw != DBNull.Value)
+                    {
+                        try
+                        {
+                            int cs = Convert.ToInt32(raw);
+                            if (cs > 0) colSize = Math.Min(cs, MaxColumnWidth);
+                        }
+                        catch { }
+                    }
                 }
-                rows.Add(row);
+                widths[i] = Math.Max(Math.Max(colSize, names[i].Length), 10);
             }
 
-            // Column headers
+            var line = new StringBuilder();
+
+            // Header
             for (int i = 0; i < colCount; i++)
             {
-                if (i > 0) output.Append(' ');
-                output.Append(colIsNumeric[i]
-                    ? colNames[i].PadLeft(colWidths[i])
-                    : colNames[i].PadRight(colWidths[i]));
+                if (i > 0) line.Append(' ');
+                line.Append(isNumeric[i] ? names[i].PadLeft(widths[i]) : names[i].PadRight(widths[i]));
             }
-            output.AppendLine();
+            emit(line.ToString());
 
             // Separator
+            line.Clear();
             for (int i = 0; i < colCount; i++)
             {
-                if (i > 0) output.Append(' ');
-                output.Append(new string('-', colWidths[i]));
+                if (i > 0) line.Append(' ');
+                line.Append(new string('-', widths[i]));
             }
-            output.AppendLine();
+            emit(line.ToString());
 
-            // Data rows
-            foreach (var row in rows)
+            // Stream rows as the server delivers them
+            int rowCount = 0;
+            while (await reader.ReadAsync())
             {
+                line.Clear();
                 for (int i = 0; i < colCount; i++)
                 {
-                    if (i > 0) output.Append(' ');
-                    output.Append(colIsNumeric[i]
-                        ? row[i].PadLeft(colWidths[i])
-                        : row[i].PadRight(colWidths[i]));
+                    string val = reader.IsDBNull(i) ? "NULL" : (reader[i].ToString() ?? "").TrimEnd();
+                    if (val.Length > widths[i]) val = val.Substring(0, widths[i]);
+                    if (i > 0) line.Append(' ');
+                    line.Append(isNumeric[i] ? val.PadLeft(widths[i]) : val.PadRight(widths[i]));
                 }
-                output.AppendLine();
+                emit(line.ToString());
+                rowCount++;
             }
 
-            var rowWord = rows.Count == 1 ? "row" : "rows";
-            output.AppendLine($"({rows.Count} {rowWord} affected)");
-            output.AppendLine();
+            var rowWord = rowCount == 1 ? "row" : "rows";
+            emit($"({rowCount} {rowWord} affected)");
+            emit("");
         }
 
         public void Dispose()

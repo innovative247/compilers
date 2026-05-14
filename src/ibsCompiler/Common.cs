@@ -84,7 +84,89 @@ namespace ibsCompiler
                 }
             }
             catch { }
+
+            // Case-insensitive walk: legacy Unix create-files use lowercase "css>ss>ba>..."
+            // but the real directories on disk are mixed-case ("CSS/ss/ba/..."). On NTFS/DrvFs
+            // this is harmless (case-insensitive match), but on ext4/macOS-Linux the lookups
+            // above all fail. Walk the path component-by-component and resolve each segment
+            // case-insensitively before giving up.
+            if (TryResolveCaseInsensitive(fileName, out var resolved))
+            {
+                fileName = resolved;
+                return true;
+            }
+            if (TryResolveCaseInsensitive(fileName + ".sql", out resolved))
+            {
+                fileName = resolved;
+                return true;
+            }
+            if (TryResolveCaseInsensitive(fn, out resolved))
+            {
+                fileName = resolved;
+                return true;
+            }
+            if (TryResolveCaseInsensitive(fn + ".sql", out resolved))
+            {
+                fileName = resolved;
+                return true;
+            }
             return false;
+        }
+
+        /// <summary>
+        /// Walk <paramref name="path"/> component-by-component, matching each directory and
+        /// the file name case-insensitively against what is actually on disk. Returns true
+        /// (and writes the on-disk path to <paramref name="resolved"/>) only when every
+        /// segment resolves to a unique match.
+        /// </summary>
+        private static bool TryResolveCaseInsensitive(string path, out string resolved)
+        {
+            resolved = path;
+            if (string.IsNullOrEmpty(path)) return false;
+            if (File.Exists(path)) return true;
+
+            var isAbsolute = Path.IsPathRooted(path);
+            var root = isAbsolute ? Path.GetPathRoot(path) ?? string.Empty : string.Empty;
+            var rel = isAbsolute ? path.Substring(root.Length) : path;
+            var parts = rel.Split(new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar }, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length == 0) return false;
+
+            var current = isAbsolute ? root : ".";
+            // Trim trailing sep so Path.Combine gives us the segment join we want
+            if (current.Length > 1 && (current.EndsWith(Path.DirectorySeparatorChar.ToString()) || current.EndsWith(Path.AltDirectorySeparatorChar.ToString())))
+                current = current.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            if (string.IsNullOrEmpty(current)) current = Path.DirectorySeparatorChar.ToString();
+
+            for (int i = 0; i < parts.Length; i++)
+            {
+                if (!Directory.Exists(current)) return false;
+                var wantFile = i == parts.Length - 1;
+                string match = null;
+                try
+                {
+                    if (wantFile)
+                    {
+                        foreach (var f in Directory.EnumerateFiles(current))
+                        {
+                            if (string.Equals(Path.GetFileName(f), parts[i], StringComparison.OrdinalIgnoreCase))
+                            { match = f; break; }
+                        }
+                    }
+                    if (match == null)
+                    {
+                        foreach (var d in Directory.EnumerateDirectories(current))
+                        {
+                            if (string.Equals(Path.GetFileName(d), parts[i], StringComparison.OrdinalIgnoreCase))
+                            { match = d; break; }
+                        }
+                    }
+                }
+                catch { return false; }
+                if (match == null) return false;
+                current = match;
+            }
+            resolved = current;
+            return File.Exists(resolved);
         }
 
         public static string NonLinkedFilename(string argFilename)
@@ -285,56 +367,56 @@ namespace ibsCompiler
         public static string GetPath_Actions(CommandVariables cmdvars, ResolvedProfile profile)
         {
             var serverName = profile.IsProfile ? profile.ProfileName : cmdvars.ServerNameOnly;
-            var serverSpecific = Path.Combine(profile.IRPath, "CSS", "Setup", "actions." + serverName);
+            var serverSpecific = Path.Combine(profile.IRPath, "css", "setup", "actions." + serverName);
             if (File.Exists(serverSpecific)) return serverSpecific;
-            return Path.Combine(profile.IRPath, "CSS", "Setup", "actions");
+            return Path.Combine(profile.IRPath, "css", "setup", "actions");
         }
 
         public static string GetPath_ActionsDetail(ResolvedProfile profile)
         {
-            return Path.Combine(profile.IRPath, "CSS", "Setup", "actions_dtl");
+            return Path.Combine(profile.IRPath, "css", "setup", "actions_dtl");
         }
 
         public static string GetPath_OptionsDefault(ResolvedProfile profile)
         {
-            return Path.Combine(profile.IRPath, "CSS", "Setup", "options.def");
+            return Path.Combine(profile.IRPath, "css", "setup", "options.def");
         }
 
         public static string GetPath_OptionsSQL(CommandVariables cmdvars, ResolvedProfile profile)
         {
-            return Path.Combine(profile.IRPath, "CSS", "Setup", "options." + profile.ServerType);
+            return Path.Combine(profile.IRPath, "css", "setup", "options." + profile.ServerType);
         }
 
         public static string GetPath_OptionsCompany(ResolvedProfile profile)
         {
-            return Path.Combine(profile.IRPath, "CSS", "Setup", "options." + profile.Company);
+            return Path.Combine(profile.IRPath, "css", "setup", "options." + profile.Company);
         }
 
         public static string GetPath_OptionsServer(CommandVariables cmdvars, ResolvedProfile profile)
         {
             var serverName = (profile.IsProfile ? profile.ProfileName : cmdvars.Server)
                 .Replace('\\', '_').Replace('.', '_');
-            return Path.Combine(profile.IRPath, "CSS", "Setup", "options." + profile.Company + "." + serverName);
+            return Path.Combine(profile.IRPath, "css", "setup", "options." + profile.Company + "." + serverName);
         }
 
         public static string GetPath_TableLocations(ResolvedProfile profile)
         {
-            return Path.Combine(profile.IRPath, "CSS", "Setup", "table_locations");
+            return Path.Combine(profile.IRPath, "css", "setup", "table_locations");
         }
 
         public static string GetPath_TableLocationsCompany(ResolvedProfile profile)
         {
-            return Path.Combine(profile.IRPath, "CSS", "Setup", "table_locations." + profile.Company);
+            return Path.Combine(profile.IRPath, "css", "setup", "table_locations." + profile.Company);
         }
 
         public static string GetPath_Setup(ResolvedProfile profile)
         {
-            return Path.Combine(profile.IRPath, "CSS", "Setup");
+            return Path.Combine(profile.IRPath, "css", "setup");
         }
 
         public static string GetPath_MessageBackup(ResolvedProfile profile)
         {
-            return Path.Combine(profile.IRPath, "CSS", "Setup", "backup");
+            return Path.Combine(profile.IRPath, "css", "setup", "backup");
         }
         #endregion
 

@@ -12,9 +12,16 @@ namespace ibsCompiler.Database
         private static readonly Regex GoRegex = new(@"^\s*go\s*$", RegexOptions.IgnoreCase | RegexOptions.Multiline);
         private static readonly Regex ExitRegex = new(@"^\s*(exit|quit)\s*$", RegexOptions.IgnoreCase);
 
+        // Per-call output sink wired up by ExecuteSql/ExecuteBatch. The persistent
+        // connection's InfoMessage handler routes through this so PRINT/RAISERROR
+        // messages stream as the server emits them.
+        private Action<string>? _emit;
+
         // Persistent connection for batch-at-a-time execution (OpenConnection/ExecuteBatch/CloseConnection)
         private AseConnection? _persistentConn;
-        private StringBuilder? _batchOutput;
+
+        // Width cap for streamed result-set columns (mirrors isql -w300).
+        private const int MaxColumnWidth = 256;
 
         public SybaseExecutor(ResolvedProfile profile)
         {
@@ -47,100 +54,65 @@ namespace ibsCompiler.Database
         {
             var result = new ExecReturn { Returncode = true, Output = "" };
             var output = new StringBuilder();
+            var sink = OutputSink.Build(output, captureOutput, outputFile);
+            _emit = sink.Emit;
 
             try
             {
                 using var connection = new AseConnection(BuildConnectionString(database));
-                connection.InfoMessage += (sender, e) =>
-                {
-                    foreach (AseError err in e.Errors)
-                    {
-                        if (err.Severity >= 11) continue; // errors handled by AseException catch
-                        var msg = err.Message;
-                        if (msg.StartsWith("Changed client character set") ||
-                            msg.StartsWith("Changed database context") ||
-                            msg.StartsWith("Changed language setting"))
-                            continue;
-                        output.AppendLine(msg);
-                    }
-                };
+                connection.InfoMessage += OnInfoMessage;
                 connection.Open();
 
                 var batches = SplitBatches(sqlText);
                 foreach (var batch in batches)
                 {
                     if (string.IsNullOrWhiteSpace(batch)) continue;
-                    // exit/quit are isql client commands — stop processing
                     if (ExitRegex.IsMatch(batch.Trim())) break;
                     try
                     {
                         using var cmd = new AseCommand(batch, connection);
                         cmd.CommandTimeout = 0;
 
-                        using var reader = cmd.ExecuteReader();
-                        do
-                        {
-                            if (reader.FieldCount > 0)
-                            {
-                                FormatResultSet(reader, output);
-                            }
-                        } while (reader.NextResult());
+                        // Use the SBNAlgen streaming pattern verbatim: ExecuteReaderAsync
+                        // returning a DbDataReader, then ReadAsync/NextResultAsync on the
+                        // base type so the provider can surface server tokens incrementally.
+                        StreamCommandAsync(cmd, sink.Emit).GetAwaiter().GetResult();
                     }
                     catch (AseException ex)
                     {
-                        foreach (AseError err in ex.Errors)
-                        {
-                            output.AppendLine($"Msg {err.MessageNumber}, Level {err.Severity}, State {err.State}");
-                            output.AppendLine(err.Message);
-                        }
+                        EmitAseException(ex, sink.Emit);
                         result.Returncode = false;
                     }
                 }
             }
             catch (Exception ex)
             {
-                output.AppendLine($"ERROR! {ex.Message}");
+                sink.Emit($"ERROR! {ex.Message}");
                 result.Returncode = false;
+            }
+            finally
+            {
+                _emit = null;
+                sink.Dispose();
             }
 
             result.Output = output.ToString();
-
-            if (!captureOutput && !string.IsNullOrWhiteSpace(result.Output))
-            {
-                var target = !string.IsNullOrEmpty(outputFile) ? outputFile : ibs_compiler_common.DefaultOutFile;
-                if (!string.IsNullOrEmpty(target))
-                    ibs_compiler_common.WriteLineToDisk(target, result.Output);
-                else
-                    Console.Write(result.Output);
-            }
-
             return result;
         }
 
         public void OpenConnection(string database)
         {
-            _batchOutput = new StringBuilder();
             _persistentConn = new AseConnection(BuildConnectionString(database));
-            _persistentConn.InfoMessage += (sender, e) =>
-            {
-                foreach (AseError err in e.Errors)
-                {
-                    if (err.Severity >= 11) continue; // errors handled by AseException catch
-                    var msg = err.Message;
-                    if (msg.StartsWith("Changed client character set") ||
-                        msg.StartsWith("Changed database context") ||
-                        msg.StartsWith("Changed language setting"))
-                        continue;
-                    _batchOutput.AppendLine(msg);
-                }
-            };
+            _persistentConn.InfoMessage += OnInfoMessage;
             _persistentConn.Open();
         }
 
         public ExecReturn ExecuteBatch(string batch, bool captureOutput = false, string outputFile = "")
         {
             var result = new ExecReturn { Returncode = true, Output = "" };
-            _batchOutput!.Clear();
+            var output = new StringBuilder();
+            var sink = OutputSink.Build(output, captureOutput, outputFile);
+            _emit = sink.Emit;
 
             try
             {
@@ -149,35 +121,21 @@ namespace ibsCompiler.Database
                     using var cmd = new AseCommand(batch, _persistentConn);
                     cmd.CommandTimeout = 0;
 
-                    using var reader = cmd.ExecuteReader();
-                    do
-                    {
-                        if (reader.FieldCount > 0)
-                            FormatResultSet(reader, _batchOutput);
-                    } while (reader.NextResult());
+                    StreamCommandAsync(cmd, sink.Emit).GetAwaiter().GetResult();
                 }
             }
             catch (AseException ex)
             {
-                foreach (AseError err in ex.Errors)
-                {
-                    _batchOutput.AppendLine($"Msg {err.MessageNumber}, Level {err.Severity}, State {err.State}");
-                    _batchOutput.AppendLine(err.Message);
-                }
+                EmitAseException(ex, sink.Emit);
                 result.Returncode = false;
             }
-
-            result.Output = _batchOutput.ToString();
-
-            if (!captureOutput && !string.IsNullOrWhiteSpace(result.Output))
+            finally
             {
-                var target = !string.IsNullOrEmpty(outputFile) ? outputFile : ibs_compiler_common.DefaultOutFile;
-                if (!string.IsNullOrEmpty(target))
-                    ibs_compiler_common.WriteLineToDisk(target, result.Output);
-                else
-                    Console.Write(result.Output);
+                _emit = null;
+                sink.Dispose();
             }
 
+            result.Output = output.ToString();
             return result;
         }
 
@@ -185,7 +143,31 @@ namespace ibsCompiler.Database
         {
             _persistentConn?.Dispose();
             _persistentConn = null;
-            _batchOutput = null;
+        }
+
+        private void OnInfoMessage(object sender, AseInfoMessageEventArgs e)
+        {
+            var emit = _emit;
+            if (emit == null) return;
+            foreach (AseError err in e.Errors)
+            {
+                if (err.Severity >= 11) continue; // errors handled by AseException catch
+                var msg = err.Message;
+                if (msg.StartsWith("Changed client character set") ||
+                    msg.StartsWith("Changed database context") ||
+                    msg.StartsWith("Changed language setting"))
+                    continue;
+                emit(msg);
+            }
+        }
+
+        private static void EmitAseException(AseException ex, Action<string> emit)
+        {
+            foreach (AseError err in ex.Errors)
+            {
+                emit($"Msg {err.MessageNumber}, Level {err.Severity}, State {err.State}");
+                emit(err.Message);
+            }
         }
 
         public ExecReturn BulkCopy(string table, BcpDirection direction, string dataFile, string formatFile = "")
@@ -319,68 +301,99 @@ namespace ibsCompiler.Database
                 .ToArray();
         }
 
-        private static void FormatResultSet(IDataReader reader, StringBuilder output)
+        private static async System.Threading.Tasks.Task StreamCommandAsync(AseCommand cmd, Action<string> emit)
         {
-            var colCount = reader.FieldCount;
-            var colWidths = new int[colCount];
-            var colNames = new string[colCount];
-            var colIsNumeric = new bool[colCount];
+            // SequentialAccess is required for streaming. Without it, the AseClient
+            // runs the entire token loop synchronously and only returns the reader
+            // after the whole batch is buffered. With it, the client spawns a background
+            // pump (InternalConnection.cs:487) and StreamingDataReaderTokenHandler
+            // surfaces each result-set as soon as DoneInProc arrives.
+            //
+            // Note on streaming granularity: Sybase ASE coalesces small (<TDS packet)
+            // result-sets into one TCP packet, so a proc emitting tiny rows in a loop
+            // will not stream per-row — the server flushes when the packet fills or
+            // the proc completes. Real workloads (ma_algen-style queue rows) typically
+            // exceed the packet threshold and stream as expected.
+            using var raw = await cmd.ExecuteReaderAsync(System.Data.CommandBehavior.SequentialAccess);
+            using var reader = (System.Data.Common.DbDataReader)raw;
+            do
+            {
+                if (reader.FieldCount > 0)
+                    await StreamOneResultSetAsync(reader, emit);
+            } while (await reader.NextResultAsync());
+        }
+
+        private static async System.Threading.Tasks.Task StreamOneResultSetAsync(System.Data.Common.DbDataReader reader, Action<string> emit)
+        {
+            int colCount = reader.FieldCount;
+            var schema = reader.GetSchemaTable();
+            var widths = new int[colCount];
+            var names = new string[colCount];
+            var isNumeric = new bool[colCount];
+
             for (int i = 0; i < colCount; i++)
             {
-                colNames[i] = reader.GetName(i);
-                colWidths[i] = Math.Max(colNames[i].Length, 10);
+                names[i] = reader.GetName(i);
                 var t = reader.GetFieldType(i);
-                colIsNumeric[i] = t == typeof(int) || t == typeof(long) || t == typeof(short) ||
-                                  t == typeof(decimal) || t == typeof(double) || t == typeof(float) ||
-                                  t == typeof(byte);
-            }
+                isNumeric[i] = t == typeof(int) || t == typeof(long) || t == typeof(short) ||
+                               t == typeof(decimal) || t == typeof(double) || t == typeof(float) ||
+                               t == typeof(byte);
 
-            var rows = new List<string[]>();
-            while (reader.Read())
-            {
-                var row = new string[colCount];
-                for (int i = 0; i < colCount; i++)
+                int colSize = 30; // sane default if schema lookup fails
+                if (schema != null && i < schema.Rows.Count)
                 {
-                    row[i] = reader.IsDBNull(i) ? "NULL" : (reader[i].ToString() ?? "").TrimEnd();
-                    colWidths[i] = Math.Max(colWidths[i], row[i].Length);
+                    var raw = schema.Rows[i]["ColumnSize"];
+                    if (raw != DBNull.Value)
+                    {
+                        try
+                        {
+                            int cs = Convert.ToInt32(raw);
+                            if (cs > 0) colSize = Math.Min(cs, MaxColumnWidth);
+                        }
+                        catch { }
+                    }
                 }
-                rows.Add(row);
+                widths[i] = Math.Max(Math.Max(colSize, names[i].Length), 10);
             }
 
-            // Column headers
+            var line = new StringBuilder();
+
+            // Header
             for (int i = 0; i < colCount; i++)
             {
-                if (i > 0) output.Append(' ');
-                output.Append(colIsNumeric[i]
-                    ? colNames[i].PadLeft(colWidths[i])
-                    : colNames[i].PadRight(colWidths[i]));
+                if (i > 0) line.Append(' ');
+                line.Append(isNumeric[i] ? names[i].PadLeft(widths[i]) : names[i].PadRight(widths[i]));
             }
-            output.AppendLine();
+            emit(line.ToString());
 
             // Separator
+            line.Clear();
             for (int i = 0; i < colCount; i++)
             {
-                if (i > 0) output.Append(' ');
-                output.Append(new string('-', colWidths[i]));
+                if (i > 0) line.Append(' ');
+                line.Append(new string('-', widths[i]));
             }
-            output.AppendLine();
+            emit(line.ToString());
 
-            // Data rows
-            foreach (var row in rows)
+            // Stream rows as the server delivers them.
+            int rowCount = 0;
+            while (await reader.ReadAsync())
             {
+                line.Clear();
                 for (int i = 0; i < colCount; i++)
                 {
-                    if (i > 0) output.Append(' ');
-                    output.Append(colIsNumeric[i]
-                        ? row[i].PadLeft(colWidths[i])
-                        : row[i].PadRight(colWidths[i]));
+                    string val = reader.IsDBNull(i) ? "NULL" : (reader[i].ToString() ?? "").TrimEnd();
+                    if (val.Length > widths[i]) val = val.Substring(0, widths[i]);
+                    if (i > 0) line.Append(' ');
+                    line.Append(isNumeric[i] ? val.PadLeft(widths[i]) : val.PadRight(widths[i]));
                 }
-                output.AppendLine();
+                emit(line.ToString());
+                rowCount++;
             }
 
-            var rowWord = rows.Count == 1 ? "row" : "rows";
-            output.AppendLine($"({rows.Count} {rowWord} affected)");
-            output.AppendLine();
+            var rowWord = rowCount == 1 ? "row" : "rows";
+            emit($"({rowCount} {rowWord} affected)");
+            emit("");
         }
 
         public void Dispose()

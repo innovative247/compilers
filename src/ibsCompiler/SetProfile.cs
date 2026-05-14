@@ -981,10 +981,10 @@ namespace ibsCompiler
                 return;
             }
 
-            var cssSetup = Path.Combine(profile.SqlSource, "CSS", "Setup");
+            var cssSetup = Path.Combine(profile.SqlSource, "css", "setup");
             if (!Directory.Exists(cssSetup))
             {
-                PrintError($"CSS/Setup directory NOT found: {cssSetup}");
+                PrintError($"css/setup directory NOT found: {cssSetup}");
                 return;
             }
 
