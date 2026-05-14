@@ -127,14 +127,14 @@ Write-Host "=== Creating archives ===" -ForegroundColor Cyan
 
 $binDir = Join-Path $PSScriptRoot "bin"
 
-# Copy settings.json.example and readme.md into each platform dir
+# Copy settings.json.example into each platform dir.
+# (readme.md is no longer bundled — docs live at
+#  https://support.innovative247.com/help/Developer-Tools/Compilers)
 $settingsExample = Join-Path $PSScriptRoot "settings.json.example"
-$readmeFile = Join-Path $PSScriptRoot "readme.md"
 foreach ($rid in $runtimes) {
     $destDir = Join-Path $binDir $rid
     if (Test-Path $destDir) {
         if (Test-Path $settingsExample) { Copy-Item $settingsExample (Join-Path $destDir "settings.json.example") }
-        if (Test-Path $readmeFile)      { Copy-Item $readmeFile      (Join-Path $destDir "readme.md") }
     }
 }
 
