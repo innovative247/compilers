@@ -14,6 +14,7 @@ namespace ibsCompiler
         private const string GitHubOwner = "innovative247";
         private const string GitHubRepo = "compilers";
         private const string ReleasesApiUrl = $"https://api.github.com/repos/{GitHubOwner}/{GitHubRepo}/releases/latest";
+        private const string DocsUrl = "https://support.innovative247.com/help/Developer-Tools/Compilers";
 
         /// <summary>
         /// Check for subcommands and daily version updates.
@@ -72,7 +73,8 @@ namespace ibsCompiler
             Console.WriteLine("  version     Show version");
             Console.WriteLine("  update      Download and install latest version");
             Console.WriteLine("  configure   Show configuration status, add to PATH");
-            OfferReadme();
+            Console.WriteLine();
+            Console.WriteLine($"Documentation: {DocsUrl}");
         }
 
         private static void OfferReadme()
