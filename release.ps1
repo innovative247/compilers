@@ -30,13 +30,11 @@ Write-Host ""
 Write-Host "=== Creating Linux/macOS archives ===" -ForegroundColor Cyan
 
 Push-Location $binDir
-wsl tar -czf compilers-net8-linux-x64.tar.gz -C linux-x64 .
-if ($LASTEXITCODE -ne 0) { Write-Host "Failed to create linux tar.gz" -ForegroundColor Red; Pop-Location; exit 1 }
-Write-Host "  Created: compilers-net8-linux-x64.tar.gz" -ForegroundColor Green
-
-wsl tar -czf compilers-net8-osx-x64.tar.gz -C osx-x64 .
-if ($LASTEXITCODE -ne 0) { Write-Host "Failed to create osx tar.gz" -ForegroundColor Red; Pop-Location; exit 1 }
-Write-Host "  Created: compilers-net8-osx-x64.tar.gz" -ForegroundColor Green
+foreach ($rid in @('linux-x64', 'osx-x64', 'osx-arm64')) {
+    wsl tar -czf "compilers-net8-$rid.tar.gz" -C $rid .
+    if ($LASTEXITCODE -ne 0) { Write-Host "Failed to create $rid tar.gz" -ForegroundColor Red; Pop-Location; exit 1 }
+    Write-Host "  Created: compilers-net8-$rid.tar.gz" -ForegroundColor Green
+}
 Pop-Location
 
 # 3. Commit all tracked changes
@@ -59,6 +57,7 @@ gh release create "v$Version" `
     bin/compilers-net8-win-x64.zip `
     bin/compilers-net8-linux-x64.tar.gz `
     bin/compilers-net8-osx-x64.tar.gz `
+    bin/compilers-net8-osx-arm64.tar.gz `
     --title "v$Version" `
     --notes $Notes
 

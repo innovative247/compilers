@@ -10,7 +10,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$runtimes = @('win-x64', 'linux-x64', 'osx-x64')
+$runtimes = @('win-x64', 'linux-x64', 'osx-x64', 'osx-arm64')
 
 $projects = @(
     'runsql'
@@ -35,6 +35,7 @@ $projects = @(
     'transfer_data'
     'bcp_data'
     'extract_msg'
+    'sql-test'
 )
 
 # If version specified, update Directory.Build.props
@@ -149,31 +150,19 @@ if (Test-Path $winDir) {
     Write-Host "  Created: compilers-net8-win-x64.zip ($sizeMB MB)" -ForegroundColor Green
 }
 
-# Linux tar.gz (exclude settings.json)
-$linuxDir = Join-Path $binDir "linux-x64"
-if (Test-Path $linuxDir) {
-    $tarPath = Join-Path $binDir "compilers-net8-linux-x64.tar.gz"
+# Linux + macOS tar.gz archives (exclude settings.json — never overwrite credentials on update)
+$tarRids = $runtimes | Where-Object { $_ -ne 'win-x64' }
+foreach ($rid in $tarRids) {
+    $srcDir = Join-Path $binDir $rid
+    if (-not (Test-Path $srcDir)) { continue }
+    $tarPath = Join-Path $binDir "compilers-net8-$rid.tar.gz"
     if (Test-Path $tarPath) { Remove-Item $tarPath }
-    wsl tar -czf $tarPath --exclude='./settings.json' -C $linuxDir .
+    wsl tar -czf $tarPath --exclude='./settings.json' -C $srcDir .
     if (Test-Path $tarPath) {
         $sizeMB = [math]::Round((Get-Item $tarPath).Length / 1MB, 1)
-        Write-Host "  Created: compilers-net8-linux-x64.tar.gz ($sizeMB MB)" -ForegroundColor Green
+        Write-Host "  Created: compilers-net8-$rid.tar.gz ($sizeMB MB)" -ForegroundColor Green
     } else {
-        Write-Host "  Warning: compilers-net8-linux-x64.tar.gz not created" -ForegroundColor Yellow
-    }
-}
-
-# macOS tar.gz (exclude settings.json)
-$osxDir = Join-Path $binDir "osx-x64"
-if (Test-Path $osxDir) {
-    $tarPath = Join-Path $binDir "compilers-net8-osx-x64.tar.gz"
-    if (Test-Path $tarPath) { Remove-Item $tarPath }
-    wsl tar -czf $tarPath --exclude='./settings.json' -C $osxDir .
-    if (Test-Path $tarPath) {
-        $sizeMB = [math]::Round((Get-Item $tarPath).Length / 1MB, 1)
-        Write-Host "  Created: compilers-net8-osx-x64.tar.gz ($sizeMB MB)" -ForegroundColor Green
-    } else {
-        Write-Host "  Warning: compilers-net8-osx-x64.tar.gz not created" -ForegroundColor Yellow
+        Write-Host "  Warning: compilers-net8-$rid.tar.gz not created" -ForegroundColor Yellow
     }
 }
 

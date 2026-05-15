@@ -150,9 +150,16 @@ fi
 
 # --- Detect platform ---
 OS="$(uname -s)"
+ARCH="$(uname -m)"
 case "$OS" in
     Linux*)  ASSET_NAME="compilers-net8-linux-x64.tar.gz" ;;
-    Darwin*) ASSET_NAME="compilers-net8-osx-x64.tar.gz" ;;
+    Darwin*)
+        case "$ARCH" in
+            arm64)  ASSET_NAME="compilers-net8-osx-arm64.tar.gz" ;;
+            x86_64) ASSET_NAME="compilers-net8-osx-x64.tar.gz" ;;
+            *)      echo "Unsupported macOS arch: $ARCH"; exit 1 ;;
+        esac
+        ;;
     *)       echo "Unsupported platform: $OS"; exit 1 ;;
 esac
 
