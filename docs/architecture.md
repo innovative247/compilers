@@ -58,14 +58,14 @@ Connection profiles stored alongside executables:
 ```json
 {
   "Profiles": {
-    "GONZO": {
-      "ALIASES": ["G"],
-      "COMPANY": 101,
+    "PRODUCTION": {
+      "ALIASES": ["PROD"],
+      "COMPANY": 999,
       "DEFAULT_LANGUAGE": 1,
       "PLATFORM": "SYBASE",
-      "HOST": "10.10.123.4",
+      "HOST": "10.10.10.10",
       "PORT": 5000,
-      "USERNAME": "sbn0",
+      "USERNAME": "user",
       "PASSWORD": "password",
       "SQL_SOURCE": "/path/to/current.sql"
     }
