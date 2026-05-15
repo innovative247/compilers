@@ -35,6 +35,7 @@ $projects = @(
     'transfer_data'
     'bcp_data'
     'extract_msg'
+    'sql-test'
 )
 
 # If version specified, update Directory.Build.props
