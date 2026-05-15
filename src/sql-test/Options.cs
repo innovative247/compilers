@@ -11,6 +11,8 @@ public class Options
     public string? JunitPath { get; set; }
     public bool ListOnly { get; set; }
     public bool Verbose { get; set; }
+    public bool RegenerateCaptureTables { get; set; }
+    public bool PrintCaptureDdl { get; set; }
     public string User { get; set; } = "";
     public string Pass { get; set; } = "";
 
@@ -23,6 +25,8 @@ public class Options
         "                [--junit <path>]\n" +
         "                [--list]\n" +
         "                [--verbose]\n" +
+        "                [--regenerate-capture-tables]\n" +
+        "                [--print-capture-ddl]\n" +
         "                [-U user] [-P pass]";
 
     public static Options? Parse(string[] argv)
@@ -38,15 +42,17 @@ public class Options
 
             switch (a)
             {
-                case "--pattern":  opts.Pattern        = Next(a); break;
-                case "--exclude":  opts.Exclude        = Next(a); break;
-                case "--parallel": opts.Parallel       = int.Parse(Next(a)); break;
-                case "--timeout":  opts.TimeoutSeconds = int.Parse(Next(a)); break;
-                case "--junit":    opts.JunitPath      = Next(a); break;
-                case "--list":     opts.ListOnly       = true; break;
-                case "--verbose":  opts.Verbose        = true; break;
+                case "--pattern":                    opts.Pattern                 = Next(a); break;
+                case "--exclude":                    opts.Exclude                 = Next(a); break;
+                case "--parallel":                   opts.Parallel                = int.Parse(Next(a)); break;
+                case "--timeout":                    opts.TimeoutSeconds          = int.Parse(Next(a)); break;
+                case "--junit":                      opts.JunitPath               = Next(a); break;
+                case "--list":                       opts.ListOnly                = true; break;
+                case "--verbose":                    opts.Verbose                 = true; break;
+                case "--regenerate-capture-tables":  opts.RegenerateCaptureTables = true; break;
+                case "--print-capture-ddl":          opts.PrintCaptureDdl         = true; break;
                 case "-h":
-                case "--help":     return null;
+                case "--help":                       return null;
                 default:
                     if (a.StartsWith("-U")) opts.User = a.Length > 2 ? a[2..] : Next(a);
                     else if (a.StartsWith("-P")) opts.Pass = a.Length > 2 ? a[2..] : Next(a);

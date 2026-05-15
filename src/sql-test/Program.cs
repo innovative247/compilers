@@ -26,10 +26,10 @@ if (!profileMgr.ValidateProfile(opts.Server)) return 2;
 
 var cmdvars = new ibsCompiler.CommandVariables
 {
-    Server = opts.Server,
+    Server   = opts.Server,
     Database = opts.Database,
-    User = opts.User,
-    Pass = opts.Pass,
+    User     = opts.User,
+    Pass     = opts.Pass,
 };
 var profile = profileMgr.Resolve(cmdvars);
 
@@ -38,10 +38,10 @@ Console.Error.WriteLine(
 
 var runner = new Runner(profile, opts);
 
-List<string> names;
+List<TestCase> cases;
 try
 {
-    names = runner.Discover();
+    cases = runner.Discover();
 }
 catch (Exception ex)
 {
@@ -52,10 +52,40 @@ catch (Exception ex)
 if (!string.IsNullOrEmpty(opts.Exclude))
 {
     var rx = new Regex(opts.Exclude);
-    names = names.Where(n => !rx.IsMatch(n)).ToList();
+    cases = cases.Where(c => !rx.IsMatch(c.LogicalName)).ToList();
 }
 
-if (names.Count == 0)
+// --print-capture-ddl: dump generated DDL for every capture spec and exit.
+if (opts.PrintCaptureDdl)
+{
+    foreach (var c in cases.Where(c => c.Capture != null))
+    {
+        Console.WriteLine($"-- {c.LogicalName} -> {c.Capture!.IntoTable}");
+        try { Console.WriteLine(runner.PrintCaptureDdl(c.Capture)); }
+        catch (Exception ex) { Console.Error.WriteLine($"  introspection failed: {ex.Message}"); }
+    }
+    return 0;
+}
+
+// --regenerate-capture-tables: drop every distinct capture target, then exit.
+// Subsequent normal runs will re-introspect and re-create on first use.
+if (opts.RegenerateCaptureTables)
+{
+    var targets = cases
+        .Where(c => c.Capture != null)
+        .Select(c => c.Capture!.IntoTable)
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .ToList();
+    foreach (var t in targets)
+    {
+        try { runner.DropCaptureTable(t); Console.Error.WriteLine($"  dropped {t}"); }
+        catch (Exception ex) { Console.Error.WriteLine($"  could not drop {t}: {ex.Message}"); }
+    }
+    Console.Error.WriteLine($"sql-test: dropped {targets.Count} capture table(s)");
+    return 0;
+}
+
+if (cases.Count == 0)
 {
     Console.Error.WriteLine("sql-test: no tests found");
     return 0;
@@ -63,20 +93,26 @@ if (names.Count == 0)
 
 if (opts.ListOnly)
 {
-    foreach (var n in names) Console.WriteLine(n);
+    foreach (var c in cases)
+    {
+        if (c.CaptureProc != null)
+            Console.WriteLine($"{c.LogicalName}  (capture: {c.CaptureProc} -> {c.Capture!.IntoTable}; assert: {c.AssertProc})");
+        else
+            Console.WriteLine(c.LogicalName);
+    }
     return 0;
 }
 
-Console.Error.WriteLine($"sql-test: {names.Count} tests discovered");
+Console.Error.WriteLine($"sql-test: {cases.Count} tests discovered");
 
 var stopwatch = Stopwatch.StartNew();
-var results = new List<TestResult>(names.Count);
+var results = new List<TestResult>(cases.Count);
 
 if (opts.Parallel <= 1)
 {
-    foreach (var n in names)
+    foreach (var c in cases)
     {
-        var r = runner.RunOne(n);
+        var r = runner.RunOne(c);
         results.Add(r);
         PrintResult(r, opts.Verbose);
     }
@@ -84,17 +120,11 @@ if (opts.Parallel <= 1)
 else
 {
     using var gate = new SemaphoreSlim(opts.Parallel);
-    var tasks = names.Select(async n =>
+    var tasks = cases.Select(async c =>
     {
         await gate.WaitAsync();
-        try
-        {
-            return await Task.Run(() => runner.RunOne(n));
-        }
-        finally
-        {
-            gate.Release();
-        }
+        try   { return await Task.Run(() => runner.RunOne(c)); }
+        finally { gate.Release(); }
     }).ToList();
 
     foreach (var t in tasks)
