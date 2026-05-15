@@ -250,6 +250,75 @@ namespace ibsCompiler
             (Path.Combine("IBS", "setup"), "Setup"),
         };
 
+        /// <summary>
+        /// Map of legacy long-form directory name -> short alias, derived from
+        /// SymlinkDefinitions (last segment of each link is the short name for
+        /// its target). Used by <see cref="ToShortPath"/> to recognize when a
+        /// renamed SQL source tree has the short-name directories on disk
+        /// directly and no symlinks are needed at all.
+        /// </summary>
+        private static Dictionary<string, string>? _legacyToShortMap;
+        private static Dictionary<string, string> LegacyToShortMap
+        {
+            get
+            {
+                if (_legacyToShortMap != null) return _legacyToShortMap;
+                var m = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var (link, target) in SymlinkDefinitions)
+                {
+                    var shortName = Path.GetFileName(link);
+                    if (!string.IsNullOrEmpty(shortName))
+                        m[target] = shortName;
+                }
+                _legacyToShortMap = m;
+                return m;
+            }
+        }
+
+        /// <summary>
+        /// Rewrite a path so every legacy long-form segment becomes its short
+        /// alias (e.g. "CSS/SQL_Sources/ba" -> "css/ss/ba"). Segments not in the
+        /// map are left untouched. Returns the original path if no segment
+        /// changed.
+        /// </summary>
+        public static string ToShortPath(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return path;
+            var parts = path.Split(new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar },
+                                   StringSplitOptions.None);
+            var map = LegacyToShortMap;
+            bool changed = false;
+            for (int i = 0; i < parts.Length; i++)
+            {
+                if (map.TryGetValue(parts[i], out var s) && !string.Equals(parts[i], s, StringComparison.Ordinal))
+                {
+                    parts[i] = s;
+                    changed = true;
+                }
+            }
+            return changed ? string.Join(Path.DirectorySeparatorChar.ToString(), parts) : path;
+        }
+
+        /// <summary>
+        /// True when either <paramref name="linkPath"/> exists on disk OR its
+        /// all-short-name equivalent exists. Either form is sufficient for the
+        /// compiler — the renamed SQL source trees (current.sql post-r57389)
+        /// have the short-name directories on disk natively, so symlinks are
+        /// not needed at all in that layout.
+        /// </summary>
+        public static bool SymlinkOrShortPathExists(string sqlSource, string link)
+        {
+            var linkPath = Path.Combine(sqlSource, link);
+            if (Path.Exists(linkPath)) return true;
+            var shortLink = ToShortPath(link);
+            if (!string.Equals(shortLink, link, StringComparison.Ordinal))
+            {
+                var shortPath = Path.Combine(sqlSource, shortLink);
+                if (Path.Exists(shortPath)) return true;
+            }
+            return false;
+        }
+
         public static (int Created, int Existing, int TargetMissing, int PermissionDenied) EnsureSymbolicLinks(string sqlSource)
         {
             if (string.IsNullOrEmpty(sqlSource) || !Directory.Exists(sqlSource))
@@ -260,16 +329,17 @@ namespace ibsCompiler
 
             foreach (var (link, target) in SymlinkDefinitions)
             {
-                var linkPath = Path.Combine(sqlSource, link);
-                var linkParent = Path.GetDirectoryName(linkPath)!;
-                var targetPath = Path.Combine(linkParent, target);
-
-                // Skip if link already exists (as directory, file, or symlink)
-                if (Path.Exists(linkPath))
+                // Symlink already there, OR the short-name path is a real
+                // directory on disk (renamed tree) — either way nothing to do.
+                if (SymlinkOrShortPathExists(sqlSource, link))
                 {
                     existing++;
                     continue;
                 }
+
+                var linkPath = Path.Combine(sqlSource, link);
+                var linkParent = Path.GetDirectoryName(linkPath)!;
+                var targetPath = Path.Combine(linkParent, target);
 
                 // Skip if target directory doesn't exist (don't create dangling links)
                 if (!Directory.Exists(targetPath))

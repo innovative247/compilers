@@ -1206,7 +1206,7 @@ namespace ibsCompiler
 
         private static void TestSymbolicLinks(ProfileData profile)
         {
-            Console.WriteLine("\nSetting up symbolic links...");
+            Console.WriteLine("\nChecking SQL source short-path resolution...");
 
             if (string.IsNullOrEmpty(profile.SqlSource))
             {
@@ -1220,60 +1220,72 @@ namespace ibsCompiler
                 return;
             }
 
-            int existing = 0, created = 0, skipped = 0, failed = 0;
+            // Per-entry status. Renamed trees (current.sql post-r57389) have the
+            // short-name directories on disk natively, so most/all entries are
+            // satisfied without creating any symlinks. Only entries that need a
+            // new symlink OR genuinely fail are listed; the rest roll up into a
+            // single summary line to avoid drowning the operator in dim output.
+            int existing = 0, created = 0, missing = 0, failed = 0;
             bool windowsWarningShown = false;
 
             foreach (var (link, target) in ibs_compiler_common.SymlinkDefinitions)
             {
+                // Already satisfied — either a symlink at the legacy path, OR
+                // the short-name directory exists on disk natively.
+                if (ibs_compiler_common.SymlinkOrShortPathExists(profile.SqlSource, link))
+                {
+                    existing++;
+                    continue;
+                }
+
                 var linkPath = Path.Combine(profile.SqlSource, link);
                 var linkParent = Path.GetDirectoryName(linkPath)!;
                 var targetPath = Path.Combine(linkParent, target);
 
-                if (Path.Exists(linkPath))
+                if (!Directory.Exists(targetPath))
                 {
-                    PrintSuccess($"  {link}");
-                    existing++;
+                    // Neither the short path nor the legacy target exists. The
+                    // compiler can't resolve files under this prefix at all.
+                    PrintDim($"  {link} — neither short path nor target {target} on disk");
+                    missing++;
+                    continue;
                 }
-                else if (!Directory.Exists(targetPath))
+
+                // Legacy long-name tree without symlinks — try to create.
+                try
                 {
-                    PrintDim($"  {link} — target {target} not found");
-                    skipped++;
+                    Directory.CreateSymbolicLink(linkPath, target);
+                    PrintSuccess($"  {link} — created -> {target}");
+                    created++;
                 }
-                else
+                catch (UnauthorizedAccessException)
                 {
-                    // Target exists but link is missing — create it now
-                    try
+                    if (!windowsWarningShown)
                     {
-                        Directory.CreateSymbolicLink(linkPath, target);
-                        PrintSuccess($"  {link} — created -> {target}");
-                        created++;
+                        PrintWarning("  Symbolic link creation requires elevated privileges on Windows.");
+                        PrintWarning("  Run as Administrator, or enable Developer Mode in Windows Settings.");
+                        windowsWarningShown = true;
                     }
-                    catch (UnauthorizedAccessException)
-                    {
-                        if (!windowsWarningShown)
-                        {
-                            PrintWarning("  Symbolic link creation requires elevated privileges on Windows.");
-                            PrintWarning("  Run as Administrator, or enable Developer Mode in Windows Settings.");
-                            windowsWarningShown = true;
-                        }
-                        PrintError($"  {link} — permission denied");
-                        failed++;
-                    }
-                    catch (IOException ex)
-                    {
-                        PrintError($"  {link} — {ex.Message}");
-                        failed++;
-                    }
+                    PrintError($"  {link} — permission denied");
+                    failed++;
+                }
+                catch (IOException ex)
+                {
+                    PrintError($"  {link} — {ex.Message}");
+                    failed++;
                 }
             }
 
             Console.WriteLine();
-            if (created > 0)
-                PrintSuccess($"Created {created} symbolic links.");
-            if (failed > 0)
-                PrintWarning($"{failed} failed (insufficient permissions).");
-            if (created == 0 && failed == 0)
-                PrintSuccess($"All symbolic links are in place.");
+            if (existing > 0 && created == 0 && missing == 0 && failed == 0)
+                PrintSuccess($"All {existing} short paths resolve (renamed tree or symlinks in place).");
+            else
+            {
+                if (existing > 0) PrintSuccess($"{existing} short path(s) already resolve.");
+                if (created > 0)  PrintSuccess($"Created {created} symbolic link(s).");
+                if (missing > 0)  PrintDim($"{missing} prefix(es) absent from disk (likely unused on this branch).");
+                if (failed > 0)   PrintWarning($"{failed} failed (insufficient permissions).");
+            }
         }
         #endregion
 
