@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Data;
 using System.Diagnostics;
 using System.Text;
@@ -37,6 +38,32 @@ public class Runner
 
     private readonly ResolvedProfile _profile;
     private readonly Options _opts;
+
+    // Per-session rebuild cache: each distinct capture table is dropped
+    // and recreated exactly once on first reference. Eliminates schema
+    // drift -- a stale capture table can never silently outlive a change
+    // to the source proc's emitted shape. Cached value is the table's
+    // column names + .NET types, used downstream for shape-matched
+    // filtering during the capture phase.
+    private readonly ConcurrentDictionary<string, Lazy<CaptureTableSchema>> _rebuiltTables =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    private sealed record CaptureTableSchema(
+        IReadOnlyList<string> ColumnNames,
+        IReadOnlyList<Type>   ColumnTypes)
+    {
+        public static CaptureTableSchema FromIntrospectedSchema(DataTable schema)
+        {
+            var names = new List<string>(schema.Rows.Count);
+            var types = new List<Type>(schema.Rows.Count);
+            foreach (DataRow row in schema.Rows)
+            {
+                names.Add((string)row["ColumnName"]);
+                types.Add((Type)row["DataType"]);
+            }
+            return new CaptureTableSchema(names, types);
+        }
+    }
 
     public Runner(ResolvedProfile profile, Options opts)
     {
@@ -204,33 +231,38 @@ public class Runner
     private void RunCapturePhase(AseConnection conn, AseTransaction tx,
                                  string captureProc, CaptureSpec spec, int timeout)
     {
+        // The capture table's schema (column count + per-column .NET
+        // type) is the contract. Result sets emitted during the capture
+        // proc whose shape doesn't match -- a trigger's `select @insrc,
+        // @delrc` (2 unnamed ints), an audit-log emit, an arbitrary
+        // debug select -- get filtered out. Only shape-matched result
+        // sets are ingested, positionally against the table's column
+        // order; reader column names don't have to be aligned.
+        var tableSchema = _rebuiltTables[spec.IntoTable].Value;
+        var insertSql   = BuildInsertSql(spec.IntoTable, tableSchema.ColumnNames);
+
         using var cmd = new AseCommand($"exec {captureProc}", conn, tx);
         cmd.CommandTimeout = timeout;
 
-        // Read the test's result set(s) and write rows into the capture table.
-        // Multiple result sets are concatenated into the same target.
         using var reader = cmd.ExecuteReader();
         do
         {
-            if (reader.FieldCount == 0) continue;
-            CopyResultSetIntoTable(reader, conn, tx, spec.IntoTable);
+            if (!ResultSetMatchesSchema(reader, tableSchema)) continue;
+            CopyResultSetIntoTable(reader, conn, tx, insertSql);
         } while (reader.NextResult());
     }
 
-    private void CopyResultSetIntoTable(IDataReader reader, AseConnection conn,
-                                         AseTransaction tx, string targetTable)
+    private static bool ResultSetMatchesSchema(IDataReader reader, CaptureTableSchema schema)
     {
-        var cols = new string[reader.FieldCount];
-        var placeholders = new string[reader.FieldCount];
+        if (reader.FieldCount != schema.ColumnTypes.Count) return false;
         for (int i = 0; i < reader.FieldCount; i++)
-        {
-            cols[i] = QuoteIdent(reader.GetName(i));
-            placeholders[i] = $"@p{i}";
-        }
-        var insertSql =
-            $"insert into {targetTable} ({string.Join(", ", cols)}) " +
-            $"values ({string.Join(", ", placeholders)})";
+            if (reader.GetFieldType(i) != schema.ColumnTypes[i]) return false;
+        return true;
+    }
 
+    private static void CopyResultSetIntoTable(IDataReader reader, AseConnection conn,
+                                                AseTransaction tx, string insertSql)
+    {
         while (reader.Read())
         {
             using var insertCmd = new AseCommand(insertSql, conn, tx);
@@ -243,17 +275,46 @@ public class Runner
         }
     }
 
+    private static string BuildInsertSql(string targetTable, IReadOnlyList<string> cols)
+    {
+        var colList = string.Join(", ", cols.Select(QuoteIdent));
+        var placeholders = string.Join(", ", Enumerable.Range(0, cols.Count).Select(i => $"@p{i}"));
+        return $"insert into {targetTable} ({colList}) values ({placeholders})";
+    }
+
     public void EnsureCaptureTable(CaptureSpec spec)
+    {
+        // First reference to a given capture table in this Runner
+        // instance does a drop-if-exists + create; subsequent references
+        // short-circuit. The table outlives individual tests within the
+        // session (rows roll back per test via the test tran), but never
+        // outlives the session itself -- so the table's schema is always
+        // fresh against the source proc's current emitted shape. DDL is
+        // outside any test tran (ddl in tran off on sbntest), hence its
+        // own connection. The returned schema is cached for downstream
+        // shape-matched filtering during the capture phase.
+        var lazy = _rebuiltTables.GetOrAdd(spec.IntoTable,
+            _ => new Lazy<CaptureTableSchema>(() => RebuildCaptureTable(spec),
+                                              LazyThreadSafetyMode.ExecutionAndPublication));
+        _ = lazy.Value;
+    }
+
+    private CaptureTableSchema RebuildCaptureTable(CaptureSpec spec)
     {
         using var conn = new AseConnection(BuildConnectionString(_opts.Database));
         conn.Open();
 
-        if (TableExists(conn, spec.IntoTable)) return;
+        if (TableExists(conn, spec.IntoTable))
+        {
+            using var dropCmd = new AseCommand($"drop table {spec.IntoTable}", conn);
+            dropCmd.ExecuteNonQuery();
+        }
 
         var schema = IntrospectResultSetSchema(conn, spec.SourceCall);
         var ddl = BuildCreateTable(spec.IntoTable, schema);
-        using var cmd = new AseCommand(ddl, conn);
-        cmd.ExecuteNonQuery();
+        using var createCmd = new AseCommand(ddl, conn);
+        createCmd.ExecuteNonQuery();
+        return CaptureTableSchema.FromIntrospectedSchema(schema);
     }
 
     private static bool TableExists(AseConnection conn, string tableName)
