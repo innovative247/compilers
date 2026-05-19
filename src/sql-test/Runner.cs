@@ -361,7 +361,12 @@ public class Runner
             sb.Append(nullable ? " null" : " not null");
             sb.AppendLine(i == schema.Rows.Count - 1 ? "" : ",");
         }
-        sb.AppendLine(")");
+        // `lock datarows` lifts the 254-variable-length-column ceiling that
+        // Sybase ASE enforces on allpages-locked tables. Wide-emit procs
+        // like g_ma_installations (~280 columns) would otherwise fail to
+        // create. Capture tables are single-test scratch space, so the
+        // locking scheme has no observable downside.
+        sb.AppendLine(") lock datarows");
         return sb.ToString();
     }
 
