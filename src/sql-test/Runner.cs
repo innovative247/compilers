@@ -77,6 +77,7 @@ public class Runner
     public List<TestCase> Discover()
     {
         var procNames = QueryProcNames();
+        var pretests  = QueryPretests();
         var cases = new List<TestCase>();
         var paired = new HashSet<string>();
 
@@ -89,7 +90,7 @@ public class Runner
             if (!procNames.Contains(assertName)) continue;
 
             var spec = ParseCaptureSpec(name);
-            cases.Add(new TestCase(baseName, name, assertName, spec));
+            cases.Add(new TestCase(baseName, name, assertName, spec, ResolvePretest(baseName, pretests)));
             paired.Add(name);
             paired.Add(assertName);
         }
@@ -98,11 +99,69 @@ public class Runner
         foreach (var name in procNames)
         {
             if (paired.Contains(name)) continue;
-            cases.Add(new TestCase(name, null, name, null));
+            cases.Add(new TestCase(name, null, name, null, ResolvePretest(name, pretests)));
         }
 
         return cases.OrderBy(c => c.LogicalName).ToList();
     }
+
+    /// <summary>
+    /// Discover `pro_test_&lt;area&gt;_pretest` procs, mapping area → proc name.
+    /// A pretest is auto-invoked before every test whose name begins
+    /// `test_&lt;area&gt;_...`, inside the per-test tran (Go TestMain analog).
+    /// Convention: each pretest takes a single `@tstuser_out varchar(8)
+    /// output` param; the runner passes the captured value as the test's
+    /// first positional parameter.
+    /// </summary>
+    private Dictionary<string, string> QueryPretests()
+    {
+        using var conn = new AseConnection(BuildConnectionString(_opts.Database));
+        conn.Open();
+        using var cmd = new AseCommand(
+            "select name from sysobjects " +
+            "where type = 'P' and name like 'pro\\_test\\_%\\_pretest' escape '\\'",
+            conn);
+        var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+        {
+            var name = reader.GetString(0);            // pro_test_<area>_pretest
+            var area = name["pro_test_".Length..^"_pretest".Length];
+            if (area.Length > 0) map[area] = name;
+        }
+        return map;
+    }
+
+    /// <summary>
+    /// Longest-prefix match: `test_passcard_verify_key_passcard_pk` resolves
+    /// to `pro_test_passcard_verify_pretest` if that area is registered.
+    /// Walks segment prefixes longest-first; first hit wins.
+    /// </summary>
+    private static string? ResolvePretest(string testName, Dictionary<string, string> pretests)
+    {
+        if (pretests.Count == 0) return null;
+        if (!testName.StartsWith("test_", StringComparison.OrdinalIgnoreCase)) return null;
+        var segments = testName["test_".Length..].Split('_');
+        for (int n = segments.Length; n > 0; n--)
+        {
+            var candidate = string.Join('_', segments[..n]);
+            if (pretests.TryGetValue(candidate, out var proc)) return proc;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Build the exec batch for a test/capture proc, optionally prefixed with
+    /// its pretest. When a pretest exists, the runner declares @tstuser,
+    /// captures the pretest's output, and passes it as the proc's first arg —
+    /// all in one batch so the variable is in scope.
+    /// </summary>
+    private static string WithPretest(string? pretest, string execTarget)
+        => pretest == null
+            ? $"exec {execTarget}"
+            : $"declare @tstuser varchar(8)\n" +
+              $"exec {pretest} @tstuser_out = @tstuser output\n" +
+              $"exec {execTarget} @tstuser";
 
     private HashSet<string> QueryProcNames()
     {
@@ -199,10 +258,16 @@ public class Runner
         using var tx = conn.BeginTransaction();
         try
         {
+            // Paired: pretest runs in the capture batch (it feeds @tstuser to
+            // the capture proc); the assert proc only reads the capture table.
+            // Singleton: pretest runs in the test batch.
             if (tc.CaptureProc != null && tc.Capture != null)
-                RunCapturePhase(conn, tx, tc.CaptureProc, tc.Capture, _opts.TimeoutSeconds);
+                RunCapturePhase(conn, tx, tc.CaptureProc, tc.Capture, tc.Pretest, _opts.TimeoutSeconds);
 
-            using var cmd = new AseCommand($"exec {tc.AssertProc}", conn, tx);
+            var assertSql = tc.CaptureProc != null
+                ? $"exec {tc.AssertProc}"
+                : WithPretest(tc.Pretest, tc.AssertProc);
+            using var cmd = new AseCommand(assertSql, conn, tx);
             cmd.CommandTimeout = _opts.TimeoutSeconds;
             cmd.ExecuteNonQuery();
 
@@ -229,7 +294,7 @@ public class Runner
     }
 
     private void RunCapturePhase(AseConnection conn, AseTransaction tx,
-                                 string captureProc, CaptureSpec spec, int timeout)
+                                 string captureProc, CaptureSpec spec, string? pretest, int timeout)
     {
         // The capture table's schema (column count + per-column .NET
         // type) is the contract. Result sets emitted during the capture
@@ -241,7 +306,10 @@ public class Runner
         var tableSchema = _rebuiltTables[spec.IntoTable].Value;
         var insertSql   = BuildInsertSql(spec.IntoTable, tableSchema.ColumnNames);
 
-        using var cmd = new AseCommand($"exec {captureProc}", conn, tx);
+        // Pretest (if any) runs in the same batch as the capture proc so the
+        // allocated @tstuser is in scope. Its own emits (e.g. tri_users
+        // debug select on the &users& INSERT) are shape-filtered out below.
+        using var cmd = new AseCommand(WithPretest(pretest, captureProc), conn, tx);
         cmd.CommandTimeout = timeout;
 
         using var reader = cmd.ExecuteReader();

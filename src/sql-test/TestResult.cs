@@ -27,7 +27,8 @@ public record TestCase(
     string LogicalName,         // for reporting; suffix stripped for pairs
     string? CaptureProc,        // null for singleton tests
     string AssertProc,          // always set; equals LogicalName for singletons
-    CaptureSpec? Capture        // null when no capture phase
+    CaptureSpec? Capture,       // null when no capture phase
+    string? Pretest = null      // pro_test_<area>_pretest, run before the test in-tran
 );
 
 public record CaptureSpec(
