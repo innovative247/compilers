@@ -157,7 +157,12 @@ foreach ($rid in $tarRids) {
     if (-not (Test-Path $srcDir)) { continue }
     $tarPath = Join-Path $binDir "compilers-net8-$rid.tar.gz"
     if (Test-Path $tarPath) { Remove-Item $tarPath }
-    wsl tar -czf $tarPath --exclude='./settings.json' -C $srcDir .
+    # WSL gives Windows a Unix tar; macOS/Linux use the native one directly.
+    if (Get-Command wsl -ErrorAction SilentlyContinue) {
+        wsl tar -czf $tarPath --exclude='./settings.json' -C $srcDir .
+    } else {
+        tar -czf $tarPath --exclude='./settings.json' -C $srcDir .
+    }
     if (Test-Path $tarPath) {
         $sizeMB = [math]::Round((Get-Item $tarPath).Length / 1MB, 1)
         Write-Host "  Created: compilers-net8-$rid.tar.gz ($sizeMB MB)" -ForegroundColor Green
