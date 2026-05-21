@@ -24,6 +24,24 @@ namespace ibsCompiler.Database
         // Width cap for streamed result-set columns (mirrors isql -w300).
         private const int MaxColumnWidth = 256;
 
+        // Minimum display width per .NET type. The schema's ColumnSize reports byte
+        // size for fixed-length types (datetime=8, int=4, etc.), which is too small
+        // for the rendered string. Returns 0 for variable-length types (string, byte[])
+        // — they rely on ColumnSize directly.
+        private static int MinDisplayWidthForType(Type t)
+        {
+            if (t == typeof(DateTime) || t == typeof(DateTimeOffset)) return 26;
+            if (t == typeof(Guid)) return 36;
+            if (t == typeof(bool)) return 5;
+            if (t == typeof(long) || t == typeof(decimal) || t == typeof(double)) return 24;
+            if (t == typeof(int)) return 11;
+            if (t == typeof(short)) return 6;
+            if (t == typeof(byte)) return 3;
+            if (t == typeof(float)) return 14;
+            if (t == typeof(TimeSpan)) return 16;
+            return 0;
+        }
+
         public MssqlExecutor(ResolvedProfile profile)
         {
             _profile = profile;
@@ -403,7 +421,9 @@ namespace ibsCompiler.Database
                         catch { }
                     }
                 }
-                widths[i] = Math.Max(Math.Max(colSize, names[i].Length), 10);
+                // ColumnSize reports BYTE size for fixed-length types (datetime=8, int=4)
+                // — too small for the printed form. Use the type's render width when larger.
+                widths[i] = Math.Max(Math.Max(Math.Max(colSize, names[i].Length), 10), MinDisplayWidthForType(t));
             }
 
             var line = new StringBuilder();
