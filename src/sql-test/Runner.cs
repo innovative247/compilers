@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Data;
 using System.Diagnostics;
 using System.Text;
@@ -38,6 +39,32 @@ public class Runner
     private readonly ResolvedProfile _profile;
     private readonly Options _opts;
 
+    // Per-session rebuild cache: each distinct capture table is dropped
+    // and recreated exactly once on first reference. Eliminates schema
+    // drift -- a stale capture table can never silently outlive a change
+    // to the source proc's emitted shape. Cached value is the table's
+    // column names + .NET types, used downstream for shape-matched
+    // filtering during the capture phase.
+    private readonly ConcurrentDictionary<string, Lazy<CaptureTableSchema>> _rebuiltTables =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    private sealed record CaptureTableSchema(
+        IReadOnlyList<string> ColumnNames,
+        IReadOnlyList<Type>   ColumnTypes)
+    {
+        public static CaptureTableSchema FromIntrospectedSchema(DataTable schema)
+        {
+            var names = new List<string>(schema.Rows.Count);
+            var types = new List<Type>(schema.Rows.Count);
+            foreach (DataRow row in schema.Rows)
+            {
+                names.Add((string)row["ColumnName"]);
+                types.Add((Type)row["DataType"]);
+            }
+            return new CaptureTableSchema(names, types);
+        }
+    }
+
     public Runner(ResolvedProfile profile, Options opts)
     {
         _profile = profile;
@@ -50,6 +77,7 @@ public class Runner
     public List<TestCase> Discover()
     {
         var procNames = QueryProcNames();
+        var pretests  = QueryPretests();
         var cases = new List<TestCase>();
         var paired = new HashSet<string>();
 
@@ -62,7 +90,7 @@ public class Runner
             if (!procNames.Contains(assertName)) continue;
 
             var spec = ParseCaptureSpec(name);
-            cases.Add(new TestCase(baseName, name, assertName, spec));
+            cases.Add(new TestCase(baseName, name, assertName, spec, ResolvePretest(baseName, pretests)));
             paired.Add(name);
             paired.Add(assertName);
         }
@@ -71,11 +99,69 @@ public class Runner
         foreach (var name in procNames)
         {
             if (paired.Contains(name)) continue;
-            cases.Add(new TestCase(name, null, name, null));
+            cases.Add(new TestCase(name, null, name, null, ResolvePretest(name, pretests)));
         }
 
         return cases.OrderBy(c => c.LogicalName).ToList();
     }
+
+    /// <summary>
+    /// Discover `pro_test_&lt;area&gt;_pretest` procs, mapping area → proc name.
+    /// A pretest is auto-invoked before every test whose name begins
+    /// `test_&lt;area&gt;_...`, inside the per-test tran (Go TestMain analog).
+    /// Convention: each pretest takes a single `@tstuser_out varchar(8)
+    /// output` param; the runner passes the captured value as the test's
+    /// first positional parameter.
+    /// </summary>
+    private Dictionary<string, string> QueryPretests()
+    {
+        using var conn = new AseConnection(BuildConnectionString(_opts.Database));
+        conn.Open();
+        using var cmd = new AseCommand(
+            "select name from sysobjects " +
+            "where type = 'P' and name like 'pro\\_test\\_%\\_pretest' escape '\\'",
+            conn);
+        var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+        {
+            var name = reader.GetString(0);            // pro_test_<area>_pretest
+            var area = name["pro_test_".Length..^"_pretest".Length];
+            if (area.Length > 0) map[area] = name;
+        }
+        return map;
+    }
+
+    /// <summary>
+    /// Longest-prefix match: `test_passcard_verify_key_passcard_pk` resolves
+    /// to `pro_test_passcard_verify_pretest` if that area is registered.
+    /// Walks segment prefixes longest-first; first hit wins.
+    /// </summary>
+    private static string? ResolvePretest(string testName, Dictionary<string, string> pretests)
+    {
+        if (pretests.Count == 0) return null;
+        if (!testName.StartsWith("test_", StringComparison.OrdinalIgnoreCase)) return null;
+        var segments = testName["test_".Length..].Split('_');
+        for (int n = segments.Length; n > 0; n--)
+        {
+            var candidate = string.Join('_', segments[..n]);
+            if (pretests.TryGetValue(candidate, out var proc)) return proc;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Build the exec batch for a test/capture proc, optionally prefixed with
+    /// its pretest. When a pretest exists, the runner declares @tstuser,
+    /// captures the pretest's output, and passes it as the proc's first arg —
+    /// all in one batch so the variable is in scope.
+    /// </summary>
+    private static string WithPretest(string? pretest, string execTarget)
+        => pretest == null
+            ? $"exec {execTarget}"
+            : $"declare @tstuser varchar(8)\n" +
+              $"exec {pretest} @tstuser_out = @tstuser output\n" +
+              $"exec {execTarget} @tstuser";
 
     private HashSet<string> QueryProcNames()
     {
@@ -172,10 +258,16 @@ public class Runner
         using var tx = conn.BeginTransaction();
         try
         {
+            // Paired: pretest runs in the capture batch (it feeds @tstuser to
+            // the capture proc); the assert proc only reads the capture table.
+            // Singleton: pretest runs in the test batch.
             if (tc.CaptureProc != null && tc.Capture != null)
-                RunCapturePhase(conn, tx, tc.CaptureProc, tc.Capture, _opts.TimeoutSeconds);
+                RunCapturePhase(conn, tx, tc.CaptureProc, tc.Capture, tc.Pretest, _opts.TimeoutSeconds);
 
-            using var cmd = new AseCommand($"exec {tc.AssertProc}", conn, tx);
+            var assertSql = tc.CaptureProc != null
+                ? $"exec {tc.AssertProc}"
+                : WithPretest(tc.Pretest, tc.AssertProc);
+            using var cmd = new AseCommand(assertSql, conn, tx);
             cmd.CommandTimeout = _opts.TimeoutSeconds;
             cmd.ExecuteNonQuery();
 
@@ -202,35 +294,43 @@ public class Runner
     }
 
     private void RunCapturePhase(AseConnection conn, AseTransaction tx,
-                                 string captureProc, CaptureSpec spec, int timeout)
+                                 string captureProc, CaptureSpec spec, string? pretest, int timeout)
     {
-        using var cmd = new AseCommand($"exec {captureProc}", conn, tx);
+        // The capture table's schema (column count + per-column .NET
+        // type) is the contract. Result sets emitted during the capture
+        // proc whose shape doesn't match -- a trigger's `select @insrc,
+        // @delrc` (2 unnamed ints), an audit-log emit, an arbitrary
+        // debug select -- get filtered out. Only shape-matched result
+        // sets are ingested, positionally against the table's column
+        // order; reader column names don't have to be aligned.
+        var tableSchema = _rebuiltTables[spec.IntoTable].Value;
+        var insertSql   = BuildInsertSql(spec.IntoTable, tableSchema.ColumnNames);
+
+        // Pretest (if any) runs in the same batch as the capture proc so the
+        // allocated @tstuser is in scope. Its own emits (e.g. tri_users
+        // debug select on the &users& INSERT) are shape-filtered out below.
+        using var cmd = new AseCommand(WithPretest(pretest, captureProc), conn, tx);
         cmd.CommandTimeout = timeout;
 
-        // Read the test's result set(s) and write rows into the capture table.
-        // Multiple result sets are concatenated into the same target.
         using var reader = cmd.ExecuteReader();
         do
         {
-            if (reader.FieldCount == 0) continue;
-            CopyResultSetIntoTable(reader, conn, tx, spec.IntoTable);
+            if (!ResultSetMatchesSchema(reader, tableSchema)) continue;
+            CopyResultSetIntoTable(reader, conn, tx, insertSql);
         } while (reader.NextResult());
     }
 
-    private void CopyResultSetIntoTable(IDataReader reader, AseConnection conn,
-                                         AseTransaction tx, string targetTable)
+    private static bool ResultSetMatchesSchema(IDataReader reader, CaptureTableSchema schema)
     {
-        var cols = new string[reader.FieldCount];
-        var placeholders = new string[reader.FieldCount];
+        if (reader.FieldCount != schema.ColumnTypes.Count) return false;
         for (int i = 0; i < reader.FieldCount; i++)
-        {
-            cols[i] = QuoteIdent(reader.GetName(i));
-            placeholders[i] = $"@p{i}";
-        }
-        var insertSql =
-            $"insert into {targetTable} ({string.Join(", ", cols)}) " +
-            $"values ({string.Join(", ", placeholders)})";
+            if (reader.GetFieldType(i) != schema.ColumnTypes[i]) return false;
+        return true;
+    }
 
+    private static void CopyResultSetIntoTable(IDataReader reader, AseConnection conn,
+                                                AseTransaction tx, string insertSql)
+    {
         while (reader.Read())
         {
             using var insertCmd = new AseCommand(insertSql, conn, tx);
@@ -243,17 +343,46 @@ public class Runner
         }
     }
 
+    private static string BuildInsertSql(string targetTable, IReadOnlyList<string> cols)
+    {
+        var colList = string.Join(", ", cols.Select(QuoteIdent));
+        var placeholders = string.Join(", ", Enumerable.Range(0, cols.Count).Select(i => $"@p{i}"));
+        return $"insert into {targetTable} ({colList}) values ({placeholders})";
+    }
+
     public void EnsureCaptureTable(CaptureSpec spec)
+    {
+        // First reference to a given capture table in this Runner
+        // instance does a drop-if-exists + create; subsequent references
+        // short-circuit. The table outlives individual tests within the
+        // session (rows roll back per test via the test tran), but never
+        // outlives the session itself -- so the table's schema is always
+        // fresh against the source proc's current emitted shape. DDL is
+        // outside any test tran (ddl in tran off on sbntest), hence its
+        // own connection. The returned schema is cached for downstream
+        // shape-matched filtering during the capture phase.
+        var lazy = _rebuiltTables.GetOrAdd(spec.IntoTable,
+            _ => new Lazy<CaptureTableSchema>(() => RebuildCaptureTable(spec),
+                                              LazyThreadSafetyMode.ExecutionAndPublication));
+        _ = lazy.Value;
+    }
+
+    private CaptureTableSchema RebuildCaptureTable(CaptureSpec spec)
     {
         using var conn = new AseConnection(BuildConnectionString(_opts.Database));
         conn.Open();
 
-        if (TableExists(conn, spec.IntoTable)) return;
+        if (TableExists(conn, spec.IntoTable))
+        {
+            using var dropCmd = new AseCommand($"drop table {spec.IntoTable}", conn);
+            dropCmd.ExecuteNonQuery();
+        }
 
         var schema = IntrospectResultSetSchema(conn, spec.SourceCall);
         var ddl = BuildCreateTable(spec.IntoTable, schema);
-        using var cmd = new AseCommand(ddl, conn);
-        cmd.ExecuteNonQuery();
+        using var createCmd = new AseCommand(ddl, conn);
+        createCmd.ExecuteNonQuery();
+        return CaptureTableSchema.FromIntrospectedSchema(schema);
     }
 
     private static bool TableExists(AseConnection conn, string tableName)
@@ -300,7 +429,12 @@ public class Runner
             sb.Append(nullable ? " null" : " not null");
             sb.AppendLine(i == schema.Rows.Count - 1 ? "" : ",");
         }
-        sb.AppendLine(")");
+        // `lock datarows` lifts the 254-variable-length-column ceiling that
+        // Sybase ASE enforces on allpages-locked tables. Wide-emit procs
+        // like g_ma_installations (~280 columns) would otherwise fail to
+        // create. Capture tables are single-test scratch space, so the
+        // locking scheme has no observable downside.
+        sb.AppendLine(") lock datarows");
         return sb.ToString();
     }
 

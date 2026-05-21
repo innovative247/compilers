@@ -24,14 +24,21 @@ if ($LASTEXITCODE -ne 0) {
     Write-Host "  (publish.ps1 tar step failed as expected on Windows; continuing)" -ForegroundColor Yellow
 }
 
-# 2. Windows tar workaround - create linux/osx archives manually
+# 2. Linux/macOS archives. Off-Windows, publish.ps1 already created these
+# with its native tar (settings.json excluded); only Windows needs the WSL
+# re-create here, since publish.ps1's tar step fails there.
 $binDir = Join-Path $PSScriptRoot "bin"
 Write-Host ""
 Write-Host "=== Creating Linux/macOS archives ===" -ForegroundColor Cyan
 
 Push-Location $binDir
 foreach ($rid in @('linux-x64', 'osx-x64', 'osx-arm64')) {
-    wsl tar -czf "compilers-net8-$rid.tar.gz" -C $rid .
+    $tarFile = "compilers-net8-$rid.tar.gz"
+    if (Test-Path $tarFile) {
+        Write-Host "  $tarFile (created by publish.ps1)" -ForegroundColor Green
+        continue
+    }
+    wsl tar -czf $tarFile -C $rid .
     if ($LASTEXITCODE -ne 0) { Write-Host "Failed to create $rid tar.gz" -ForegroundColor Red; Pop-Location; exit 1 }
     Write-Host "  Created: compilers-net8-$rid.tar.gz" -ForegroundColor Green
 }
