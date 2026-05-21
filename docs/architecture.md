@@ -32,6 +32,33 @@ var executor = SqlExecutorFactory.Create(profile);  // MssqlExecutor or SybaseEx
 | MSSQL | `SqlBulkCopy` + DataReader | `SqlBulkCopy` from tab-delimited file |
 | Sybase | SELECT → tab-delimited file | Row-by-row INSERT |
 
+### Result-Set Display Widths
+
+Column widths in streamed result-sets (`isqlline`, `runsql`, anything that hits `StreamOneResultSetAsync`) are computed from three inputs, taking the max:
+
+1. `SchemaTable.ColumnSize` (capped at `MaxColumnWidth = 256`)
+2. The column header text length
+3. **`MinDisplayWidthForType(t)`** — a per-.NET-type display floor
+
+Input #3 exists because `SchemaTable.ColumnSize` reports the **byte width** for fixed-length types — `datetime`=8, `int`=4, `bigint`=8, `bit`=1, `uniqueidentifier`=16. Without a type-aware floor, those byte counts collapse the column to ~10 chars (the hardcoded baseline) and `Substring(0, width)` in the row loop chops the rendered string. The original symptom: `dateadd(ss, min(int_col), "800101")` rendered as `MM/dd/yyyy` with the time silently dropped, while a non-aggregate `dateadd(ss, literal, ...)` in the same SELECT kept its time because that column's name/text happened to push the width higher.
+
+Floors (kept symmetric in `SybaseExecutor.cs` and `MssqlExecutor.cs`):
+
+| .NET type | Floor | Rationale |
+|---|---|---|
+| `DateTime`, `DateTimeOffset` | 26 | `MM/dd/yyyy h:mm:ss tt` and Sybase isql's `Mon DD YYYY HH:MM:SS.fffAM` |
+| `Guid` | 36 | `xxxxxxxx-xxxx-…` canonical form |
+| `long`, `decimal`, `double` | 24 | room for `-9223372036854775808` and scaled decimal |
+| `int` | 11 | `-2147483648` |
+| `short` | 6 | `-32768` |
+| `byte` | 3 | `255` |
+| `float` | 14 | scientific notation |
+| `TimeSpan` | 16 | `-d.hh:mm:ss.fffffff` |
+| `bool` | 5 | `False` |
+| anything else (e.g. `string`, `byte[]`) | 0 | fall back to `ColumnSize`, which IS the printed width for these |
+
+When extending: if the AseClient or SqlClient starts returning a new fixed-length .NET type, add its row here — don't reach for `MaxColumnWidth` (that's the *cap*, not a default).
+
 ---
 
 ## Source File I/O — LF terminators required
