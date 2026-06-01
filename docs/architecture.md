@@ -147,13 +147,36 @@ Allow short paths in SQL source files:
 | `/ss/tm/` | `/SQL_Sources/Telemarketing/` |
 | `/ss/ub/` | `/SQL_Sources/US_Basics/` |
 
-See `Common.cs` for the full list.
+See `Common.cs` for the built-in fallback list.
+
+### Source of truth — `create_links.sh`
+
+The authoritative shortcut set is the SQL tree's own `create_links.sh` (at the
+SQL_SOURCE root), parsed by `ibs_compiler_common.ParseCreateLinks`. Each
+`ln -s <target> <link>` line becomes one `(link, target)` pair. This is the same
+script the Unix host runs, so the compilers create exactly the shortcuts that
+branch expects — nothing hardcoded. `ShortcutDefinitionsFor(sqlSource)` returns
+the parsed entries when the script is present, else the built-in
+`SymlinkDefinitions` as a fallback.
+
+- **Renamed trees** (`current.sql` post-r57389) already have the short-name
+  directories on disk natively — every entry is a no-op, 0 created.
+- **Legacy long-name trees** (`95.sql` and earlier) have only the long names, so
+  `css/ss`, `css/sba`, … get created from the script.
 
 ### Creation
 
-- On Windows: Requires Administrator privileges (falls back to path expansion)
-- On Unix: Standard permissions
-- Checked once per session via `IBS_SYMLINKS_CHECKED` env var
+- Triggered (non-raw profiles only) by `set_profile` create/edit
+  (`EnsureSymbolicLinks`) and the **Test → Symbolic links** check
+  (`TestSymbolicLinks`, interactive option 6 and headless `--test --what symlinks`).
+- **Create only when missing**: an entry is skipped if the short path / shortcut
+  already exists (`SymlinkOrShortPathExists`) OR its target directory is absent
+  (so absolute Unix targets and runtime-only links in `create_links.sh` skip
+  harmlessly on a SQL checkout).
+- On Windows: requires Administrator privileges or Developer Mode (otherwise
+  reports per-entry "permission denied"; compiler still works via path expansion).
+- On Unix/macOS: standard permissions, created directly.
+- Checked once per session via `IBS_SYMLINKS_CHECKED` env var.
 
 ---
 

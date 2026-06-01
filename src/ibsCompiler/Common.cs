@@ -251,6 +251,63 @@ namespace ibsCompiler
         };
 
         /// <summary>
+        /// Parse the SQL tree's own <c>create_links.sh</c> into (link, target)
+        /// pairs. Each <c>ln -s &lt;target&gt; &lt;link&gt;</c> line becomes one
+        /// pair, with both paths normalized (leading "./" stripped, "/" → the
+        /// platform separator) so the same script the Unix host runs can be
+        /// materialized on Windows, Linux, or macOS. This is the authoritative
+        /// source of shortcuts: the renamed current.sql tree already has the
+        /// short names on disk (every entry is a no-op), while legacy long-name
+        /// trees (95.sql and earlier) get exactly the shortcuts the script
+        /// defines. Returns an empty list when the script is absent.
+        /// </summary>
+        public static List<(string Link, string Target)> ParseCreateLinks(string sqlSource)
+        {
+            var result = new List<(string, string)>();
+            if (string.IsNullOrEmpty(sqlSource)) return result;
+
+            var script = Path.Combine(sqlSource, "create_links.sh");
+            if (!File.Exists(script)) return result;
+
+            foreach (var raw in File.ReadAllLines(script))
+            {
+                var line = raw.Trim();
+                if (line.Length == 0 || line.StartsWith("#")) continue;
+
+                // Expect exactly: ln -s <target> <link>
+                var parts = line.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length < 4 || parts[0] != "ln" || parts[1] != "-s") continue;
+
+                var target = NormalizeLinkPath(parts[2]);
+                var link = NormalizeLinkPath(parts[3]);
+                if (link.Length == 0 || target.Length == 0) continue;
+                result.Add((link, target));
+            }
+            return result;
+        }
+
+        private static string NormalizeLinkPath(string p)
+        {
+            if (p.StartsWith("./")) p = p.Substring(2);
+            return p.Replace('/', Path.DirectorySeparatorChar);
+        }
+
+        /// <summary>
+        /// The shortcut set to materialize for a SQL tree: the tree's own
+        /// <c>create_links.sh</c> when present (authoritative — matches the Unix
+        /// host), otherwise the built-in curated <see cref="SymlinkDefinitions"/>.
+        /// The create/skip guards downstream (short path or shortcut already
+        /// present, target directory must exist) make the extra entries from the
+        /// full script harmless — absolute Unix targets and runtime-only links
+        /// simply skip because their targets aren't on disk in a SQL checkout.
+        /// </summary>
+        public static IReadOnlyList<(string Link, string Target)> ShortcutDefinitionsFor(string sqlSource)
+        {
+            var parsed = ParseCreateLinks(sqlSource);
+            return parsed.Count > 0 ? parsed : SymlinkDefinitions;
+        }
+
+        /// <summary>
         /// Map of legacy long-form directory name -> short alias, derived from
         /// SymlinkDefinitions (last segment of each link is the short name for
         /// its target). Used by <see cref="ToShortPath"/> to recognize when a
@@ -327,7 +384,7 @@ namespace ibsCompiler
             int created = 0, existing = 0, targetMissing = 0, permissionDenied = 0;
             bool windowsWarningShown = false;
 
-            foreach (var (link, target) in SymlinkDefinitions)
+            foreach (var (link, target) in ShortcutDefinitionsFor(sqlSource))
             {
                 // Symlink already there, OR the short-name path is a real
                 // directory on disk (renamed tree) — either way nothing to do.

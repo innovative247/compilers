@@ -1220,15 +1220,25 @@ namespace ibsCompiler
                 return;
             }
 
-            // Per-entry status. Renamed trees (current.sql post-r57389) have the
-            // short-name directories on disk natively, so most/all entries are
-            // satisfied without creating any symlinks. Only entries that need a
-            // new symlink OR genuinely fail are listed; the rest roll up into a
-            // single summary line to avoid drowning the operator in dim output.
+            // Shortcut definitions come from the SQL tree's own create_links.sh
+            // when present (the same script the Unix host runs), else the built-in
+            // curated list. The renamed tree (current.sql post-r57389) already has
+            // the short-name directories on disk natively, so every entry is a
+            // no-op; legacy long-name trees (95.sql and earlier) get the shortcuts
+            // created here.
+            var defs = ibs_compiler_common.ShortcutDefinitionsFor(profile.SqlSource);
+            if (ibs_compiler_common.ParseCreateLinks(profile.SqlSource).Count > 0)
+                PrintDim($"  Source: {Path.Combine(profile.SqlSource, "create_links.sh")} ({defs.Count} entries)");
+            else
+                PrintDim($"  Source: built-in shortcut list ({defs.Count} entries; no create_links.sh in SQL root)");
+
+            // Per-entry status. Only entries that need a new symlink OR genuinely
+            // fail are listed; the rest roll up into a single summary line to avoid
+            // drowning the operator in dim output.
             int existing = 0, created = 0, missing = 0, failed = 0;
             bool windowsWarningShown = false;
 
-            foreach (var (link, target) in ibs_compiler_common.SymlinkDefinitions)
+            foreach (var (link, target) in defs)
             {
                 // Already satisfied — either a symlink at the legacy path, OR
                 // the short-name directory exists on disk natively.
