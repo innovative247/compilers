@@ -259,3 +259,10 @@ Every command calls `VersionCheck.CheckForUpdates()` at startup:
 2. Once per day, checks GitHub Releases API for a newer version
 3. If newer: prompts user interactively to update now (y/N)
 4. State file: `%LOCALAPPDATA%\ibs-compilers\version_state.json` (Windows) or `~/ibs-compilers/version_state.json` (Linux/macOS)
+
+Operational guarantees (`DailyCheck()`):
+- **First-use-per-day cadence.** The check fires on the first compiler invocation of each **UTC** calendar day, gated by `last_check_date`. The state file is **shared across the whole suite** (one file, not per-binary), so it's once/day total — running `runsql` then `set_options` the same day checks only once.
+- **Non-blocking.** 5-second GitHub timeout; any network error or non-2xx is swallowed and the real command proceeds. The check never fails a command.
+- **No re-nag.** Today's date is stamped **before** the prompt, so declining (`N`) does not prompt again until the next UTC day. Forcing it any time: `<cmd> update`.
+- **Headless-safe.** The prompt uses `Console.ReadLine()`; under a closed/redirected stdin it returns null → treated as `N` (prints "run update later"), so automation never hangs.
+- **A git push is not enough** — the check reads GitHub *Releases*, not commits/tags. A new version only reaches machines once `release.ps1` has cut the release with platform assets attached (see `.docs/workflows/compilers-release.md`).
