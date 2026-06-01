@@ -74,6 +74,10 @@ using var writer = ibs_compiler_common.OpenSourceWriter(path, append: true);
 
 Default `new StreamWriter(path, …)` uses `Environment.NewLine` (CRLF on Windows) and is the wrong default for any file that gets committed. Reserve plain `StreamWriter` for transient files under `GetTempPath()` and for diagnostic output (trace dumps, logs).
 
+**`File.Copy` is also banned for setup files** — it clones bytes verbatim, so copying a CRLF source births a CRLF file and reintroduces `^M`. Route copies through load+save (e.g. `InteractiveMenus.CopyOptionsFileLf` → `LoadOptionsFile` + `SaveOptionsFile`), never `File.Copy`.
+
+The hard rule, restated: **the compilers must NEVER write `^M` (CRLF) into a committed setup file, on any OS.** Every write path — overwrite, append, copy — goes through `OpenSourceWriter`/load+save. This is the canonical, cross-repo team rule; the SQL-source side (file must be pure LF and pinned with `svn:eol-style=LF`) is documented in the handbook at `.docs/requirements/sql.md` § "css/setup source files are LF-only". Keep both in sync.
+
 ---
 
 ## Profile System

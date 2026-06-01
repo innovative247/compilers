@@ -609,7 +609,7 @@ namespace ibsCompiler
                 return;
             }
 
-            File.Copy(source.FullPath, newPath);
+            CopyOptionsFileLf(source.FullPath, newPath);
             Console.WriteLine($"Created: {newName}");
 
             if (ConsoleYesNo($"Edit {newName}?", defaultYes: false))
@@ -906,6 +906,15 @@ namespace ibsCompiler
             foreach (var line in lines)
                 writer.WriteLine(line);
         }
+
+        /// <summary>
+        /// Copies an options file while normalizing line endings to LF. A plain
+        /// File.Copy clones bytes verbatim, so copying a CRLF source produces a
+        /// CRLF destination — that reintroduces ^M into css/setup. Route through
+        /// Load+Save so every file the tool writes stays LF on every platform.
+        /// </summary>
+        private static void CopyOptionsFileLf(string srcPath, string dstPath)
+            => SaveOptionsFile(dstPath, LoadOptionsFile(srcPath));
 
         private static string ExtractOptionName(string line)
         {
@@ -1331,7 +1340,7 @@ namespace ibsCompiler
                     Console.Error.WriteLine($"ERROR: destination already exists: {dstPath}");
                     return 1;
                 }
-                File.Copy(srcPath, dstPath);
+                CopyOptionsFileLf(srcPath, dstPath);
                 Console.WriteLine($"Created: {copyTo}");
                 return 0;
             }
