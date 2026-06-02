@@ -989,13 +989,21 @@ namespace ibsCompiler
             }
 
             var company = profile.Company ?? "101";
+            var serverType = profile.Platform?.ToUpper() == "MSSQL" ? "MSSQL" : "SYBASE";
 
-            // options.def — defaults
-            var optDef = Path.Combine(cssSetup, "options.def");
-            if (File.Exists(optDef))
-                PrintSuccess($"  options.def found ({CountLines(optDef)} lines)");
+            // Mirror exactly what Options.GenerateOptionFiles merges into the
+            // fully-resolved set, in order, so the test reflects the real compile
+            // path. The SQL-type file is options.{ServerType} — NOT options.def
+            // (options.def is only an edit-time defaults source and is never read
+            // during resolution). table_locations is layered on last so that
+            // table placeholders (e.g. &users&) resolve to <db>..table.
+
+            // options.{ServerType} — SQL-type defaults (optional)
+            var optSql = Path.Combine(cssSetup, $"options.{serverType}");
+            if (File.Exists(optSql))
+                PrintSuccess($"  options.{serverType} found ({CountLines(optSql)} lines)");
             else
-                PrintDim("  options.def not found (optional)");
+                PrintDim($"  options.{serverType} not found (optional)");
 
             // options.{company} — company-specific (required)
             var optCompany = Path.Combine(cssSetup, $"options.{company}");
@@ -1004,12 +1012,20 @@ namespace ibsCompiler
             else
                 PrintError($"  options.{company} NOT found — this file is required");
 
-            // options.{company}.{profile} — profile-specific
+            // options.{company}.{profile} — server-specific (optional)
             var optProfile = Path.Combine(cssSetup, $"options.{company}.{profileName}");
             if (File.Exists(optProfile))
                 PrintSuccess($"  options.{company}.{profileName} found ({CountLines(optProfile)} lines)");
             else
                 PrintDim($"  options.{company}.{profileName} not found (optional)");
+
+            // table_locations — required; merged into the resolved set so table
+            // placeholders resolve. Its absence is why a bare &table& won't resolve.
+            var tblLoc = Path.Combine(cssSetup, "table_locations");
+            if (File.Exists(tblLoc))
+                PrintSuccess($"  table_locations found ({CountLines(tblLoc)} lines)");
+            else
+                PrintError($"  table_locations NOT found — this file is required");
 
             // Resolve a placeholder. Headless callers preset it; interactive
             // callers fall through to the prompt with "&users&" as default.
@@ -1021,10 +1037,16 @@ namespace ibsCompiler
             else
             {
                 Console.WriteLine();
-                Console.Write("  Enter option to resolve [&users&]: ");
+                Console.Write("  Enter option or table to resolve [&users&]: ");
                 var input = Console.ReadLine()?.Trim();
                 optionInput = string.IsNullOrEmpty(input) ? "&users&" : input;
             }
+
+            // A bare token like "users" has no &...& delimiters, so ReplaceWord
+            // short-circuits and reports "not resolved" even though table_locations
+            // is loaded. Treat a bare token as the placeholder &token&.
+            if (!optionInput.Contains('&'))
+                optionInput = "&" + optionInput.Trim() + "&";
 
             var resolved = new ResolvedProfile
             {

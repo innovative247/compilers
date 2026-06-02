@@ -1279,8 +1279,23 @@ function Test-ProfileManagement {
     Test-Case 'set_profile.test_options' {
         $r = Invoke-Cli set_profile '--test' $script:TestProfile '--what' 'options' '--resolve' '&users&'
         Assert-ExitCode $r
-        if ($r.StdOut -notmatch 'options\.def found' -and $r.StdOut -notmatch 'options\.101 found') {
-            throw "expected at least one options file to be reported as found"
+        # The test now mirrors Options.GenerateOptionFiles: company file (required)
+        # plus table_locations (required, merged so table placeholders resolve).
+        if ($r.StdOut -notmatch 'options\.101 found') {
+            throw "expected options.101 (company file) to be reported as found"
+        }
+        if ($r.StdOut -notmatch 'table_locations found') {
+            throw "expected table_locations to be reported as found (it is part of the resolution set)"
+        }
+    }
+    Test-Case 'set_profile.test_options_bare_token' {
+        # A bare token (no &...&) must be normalized to &token& and resolved via
+        # table_locations. The scratch table_locations maps ba_basic_users; the
+        # success line is "&ba_basic_users& = ...".
+        $r = Invoke-Cli set_profile '--test' $script:TestProfile '--what' 'options' '--resolve' 'ba_basic_users'
+        Assert-ExitCode $r
+        if ($r.StdOut -notmatch '&ba_basic_users& =') {
+            throw "bare token 'ba_basic_users' should normalize to &ba_basic_users& and resolve via table_locations. stdout: $($r.StdOut)"
         }
     }
     Test-Case 'set_profile.test_table_locations' {
@@ -1302,10 +1317,16 @@ function Test-ProfileManagement {
     }
     Test-Case 'set_profile.test_symlinks' {
         # Source catches UnauthorizedAccessException and reports counts; exits 0.
+        # Shortcuts come from the SQL tree's create_links.sh when present, else the
+        # built-in list; the scratch tree has neither create_links.sh nor the long
+        # dirs, so it exercises the fallback + "already resolve / absent" summary.
         $r = Invoke-Cli set_profile '--test' $script:TestProfile '--what' 'symlinks'
         Assert-ExitCode $r
-        if ($r.StdOut -notmatch 'symbolic links' -and $r.StdOut -notmatch 'symbolic link') {
-            throw "expected 'symbolic link[s]' in output. stdout was: $($r.StdOut)"
+        if ($r.StdOut -notmatch 'short-path resolution') {
+            throw "expected 'short-path resolution' check output. stdout was: $($r.StdOut)"
+        }
+        if ($r.StdOut -notmatch 'create_links\.sh|built-in shortcut list') {
+            throw "expected the shortcut source line (create_links.sh or built-in). stdout was: $($r.StdOut)"
         }
     }
     Test-Case 'set_profile.test_all' {
