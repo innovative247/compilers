@@ -303,10 +303,10 @@ Interactive main menu:
 | `2` → Delete → confirm | Remove from `settings.json` | `--delete NAME --yes` (mandatory `--yes`) | `set_profile.delete_yes` / `set_profile.delete_without_yes_errors` | COVERED |
 | `2` → Test → `1` SQL Source | Verify `IRPath` + `css/setup/` exists | `--test NAME --what sql-source` | `set_profile.test_sql_source` | COVERED |
 | `2` → Test → `2` Connection | Attempt connection (3 query fallback for Sybase) | `--test NAME --what connection` (no credential-retry prompt headless) | `set_profile.test_connection` | COVERED |
-| `2` → Test → `3` Options | Resolve a placeholder via options files | `--test NAME --what options [--resolve PLACEHOLDER]` | `set_profile.test_options` | COVERED |
+| `2` → Test → `3` Options | Resolve a placeholder against the full merged set — `options.<ServerType>` + `options.<company>` + `options.<company>.<server>` + `table_locations` (mirrors `Options.GenerateOptionFiles`). A bare token (e.g. `users`) is normalized to `&users&` so table names resolve; the file list shows each merge input incl. `table_locations`. | `--test NAME --what options [--resolve PLACEHOLDER]` | `set_profile.test_options` / `set_profile.test_options_bare_token` | COVERED |
 | `2` → Test → `4` Table locations | Verify `table_locations` file exists | `--test NAME --what table-locations` | `set_profile.test_table_locations` | COVERED |
 | `2` → Test → `5` Changelog | Verify `gclog12` on, `ba_gen_chg_log_new` exists, insert test row | `--test NAME --what changelog` | `set_profile.test_changelog` | COVERED |
-| `2` → Test → `6` Symbolic links | Create missing symlinks under `IRPath` | `--test NAME --what symlinks` | `set_profile.test_symlinks` | COVERED |
+| `2` → Test → `6` Symbolic links | Create missing short-path shortcuts under `IRPath`, sourced from the tree's own `create_links.sh` (else built-in list); skips any whose short path/shortcut already exists | `--test NAME --what symlinks` | `set_profile.test_symlinks` | COVERED |
 | `2` → Test → all | Run all six in order | `--test NAME --what all` | `set_profile.test_all` | COVERED |
 | `3` Add to IDE | Write VSCode `tasks.json` | (TTY-only — explicit project decision) | — | SKIP |
 | `4` Open settings.json | Launch editor on `settings.json` | (TTY-only — same reason) | — | SKIP |
