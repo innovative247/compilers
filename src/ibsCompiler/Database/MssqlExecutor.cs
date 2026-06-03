@@ -49,17 +49,49 @@ namespace ibsCompiler.Database
 
         private static string? LoadSqlCmdInit()
         {
+            // Session defaults live in a SQLCMDINI.sql, exactly like native sqlcmd reads its
+            // SQLCMDINI startup script (the mechanism the legacy compiler relied on). Resolve it
+            // from $env:SQLCMDINI first (explicit, matches the legacy toolchain), else a local
+            // SQLCMDINI.sql sitting next to settings.json/the binaries. A local, versionable
+            // settings file — never hard-coded values.
             var path = Environment.GetEnvironmentVariable("SQLCMDINI");
-            if (!string.IsNullOrEmpty(path) && File.Exists(path))
-                return File.ReadAllText(path);
-            return null;
+            if (string.IsNullOrEmpty(path) || !File.Exists(path))
+            {
+                var settings = ProfileManager.FindSettingsFile();
+                var dir = (settings != null ? Path.GetDirectoryName(settings) : null) ?? AppContext.BaseDirectory;
+                path = Path.Combine(dir, "SQLCMDINI.sql");
+            }
+            return File.Exists(path) ? File.ReadAllText(path) : null;
         }
 
         private static void ExecuteInitScript(SqlConnection connection)
         {
-            if (SqlCmdInitScript == null) return;
-            using var cmd = new SqlCommand(SqlCmdInitScript, connection);
-            cmd.ExecuteNonQuery();
+            // Session defaults (ARITHABORT, CONCAT_NULL_YIELDS_NULL, ANSI_NULL_DFLT, ...) come from
+            // SQLCMDINI.sql via the env var / local file — never hard-coded. Same mechanism native
+            // sqlcmd and the legacy compiler used.
+            if (SqlCmdInitScript != null)
+                using (var cmd = new SqlCommand(SqlCmdInitScript, connection))
+                    cmd.ExecuteNonQuery();
+            // Honor the target database's QUOTED_IDENTIFIER. Microsoft.Data.SqlClient forces it ON at
+            // login regardless of the database default (this is the one option where it differs from
+            // native sqlcmd, whose default is OFF). Read the database's configured value and SET the
+            // session to match, so the database — configured by the installer — is the source of
+            // truth. SBN needs OFF, which install-sbn sets at the model/database level.
+            ApplyDatabaseQuotedIdentifier(connection);
+        }
+
+        private static void ApplyDatabaseQuotedIdentifier(SqlConnection connection)
+        {
+            bool? on = null;
+            using (var q = new SqlCommand(
+                "SELECT is_quoted_identifier_on FROM sys.databases WHERE database_id = DB_ID()", connection))
+            {
+                var o = q.ExecuteScalar();
+                if (o != null && o != DBNull.Value) on = Convert.ToBoolean(o);
+            }
+            if (on.HasValue)
+                using (var s = new SqlCommand("SET QUOTED_IDENTIFIER " + (on.Value ? "ON" : "OFF"), connection))
+                    s.ExecuteNonQuery();
         }
 
         private string BuildConnectionString(string database)
