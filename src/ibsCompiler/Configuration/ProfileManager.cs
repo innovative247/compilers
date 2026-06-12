@@ -150,6 +150,7 @@ namespace ibsCompiler.Configuration
                     Language = p.DefaultLanguage ?? "1",
                     IRPath = p.SqlSource ?? "",
                     RawMode = p.RawMode,
+                    DataCharset = p.DataCharset ?? "",
                     IsProfile = true
                 };
             }
@@ -193,6 +194,7 @@ namespace ibsCompiler.Configuration
                 Language = language,
                 IRPath = irPath,
                 RawMode = false,
+                DataCharset = Environment.GetEnvironmentVariable("DATA_CHARSET") ?? "",
                 IsProfile = false
             };
         }
@@ -233,6 +235,9 @@ namespace ibsCompiler.Configuration
         public string Language { get; set; } = "1";
         public string IRPath { get; set; } = "";
         public bool RawMode { get; set; }
+        // Actual code page of char/varchar data when it differs from the server's
+        // declared charset; empty = trust the server charset. See ProfileData.DataCharset.
+        public string DataCharset { get; set; } = "";
         public bool IsProfile { get; set; }
     }
 }

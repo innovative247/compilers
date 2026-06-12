@@ -47,6 +47,86 @@ namespace ibsCompiler.Database
             Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
         }
 
+        // DATA_CHARSET reinterpretation. AseClient decodes/encodes char/varchar using the
+        // server's declared charset (e.g. cp850). When the data is actually stored in a
+        // different single-byte code page (e.g. Windows-1252 entered by ANSI Windows
+        // clients), the server's lens turns it to mojibake (0xE9 'é' -> 'Ú'). Because the
+        // client charset == server charset there is NO server-side conversion: the bytes
+        // round-trip faithfully and the server encoding is a lossless bijection. So we can
+        // recover the true text in .NET by re-encoding to the server charset (back to the
+        // raw bytes) and decoding as the real data charset — and inversely on write.
+        private bool _csInit;
+        private bool _reinterpret;
+        private Encoding? _serverEnc;     // charset AseClient used (server default)
+        private Encoding? _dataEnc;       // actual data code page (profile DATA_CHARSET)
+        private string? _serverCharsetName;
+
+        private void EnsureCharsets()
+        {
+            if (_csInit) return;
+            _csInit = true;
+            if (string.IsNullOrWhiteSpace(_profile.DataCharset)) return;
+            _dataEnc = CharsetToEncoding(_profile.DataCharset);
+            _serverEnc = CharsetToEncoding(DetectServerCharset());
+            // Only valid when the server charset is single-byte (GetBytes is a lossless
+            // bijection). A UTF-8 server already yields correct Unicode — never reinterpret.
+            _reinterpret = _dataEnc != null && _serverEnc != null
+                && _serverEnc.CodePage != 65001
+                && _dataEnc.CodePage != _serverEnc.CodePage;
+        }
+
+        private static Encoding? CharsetToEncoding(string name)
+        {
+            switch (name.Trim().ToLowerInvariant())
+            {
+                case "cp850": case "850": return SafeEnc(850);
+                case "cp1252": case "1252": case "windows-1252": return SafeEnc(1252);
+                case "iso_1": case "iso-8859-1": case "latin1": return SafeEnc(28591);
+                case "cp1250": case "1250": return SafeEnc(1250);
+                case "cp1251": case "1251": return SafeEnc(1251);
+                case "cp1253": case "1253": return SafeEnc(1253);
+                case "utf8": case "utf-8": return SafeEnc(65001);
+                default: return int.TryParse(name.Trim(), out var n) ? SafeEnc(n) : null;
+            }
+        }
+
+        private static Encoding? SafeEnc(int cp)
+        {
+            try { return Encoding.GetEncoding(cp); } catch { return null; }
+        }
+
+        // Server's declared default charset, via syscharsets (config 131 = default charset id).
+        private string DetectServerCharset()
+        {
+            if (_serverCharsetName != null) return _serverCharsetName;
+            try
+            {
+                using var conn = new AseConnection(BuildConnectionString(""));
+                conn.Open();
+                using var cmd = new AseCommand(
+                    "select cs.name from master.dbo.syscharsets cs, master.dbo.syscurconfigs cur " +
+                    "where cur.config = 131 and cs.id = cur.value", conn);
+                _serverCharsetName = (cmd.ExecuteScalar()?.ToString() ?? "cp850").Trim();
+            }
+            catch { _serverCharsetName = "cp850"; }
+            return _serverCharsetName;
+        }
+
+        // Raw bytes (re-encode to server charset) reinterpreted as the real data charset.
+        private string FromServer(string s)
+        {
+            EnsureCharsets();
+            return _reinterpret ? _dataEnc!.GetString(_serverEnc!.GetBytes(s)) : s;
+        }
+
+        // True text encoded to the real data charset, expressed as the server-charset
+        // string AseClient will faithfully store as those bytes.
+        private string ToServer(string s)
+        {
+            EnsureCharsets();
+            return _reinterpret ? _serverEnc!.GetString(_dataEnc!.GetBytes(s)) : s;
+        }
+
         // CHARSET POLICY — do NOT hardcode a charset (e.g. "utf8") in the connection string.
         // The Sybase TDS protocol negotiates charset automatically: when the client omits it,
         // the server responds with its configured charset via a TDS_ENV_CHARSET token, and
@@ -269,7 +349,7 @@ namespace ibsCompiler.Database
 
                 var row = dataTable.NewRow();
                 for (int i = 0; i < Math.Min(cols.Length, colCount); i++)
-                    row[i] = cols[i];
+                    row[i] = ToServer(cols[i]);
                 dataTable.Rows.Add(row);
             }
 
@@ -303,7 +383,7 @@ namespace ibsCompiler.Database
             {
                 var values = new string[reader.FieldCount];
                 for (int i = 0; i < reader.FieldCount; i++)
-                    values[i] = reader.IsDBNull(i) ? "" : reader[i].ToString() ?? "";
+                    values[i] = FromServer(reader.IsDBNull(i) ? "" : reader[i].ToString() ?? "");
                 writer.WriteLine(string.Join("\t", values));
                 rowCount++;
                 if (rowCount % 1000 == 0)

@@ -64,6 +64,13 @@ namespace ibsCompiler.Configuration
         [JsonPropertyName("DATABASE")]
         public string Database { get; set; } = "";
 
+        // Actual code page of char/varchar data, when it differs from the server's
+        // declared default charset (e.g. Windows-1252 data stored in a cp850-declared
+        // ASE). Used to reinterpret message text on export/import. Empty = trust the
+        // server charset (legacy behaviour).
+        [JsonPropertyName("DATA_CHARSET")]
+        public string DataCharset { get; set; } = "";
+
         [JsonPropertyName("ALIASES")]
         public List<string> Aliases { get; set; } = new();
     }
