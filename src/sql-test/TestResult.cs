@@ -28,7 +28,12 @@ public record TestCase(
     string? CaptureProc,        // null for singleton tests
     string AssertProc,          // always set; equals LogicalName for singletons
     CaptureSpec? Capture,       // null when no capture phase
-    string? Pretest = null      // pro_test_<area>_pretest, run before the test in-tran
+    string? Pretest = null,     // pro_test_<area>_pretest, run before the test in-tran
+    bool NoTransaction = false, // `-- @no-transaction`: run WITHOUT begin tran/rollback
+                                // (read-only report builders do `select into`, illegal
+                                //  in a multi-statement tran). Cleanup is explicit.
+    string? TeardownProc = null // `<base>_teardown`: cleanup hook for no-transaction
+                                // tests (deletes any rows the test created); best-effort
 );
 
 public record CaptureSpec(

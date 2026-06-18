@@ -35,6 +35,7 @@ public class Runner
 
     private static readonly Regex CaptureIntoRe   = new(@"^\s*--\s*@capture-into\s*:\s*(\S+)",     RegexOptions.IgnoreCase | RegexOptions.Multiline);
     private static readonly Regex CaptureSourceRe = new(@"^\s*--\s*@capture-source\s*:\s*(.+?)\s*$", RegexOptions.IgnoreCase | RegexOptions.Multiline);
+    private static readonly Regex NoTranRe        = new(@"^\s*--\s*@no-transaction\b",            RegexOptions.IgnoreCase | RegexOptions.Multiline);
 
     private readonly ResolvedProfile _profile;
     private readonly Options _opts;
@@ -78,8 +79,17 @@ public class Runner
     {
         var procNames = QueryProcNames();
         var pretests  = QueryPretests();
+        var bodies    = FetchAllProcBodies();   // one round-trip; needed to read per-test directives
         var cases = new List<TestCase>();
-        var paired = new HashSet<string>();
+        var consumed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        // Teardown procs (`<base>_teardown`) are cleanup hooks for @no-transaction
+        // tests, never standalone tests — consume them up front so they don't get
+        // discovered as their own `test_*`.
+        var teardowns = procNames
+            .Where(n => n.EndsWith("_teardown", StringComparison.OrdinalIgnoreCase))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var t in teardowns) consumed.Add(t);
 
         // Pair: for each `*_capture`, find matching `*_assert`.
         foreach (var name in procNames)
@@ -89,20 +99,60 @@ public class Runner
             var assertName = baseName + "_assert";
             if (!procNames.Contains(assertName)) continue;
 
-            var spec = ParseCaptureSpec(name);
-            cases.Add(new TestCase(baseName, name, assertName, spec, ResolvePretest(baseName, pretests)));
-            paired.Add(name);
-            paired.Add(assertName);
+            var body     = bodies.GetValueOrDefault(name);
+            var spec     = ParseCaptureSpecFromBody(body);
+            var noTran   = body != null && NoTranRe.IsMatch(body);
+            var teardown = teardowns.Contains(baseName + "_teardown") ? baseName + "_teardown" : null;
+
+            cases.Add(new TestCase(baseName, name, assertName, spec,
+                                   ResolvePretest(baseName, pretests), noTran, teardown));
+            consumed.Add(name);
+            consumed.Add(assertName);
         }
 
-        // Singletons: everything not consumed by pairing.
+        // Singletons: everything not consumed by pairing or teardown.
         foreach (var name in procNames)
         {
-            if (paired.Contains(name)) continue;
-            cases.Add(new TestCase(name, null, name, null, ResolvePretest(name, pretests)));
+            if (consumed.Contains(name)) continue;
+            var body     = bodies.GetValueOrDefault(name);
+            var noTran   = body != null && NoTranRe.IsMatch(body);
+            var teardown = teardowns.Contains(name + "_teardown") ? name + "_teardown" : null;
+            cases.Add(new TestCase(name, null, name, null,
+                                   ResolvePretest(name, pretests), noTran, teardown));
         }
 
         return cases.OrderBy(c => c.LogicalName).ToList();
+    }
+
+    /// <summary>
+    /// Fetch every discovered test proc's full body text in a single round-trip,
+    /// keyed by proc name. syscomments splits a proc body across rows (ordered by
+    /// colid2, colid); we concatenate per object. Needed because the runner reads
+    /// per-test directives (@capture-*, @no-transaction) from the body, and doing
+    /// that per-proc would be one connection per test at discovery time.
+    /// </summary>
+    private Dictionary<string, string> FetchAllProcBodies()
+    {
+        using var conn = new AseConnection(BuildConnectionString(_opts.Database));
+        conn.Open();
+        using var cmd = new AseCommand(
+            "select o.name, c.text from syscomments c " +
+            "inner join sysobjects o on o.id = c.id " +
+            "where o.type = 'P' and o.name like @pat escape '\\' " +
+            "order by o.name, c.colid2, c.colid",
+            conn);
+        cmd.Parameters.Add("@pat", _opts.Pattern);
+
+        var map = new Dictionary<string, StringBuilder>(StringComparer.OrdinalIgnoreCase);
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+        {
+            if (reader.IsDBNull(1)) continue;
+            var name = reader.GetString(0);
+            if (!map.TryGetValue(name, out var sb)) { sb = new StringBuilder(); map[name] = sb; }
+            sb.Append(reader.GetString(1));
+        }
+        return map.ToDictionary(kv => kv.Key, kv => kv.Value.ToString(), StringComparer.OrdinalIgnoreCase);
     }
 
     /// <summary>
@@ -180,9 +230,8 @@ public class Runner
         return names;
     }
 
-    private CaptureSpec? ParseCaptureSpec(string procName)
+    private static CaptureSpec? ParseCaptureSpecFromBody(string? body)
     {
-        var body = FetchProcBody(procName);
         if (body == null) return null;
 
         var intoMatch   = CaptureIntoRe.Match(body);
@@ -192,25 +241,6 @@ public class Runner
         return new CaptureSpec(
             IntoTable:  intoMatch.Groups[1].Value.Trim(),
             SourceCall: sourceMatch.Groups[1].Value.Trim());
-    }
-
-    private string? FetchProcBody(string procName)
-    {
-        using var conn = new AseConnection(BuildConnectionString(_opts.Database));
-        conn.Open();
-        using var cmd = new AseCommand(
-            "select text from syscomments " +
-            "where id = object_id(@n) order by colid2, colid",
-            conn);
-        cmd.Parameters.Add("@n", procName);
-
-        var sb = new StringBuilder();
-        using var reader = cmd.ExecuteReader();
-        while (reader.Read())
-        {
-            if (!reader.IsDBNull(0)) sb.Append(reader.GetString(0));
-        }
-        return sb.Length == 0 ? null : sb.ToString();
     }
 
     public TestResult RunOne(TestCase tc)
@@ -255,9 +285,31 @@ public class Runner
                 stopwatch.Elapsed.TotalSeconds, ex.ToString());
         }
 
-        using var tx = conn.BeginTransaction();
+        // Read-only report builders do `select ... into #tmp`, which Sybase forbids
+        // inside a multi-statement transaction (Msg 226). A `-- @no-transaction`
+        // test runs WITHOUT begin tran/rollback so those procs are runnable; since
+        // it can't lean on rollback to undo writes, isolation is explicit: clear
+        // the capture table and run the `<base>_teardown` hook in Cleanup().
+        AseTransaction? tx = tc.NoTransaction ? null : conn.BeginTransaction();
+
+        void Cleanup()
+        {
+            if (tx != null) { try { tx.Rollback(); } catch { } return; }
+            // No-transaction path: undo by hand (best-effort; failures here must not
+            // mask the test's own outcome).
+            if (tc.Capture != null)
+                TryExec(conn, $"delete from {tc.Capture.IntoTable}");
+            if (tc.TeardownProc != null)
+                TryExec(conn, $"exec {tc.TeardownProc}", _opts.TimeoutSeconds);
+        }
+
         try
         {
+            // No-transaction capture tests can't rely on rollback to start clean,
+            // so defensively clear any rows a crashed prior test left this session.
+            if (tx == null && tc.Capture != null)
+                TryExec(conn, $"delete from {tc.Capture.IntoTable}");
+
             // Paired: pretest runs in the capture batch (it feeds @tstuser to
             // the capture proc); the assert proc only reads the capture table.
             // Singleton: pretest runs in the test batch.
@@ -267,24 +319,25 @@ public class Runner
             var assertSql = tc.CaptureProc != null
                 ? $"exec {tc.AssertProc}"
                 : WithPretest(tc.Pretest, tc.AssertProc);
-            using var cmd = new AseCommand(assertSql, conn, tx);
+            using var cmd = new AseCommand(assertSql, conn);
+            if (tx != null) cmd.Transaction = tx;
             cmd.CommandTimeout = _opts.TimeoutSeconds;
             cmd.ExecuteNonQuery();
 
-            try { tx.Rollback(); } catch { }
+            Cleanup();
             stopwatch.Stop();
             return new TestResult(tc.LogicalName, Outcome.PASS, "",
                 stopwatch.Elapsed.TotalSeconds, JoinMessages(messages));
         }
         catch (AseException ex)
         {
-            try { tx.Rollback(); } catch { }
+            Cleanup();
             stopwatch.Stop();
             return Classify(tc.LogicalName, ex, messages, stopwatch.Elapsed.TotalSeconds);
         }
         catch (Exception ex)
         {
-            try { tx.Rollback(); } catch { }
+            Cleanup();
             stopwatch.Stop();
             var outcome = ex.Message.Contains("timeout", StringComparison.OrdinalIgnoreCase)
                 ? Outcome.TIMEOUT : Outcome.ERROR;
@@ -293,7 +346,20 @@ public class Runner
         }
     }
 
-    private void RunCapturePhase(AseConnection conn, AseTransaction tx,
+    // Best-effort statement on the test connection; swallows errors so cleanup
+    // can never turn a PASS into a spurious failure.
+    private static void TryExec(AseConnection conn, string sql, int? timeout = null)
+    {
+        try
+        {
+            using var cmd = new AseCommand(sql, conn);
+            if (timeout is int t) cmd.CommandTimeout = t;
+            cmd.ExecuteNonQuery();
+        }
+        catch { }
+    }
+
+    private void RunCapturePhase(AseConnection conn, AseTransaction? tx,
                                  string captureProc, CaptureSpec spec, string? pretest, int timeout)
     {
         // The capture table's schema (column count + per-column .NET
@@ -309,7 +375,8 @@ public class Runner
         // Pretest (if any) runs in the same batch as the capture proc so the
         // allocated @tstuser is in scope. Its own emits (e.g. tri_users
         // debug select on the &users& INSERT) are shape-filtered out below.
-        using var cmd = new AseCommand(WithPretest(pretest, captureProc), conn, tx);
+        using var cmd = new AseCommand(WithPretest(pretest, captureProc), conn);
+        if (tx != null) cmd.Transaction = tx;
         cmd.CommandTimeout = timeout;
 
         using var reader = cmd.ExecuteReader();
@@ -329,11 +396,12 @@ public class Runner
     }
 
     private static void CopyResultSetIntoTable(IDataReader reader, AseConnection conn,
-                                                AseTransaction tx, string insertSql)
+                                                AseTransaction? tx, string insertSql)
     {
         while (reader.Read())
         {
-            using var insertCmd = new AseCommand(insertSql, conn, tx);
+            using var insertCmd = new AseCommand(insertSql, conn);
+            if (tx != null) insertCmd.Transaction = tx;
             for (int i = 0; i < reader.FieldCount; i++)
             {
                 var val = reader.IsDBNull(i) ? DBNull.Value : reader.GetValue(i);
