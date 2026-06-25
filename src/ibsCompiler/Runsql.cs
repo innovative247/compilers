@@ -136,21 +136,22 @@ namespace ibsCompiler
                     runningMsg = $"Running {cmdvars.SeqFirst} of {cmdvars.SeqLast}: {cmdvars.Command} on {cmdvars.ServerNameOnly}.{cmdvars.Database}";
                 ibs_compiler_common.WriteLine(runningMsg, cmdvars.OutFile);
 
-                // Build SQL text in memory
-                var sqlLines = new List<string>();
-                int changelogLineCount = 0;
-
-                // Add changelog lines (skip in raw mode)
+                // Build the changelog (audit) SQL separately from the user's script.
+                // The changelog is internal bookkeeping; it must NOT share the user's
+                // diagnostic output stream. When the session has `set showplan on`
+                // (or `set statistics io on`, etc.) active, running the changelog's
+                // `if exists` guards in-stream makes ASE emit a query plan for that
+                // overhead — which the user mistakes for their own statement's plan.
+                // We run it below with its output discarded. (Skip in raw mode.)
+                var changelogLines = new List<string>();
                 if (!profile.RawMode)
                 {
                     foreach (var l in change_log.lines(cmdvars, profile))
-                    {
-                        sqlLines.Add(myOptions!.ReplaceOptions(l, cmdvars.SeqFirst));
-                        changelogLineCount++;
-                    }
+                        changelogLines.Add(myOptions!.ReplaceOptions(l, cmdvars.SeqFirst));
                 }
 
                 // Read source file and replace options (stop at exit/quit client commands)
+                var userLines = new List<string>();
                 using (var source = new StreamReader(cmdvars.Command))
                 {
                     string? line;
@@ -159,7 +160,7 @@ namespace ibsCompiler
                         if (ExitRegex.IsMatch(line))
                         {
                             // Treat exit as an implicit go — flush accumulated content as a batch
-                            sqlLines.Add("go");
+                            userLines.Add("go");
                             break;
                         }
                         // Convert Sybase-style // line comments to MSSQL-compatible --
@@ -169,30 +170,44 @@ namespace ibsCompiler
                             if (cs < line.Length - 1 && line[cs] == '/' && line[cs + 1] == '/')
                                 line = line[..cs] + "--" + line[(cs + 2)..];
                         }
-                        sqlLines.Add(profile.RawMode ? line : myOptions!.ReplaceOptions(line, cmdvars.SeqFirst));
+                        userLines.Add(profile.RawMode ? line : myOptions!.ReplaceOptions(line, cmdvars.SeqFirst));
                     }
                 }
-                sqlLines.Add("go");
+                userLines.Add("go");
 
-                var sqlText = string.Join(Environment.NewLine, sqlLines);
+                var changelogText = string.Join(Environment.NewLine, changelogLines);
+                var userText = string.Join(Environment.NewLine, userLines);
 
                 if (cmdvars.Preview)
                 {
-                    // Preview mode: write compiled SQL to stdout
-                    Console.Write(sqlText);
+                    // Preview mode: write compiled SQL to stdout (changelog + user script,
+                    // exactly what would run on the server).
+                    if (!string.IsNullOrWhiteSpace(changelogText))
+                    {
+                        Console.Write(changelogText);
+                        Console.Write(Environment.NewLine);
+                    }
+                    Console.Write(userText);
                 }
                 else
                 {
-                    // Split SQL into GO-delimited batches and execute each one
-                    // on a single persistent connection (preserves USE database,
-                    // temp tables, session state, etc.)
-                    var batches = SplitBatches(sqlText);
+                    // Split the user's script into GO-delimited batches and execute each
+                    // on a single persistent connection (preserves USE database, temp
+                    // tables, session state, etc.)
+                    var batches = SplitBatches(userText);
                     bool anyFailed = false;
                     var errorOutput = new System.Text.StringBuilder();
 
                     try
                     {
                         executor.OpenConnection(cmdvars.Database);
+
+                        // Run the changelog as bookkeeping with its output discarded, so
+                        // session diagnostics (showplan / statistics io) never report on
+                        // runsql's own overhead. Best-effort: a changelog failure does not
+                        // fail the user's run (the `if exists` guards already make it safe).
+                        foreach (var clBatch in SplitBatches(changelogText))
+                            executor.ExecuteBatch(clBatch, captureOutput: true, cmdvars.OutFile);
 
                         for (int batchIndex = 0; batchIndex < batches.Length; batchIndex++)
                         {
@@ -205,15 +220,6 @@ namespace ibsCompiler
                                 var batchLines = trimmedBatch.Split(new[] { Environment.NewLine, "\n" }, StringSplitOptions.None);
                                 for (int i = 0; i < batchLines.Length; i++)
                                 {
-                                    // Insert blank line between changelog and file content (first batch only)
-                                    if (batchIndex == 0 && i == changelogLineCount && changelogLineCount > 0)
-                                    {
-                                        if (!string.IsNullOrEmpty(cmdvars.OutFile))
-                                            ibs_compiler_common.WriteLineToDisk(cmdvars.OutFile, "");
-                                        else
-                                            Console.WriteLine();
-                                    }
-
                                     var echoLine = $"{i + 1}> {batchLines[i]}";
                                     if (!string.IsNullOrEmpty(cmdvars.OutFile))
                                         ibs_compiler_common.WriteLineToDisk(cmdvars.OutFile, echoLine);

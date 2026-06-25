@@ -17,6 +17,20 @@ namespace ibsCompiler.Database
         // messages stream as the server emits them.
         private Action<string>? _emit;
 
+        // True once the session has a diagnostic mode active (set showplan/statistics/
+        // noexec ON). ASE keeps these for the life of the connection; tracked across
+        // batches by UpdateDiagnostics.
+        private bool _diagnosticsActive;
+
+        // Whether to skip GetSchemaTable() for the batch currently streaming. GetSchemaTable
+        // forces AseClient to flush the server's plan tokens for an internal metadata pass —
+        // with showplan on that dumps ~25 plan blocks the user never ran. We skip it only
+        // when diagnostics were ALREADY active before this batch: then the batch's own
+        // statement plan flushes naturally during execution and the metadata noise is gone.
+        // When the SAME batch both enables showplan and runs the query, skipping would lose
+        // the user's plan too (it only surfaces via the flush), so that case is left as-is.
+        private bool _skipSchemaForCurrentBatch;
+
         // Persistent connection for batch-at-a-time execution (OpenConnection/ExecuteBatch/CloseConnection)
         private AseConnection? _persistentConn;
 
@@ -160,12 +174,15 @@ namespace ibsCompiler.Database
                 using var connection = new AseConnection(BuildConnectionString(database));
                 connection.InfoMessage += OnInfoMessage;
                 connection.Open();
+                _diagnosticsActive = false; // fresh session starts with diagnostics off
 
                 var batches = SplitBatches(sqlText);
                 foreach (var batch in batches)
                 {
                     if (string.IsNullOrWhiteSpace(batch)) continue;
                     if (ExitRegex.IsMatch(batch.Trim())) break;
+                    _skipSchemaForCurrentBatch = _diagnosticsActive; // state BEFORE this batch
+                    UpdateDiagnostics(batch);
                     try
                     {
                         using var cmd = new AseCommand(batch, connection);
@@ -203,6 +220,7 @@ namespace ibsCompiler.Database
             _persistentConn = new AseConnection(BuildConnectionString(database));
             _persistentConn.InfoMessage += OnInfoMessage;
             _persistentConn.Open();
+            _diagnosticsActive = false; // fresh session starts with diagnostics off
         }
 
         public ExecReturn ExecuteBatch(string batch, bool captureOutput = false, string outputFile = "")
@@ -216,6 +234,8 @@ namespace ibsCompiler.Database
             {
                 if (!string.IsNullOrWhiteSpace(batch))
                 {
+                    _skipSchemaForCurrentBatch = _diagnosticsActive; // state BEFORE this batch
+                    UpdateDiagnostics(batch);
                     using var cmd = new AseCommand(batch, _persistentConn);
                     cmd.CommandTimeout = 0;
 
@@ -241,6 +261,27 @@ namespace ibsCompiler.Database
         {
             _persistentConn?.Dispose();
             _persistentConn = null;
+        }
+
+        // Track whether the session has a plan/diagnostic mode turned on, by scanning the
+        // SQL we're about to run. ASE keeps these settings for the life of the connection,
+        // so the flag persists across batches until explicitly turned off. Last directive
+        // in the text wins (handles "set showplan on ... set showplan off" in one batch).
+        private static readonly Regex DiagOnRegex = new(
+            @"\bset\s+(showplan|noexec|statistics\s+\w+)\s+on\b", RegexOptions.IgnoreCase);
+        private static readonly Regex DiagOffRegex = new(
+            @"\bset\s+(showplan|noexec|statistics\s+\w+)\s+off\b", RegexOptions.IgnoreCase);
+
+        private void UpdateDiagnostics(string sql)
+        {
+            if (string.IsNullOrEmpty(sql)) return;
+            int lastOn = -1, lastOff = -1;
+            var mOn = DiagOnRegex.Matches(sql);
+            if (mOn.Count > 0) lastOn = mOn[mOn.Count - 1].Index;
+            var mOff = DiagOffRegex.Matches(sql);
+            if (mOff.Count > 0) lastOff = mOff[mOff.Count - 1].Index;
+            if (lastOn >= 0 && lastOn > lastOff) _diagnosticsActive = true;
+            else if (lastOff >= 0 && lastOff > lastOn) _diagnosticsActive = false;
         }
 
         private void OnInfoMessage(object sender, AseInfoMessageEventArgs e)
@@ -399,7 +440,7 @@ namespace ibsCompiler.Database
                 .ToArray();
         }
 
-        private static async System.Threading.Tasks.Task StreamCommandAsync(AseCommand cmd, Action<string> emit)
+        private async System.Threading.Tasks.Task StreamCommandAsync(AseCommand cmd, Action<string> emit)
         {
             // SequentialAccess is required for streaming. Without it, the AseClient
             // runs the entire token loop synchronously and only returns the reader
@@ -421,10 +462,17 @@ namespace ibsCompiler.Database
             } while (await reader.NextResultAsync());
         }
 
-        private static async System.Threading.Tasks.Task StreamOneResultSetAsync(System.Data.Common.DbDataReader reader, Action<string> emit)
+        private async System.Threading.Tasks.Task StreamOneResultSetAsync(System.Data.Common.DbDataReader reader, Action<string> emit)
         {
             int colCount = reader.FieldCount;
-            var schema = reader.GetSchemaTable();
+            // GetSchemaTable() forces AseClient to flush the server's plan tokens for an
+            // internal metadata pass. With `set showplan on` (or statistics/noexec) active
+            // that dumps ~25 plan blocks the user never ran, burying their own statement's
+            // plan. While diagnostics are active we skip it and fall back to type-based
+            // column widths (no data truncation — strings still cap at MaxColumnWidth);
+            // exact declared widths are only needed for ordinary result grids, not when
+            // the user is reading a query plan.
+            System.Data.DataTable? schema = _skipSchemaForCurrentBatch ? null : reader.GetSchemaTable();
             var widths = new int[colCount];
             var names = new string[colCount];
             var isNumeric = new bool[colCount];
@@ -437,7 +485,12 @@ namespace ibsCompiler.Database
                                t == typeof(decimal) || t == typeof(double) || t == typeof(float) ||
                                t == typeof(byte);
 
-                int colSize = 30; // sane default if schema lookup fails
+                // Default when no schema (diagnostics mode / lookup failure): use the
+                // type's known render width for fixed types, else the variable-width cap
+                // so long strings (e.g. sysname) are never truncated.
+                int colSize = schema == null
+                    ? (MinDisplayWidthForType(t) > 0 ? MinDisplayWidthForType(t) : MaxColumnWidth)
+                    : 30;
                 if (schema != null && i < schema.Rows.Count)
                 {
                     var raw = schema.Rows[i]["ColumnSize"];
