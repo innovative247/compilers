@@ -32,11 +32,26 @@ namespace ibsCompiler.TransferData
         /// </summary>
         public static List<string> GetDatabases(ConnectionConfig conn)
         {
-            var sql = conn.Platform.ToUpperInvariant() == "MSSQL"
-                ? "SELECT name FROM sys.databases WHERE database_id > 4 ORDER BY name"
-                : "SELECT name FROM master..sysdatabases WHERE dbid > 4 ORDER BY name";
+            var platform = ibs_compiler_common.ParsePlatform(conn.Platform);
+            string sql;
+            string db;
+            if (platform == SQLServerTypes.POSTGRES)
+            {
+                sql = "SELECT datname FROM pg_database WHERE NOT datistemplate ORDER BY datname";
+                db = "";
+            }
+            else if (platform == SQLServerTypes.MSSQL)
+            {
+                sql = "SELECT name FROM sys.databases WHERE database_id > 4 ORDER BY name";
+                db = "master";
+            }
+            else
+            {
+                sql = "SELECT name FROM master..sysdatabases WHERE dbid > 4 ORDER BY name";
+                db = "master";
+            }
 
-            return QueryColumn(conn, sql, "master");
+            return QueryColumn(conn, sql, db);
         }
 
         /// <summary>
@@ -44,9 +59,14 @@ namespace ibsCompiler.TransferData
         /// </summary>
         public static List<string> GetTables(ConnectionConfig conn, string database)
         {
-            var sql = conn.Platform.ToUpperInvariant() == "MSSQL"
-                ? "SELECT name FROM sys.tables ORDER BY name"
-                : "SELECT name FROM sysobjects WHERE type='U' ORDER BY name";
+            var platform = ibs_compiler_common.ParsePlatform(conn.Platform);
+            string sql;
+            if (platform == SQLServerTypes.POSTGRES)
+                sql = "SELECT table_name FROM information_schema.tables WHERE table_schema NOT IN ('pg_catalog','information_schema') AND table_type='BASE TABLE' ORDER BY table_name";
+            else if (platform == SQLServerTypes.MSSQL)
+                sql = "SELECT name FROM sys.tables ORDER BY name";
+            else
+                sql = "SELECT name FROM sysobjects WHERE type='U' ORDER BY name";
 
             return QueryColumn(conn, sql, database);
         }

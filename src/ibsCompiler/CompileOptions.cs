@@ -34,7 +34,7 @@ namespace ibsCompiler
             if (chgDb != "&dbpro&")
             {
                 var chgLines = new List<string>();
-                foreach (var l in change_log.compileLines("OPTIONS", "updated options"))
+                foreach (var l in change_log.compileLines("OPTIONS", "updated options", profile.ServerType))
                     chgLines.Add(myOptions.ReplaceOptions(l));
                 chgLines.Add("go");
                 executor.ExecuteSql(string.Join(Environment.NewLine, chgLines), chgDb, false, cmdvars.OutFile);

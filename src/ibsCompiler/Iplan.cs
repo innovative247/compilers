@@ -56,10 +56,15 @@ namespace ibsCompiler
                 return 1;
             }
 
-            var database = dbOverride ?? "master";
+            bool isPostgres = resolved.ServerType == SQLServerTypes.POSTGRES;
+            var database = dbOverride ?? (isPostgres ? resolved.AdminDatabase : "master");
 
             string sql;
-            if (resolved.ServerType == SQLServerTypes.MSSQL)
+            if (isPostgres)
+            {
+                sql = $"SELECT pid, state, usename, query FROM pg_stat_activity WHERE pid = {spid}";
+            }
+            else if (resolved.ServerType == SQLServerTypes.MSSQL)
             {
                 sql = $@"SELECT r.session_id AS spid, r.status, r.command,
                         DB_NAME(r.database_id) AS database_name,
@@ -82,6 +87,9 @@ namespace ibsCompiler
                 Console.WriteLine($"There is no active server process for the specified spid value '{spid}'.");
                 Console.WriteLine("Possibly the user connection has terminated.");
             }
+
+            if (isPostgres)
+                Console.WriteLine("Note: live-backend plan capture is not available on PostgreSQL; run EXPLAIN on the query text above.");
 
             return result.Returncode ? 0 : 1;
         }

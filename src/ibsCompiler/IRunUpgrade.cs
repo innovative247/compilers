@@ -18,6 +18,20 @@ namespace ibsCompiler
             return m.Success ? m.Groups[1].Value : "";
         }
 
+        // PostgreSQL: ba_upgrades_check is invoked as SELECT and returns a single-column
+        // result set rather than "return N" text. The status is the lone digit data row.
+        private static string FindUpgradePgReturnValue(string sqlOutput)
+        {
+            if (string.IsNullOrEmpty(sqlOutput)) return "";
+            foreach (var raw in sqlOutput.Split('\n'))
+            {
+                var t = raw.Trim();
+                if (t.Length == 1 && char.IsDigit(t[0]))
+                    return t;
+            }
+            return "";
+        }
+
         public bool Run(CommandVariables cmdvars, ResolvedProfile profile, ISqlExecutor executor, Options? existingOptions = null)
         {
             var originalCommand = cmdvars.Command;
@@ -67,11 +81,16 @@ namespace ibsCompiler
             }
 
             // Check if upgrade has already been run
-            cmdvars.Command = myOptions.ReplaceOptions($"&dbpro&..ba_upgrades_check '{cmdvars.Upgrade_no}'");
+            if (profile.ServerType == SQLServerTypes.POSTGRES)
+                cmdvars.Command = myOptions.ReplaceOptions($"SELECT &dbpro&.ba_upgrades_check('{cmdvars.Upgrade_no}')");
+            else
+                cmdvars.Command = myOptions.ReplaceOptions($"&dbpro&..ba_upgrades_check '{cmdvars.Upgrade_no}'");
             ibs_compiler_common.WriteLine($"Executing {cmdvars.Command}...", cmdvars.OutFile);
             var result = isqlline_main.Run(cmdvars, profile, executor, myOptions, redirectOutput: true);
 
-            var upgradeControlValue = FindUpgradeReturnValue(result.Output);
+            var upgradeControlValue = profile.ServerType == SQLServerTypes.POSTGRES
+                ? FindUpgradePgReturnValue(result.Output)
+                : FindUpgradeReturnValue(result.Output);
             if (upgradeControlValue == "1")
             {
                 ibs_compiler_common.WriteLine(myOptions.ReplaceOptions("Upgrade control table &upgrades& does not exist or control record missing on server."), cmdvars.OutFile);
@@ -138,7 +157,10 @@ namespace ibsCompiler
             }
 
             // Set upgrade end time
-            cmdvars.Command = myOptions.ReplaceOptions($"update &upgrades& set end_tm=datediff(ss,'800101',getdate()) where upgrade_no='{cmdvars.Upgrade_no}' and ix=0 and opc=1");
+            if (profile.ServerType == SQLServerTypes.POSTGRES)
+                cmdvars.Command = myOptions.ReplaceOptions($"update &upgrades& set end_tm=EXTRACT(EPOCH FROM (now() - TIMESTAMP '1980-01-01'))::int where upgrade_no='{cmdvars.Upgrade_no}' and ix=0 and opc=1");
+            else
+                cmdvars.Command = myOptions.ReplaceOptions($"update &upgrades& set end_tm=datediff(ss,'800101',getdate()) where upgrade_no='{cmdvars.Upgrade_no}' and ix=0 and opc=1");
             ibs_compiler_common.WriteLine($"Executing {cmdvars.Command}", cmdvars.OutFile);
             isqlline_main.Run(cmdvars, profile, executor, myOptions, redirectOutput: true);
 

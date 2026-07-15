@@ -55,7 +55,7 @@ namespace ibsCompiler
             // Verify connection before processing - fail fast instead of logging errors for every line
             try
             {
-                var testResult = executor.ExecuteSql("SELECT 1", "master", captureOutput: true);
+                var testResult = executor.ExecuteSql("SELECT 1", profile.AdminDatabase, captureOutput: true);
                 if (!testResult.Returncode)
                 {
                     ibs_compiler_common.WriteLine("ERROR: Connection failed. " + testResult.Output?.Trim(), cmdvars.OutFile);

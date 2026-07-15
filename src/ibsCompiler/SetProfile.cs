@@ -924,17 +924,31 @@ namespace ibsCompiler
             // Try queries in order — Sybase Replication Servers reject SELECT entirely
             // but still connect via TDS and accept admin commands. Use master as the
             // database for all attempts; RS ignores the database name in the login packet.
-            (string query, string db)[] attempts = resolved.ServerType == SQLServerTypes.SYBASE
-                ? new[]
+            (string query, string db)[] attempts;
+            if (resolved.ServerType == SQLServerTypes.POSTGRES)
+            {
+                attempts = new[]
+                {
+                    ("SELECT version()", resolved.AdminDatabase),
+                    ("SELECT 1", resolved.AdminDatabase),
+                };
+            }
+            else if (resolved.ServerType == SQLServerTypes.SYBASE)
+            {
+                attempts = new[]
                 {
                     ("SELECT @@servername", "master"),                    // ASE: all versions
                     ("admin version",       "master"),                    // Replication Server
                     ("SELECT 1 FROM sysusers WHERE suid = 1", "master"), // ancient ASE fallback
-                }
-                : new[]
+                };
+            }
+            else
+            {
+                attempts = new[]
                 {
                     ("SELECT 1", "master"),
                 };
+            }
 
             string lastOutput = "";
             foreach (var (query, db) in attempts)
@@ -1158,11 +1172,16 @@ namespace ibsCompiler
             {
                 using var executor = SqlExecutorFactory.Create(resolved);
 
+                // POSTGRES: dbpro is a schema in the single database; run admin queries
+                // against AdminDatabase and schema-qualify objects.
+                bool isPostgres = resolved.ServerType == SQLServerTypes.POSTGRES;
+                var chgDbArg = isPostgres ? resolved.AdminDatabase : dbpro;
+
                 // Step 1: Check if gclog12 is enabled
                 Console.Write("  Checking gclog12 option... ");
                 var optionsTable = myOptions.ReplaceOptions("&options&");
                 var query = $"SELECT act_flg FROM {optionsTable} WHERE id = 'gclog12'";
-                var result = executor.ExecuteSql(query, dbpro, captureOutput: true);
+                var result = executor.ExecuteSql(query, chgDbArg, captureOutput: true);
 
                 if (!result.Returncode || string.IsNullOrEmpty(result.Output) ||
                     !result.Output.Contains("+"))
@@ -1175,14 +1194,16 @@ namespace ibsCompiler
 
                 // Step 2: Check ba_gen_chg_log_new exists
                 Console.Write("  Checking ba_gen_chg_log_new... ");
-                var spCheck = executor.ExecuteSql(
-                    "SELECT 1 FROM sysobjects WHERE name = 'ba_gen_chg_log_new' AND type = 'P'",
-                    dbpro, captureOutput: true);
+                var spCheckSql = isPostgres
+                    ? $"SELECT 1 WHERE to_regproc('{dbpro}.ba_gen_chg_log_new') IS NOT NULL"
+                    : "SELECT 1 FROM sysobjects WHERE name = 'ba_gen_chg_log_new' AND type = 'P'";
+                var spCheck = executor.ExecuteSql(spCheckSql, chgDbArg, captureOutput: true);
 
                 if (!spCheck.Returncode || string.IsNullOrEmpty(spCheck.Output) ||
                     !spCheck.Output.Contains("1"))
                 {
-                    PrintError($"ba_gen_chg_log_new stored procedure not found in {dbpro}.");
+                    // D6: absent changelog proc is non-fatal — report and stop the test cleanly.
+                    PrintError($"ba_gen_chg_log_new changelog proc not installed in {dbpro} - skipping (non-fatal).");
                     return;
                 }
 
@@ -1195,8 +1216,10 @@ namespace ibsCompiler
                 var cmdStr = $"{exePath}".Replace("'", "''");
 
                 Console.Write("  Inserting test entry... ");
-                var insertSql = $"EXEC ba_gen_chg_log_new '', '{description}', 'TEST', '', '{cmdStr}', '', 'X'";
-                var insertResult = executor.ExecuteSql(insertSql, dbpro, captureOutput: true);
+                var insertSql = isPostgres
+                    ? $"SELECT {dbpro}.ba_gen_chg_log_new('', '{description}', 'TEST', '', '{cmdStr}', '', 'X')"
+                    : $"EXEC ba_gen_chg_log_new '', '{description}', 'TEST', '', '{cmdStr}', '', 'X'";
+                var insertResult = executor.ExecuteSql(insertSql, chgDbArg, captureOutput: true);
 
                 if (!insertResult.Returncode)
                 {
@@ -1213,8 +1236,10 @@ namespace ibsCompiler
                     Console.WriteLine();
                     PrintDim("  Recent changelog entries:");
                     PrintDim("  " + new string('-', 66));
-                    var recentQuery = $"SELECT TOP 5 dateadd(ss, tm, '800101') AS 'server time', descr FROM {chgLogTable} ORDER BY tm DESC";
-                    var recentResult = executor.ExecuteSql(recentQuery, dbpro, captureOutput: true);
+                    var recentQuery = isPostgres
+                        ? $"SELECT to_char(TIMESTAMP '1980-01-01' + (tm || ' seconds')::interval, 'YYYY-MM-DD HH24:MI:SS') AS server_time, descr FROM {chgLogTable} ORDER BY tm DESC LIMIT 5"
+                        : $"SELECT TOP 5 dateadd(ss, tm, '800101') AS 'server time', descr FROM {chgLogTable} ORDER BY tm DESC";
+                    var recentResult = executor.ExecuteSql(recentQuery, chgDbArg, captureOutput: true);
                     if (recentResult.Returncode && !string.IsNullOrEmpty(recentResult.Output))
                     {
                         foreach (var line in recentResult.Output.Split('\n'))

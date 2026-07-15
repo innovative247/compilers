@@ -133,7 +133,13 @@ namespace ibsCompiler
                         int j = line.IndexOf("&", iStart);
                         var optValue = line.Substring(i, j - i + 1);
                         var dbLocation = ReplaceWord(optValue);
-                        _arrOptions.Add(("&" + dbName + "&").PadRight(40) + dbLocation + ".." + dbName);
+                        if (_profile.ServerType == SQLServerTypes.POSTGRES)
+                        {
+                            var pgName = dbName.Contains('#') ? "\"" + dbName + "\"" : dbName;
+                            _arrOptions.Add(("&" + dbName + "&").PadRight(40) + dbLocation + "." + pgName);
+                        }
+                        else
+                            _arrOptions.Add(("&" + dbName + "&").PadRight(40) + dbLocation + ".." + dbName);
                         _arrOptions.Add(("&db-" + dbName + "&").PadRight(40) + dbLocation);
                     }
                 }

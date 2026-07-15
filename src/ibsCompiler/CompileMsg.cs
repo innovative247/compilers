@@ -30,7 +30,7 @@ namespace ibsCompiler
             if (chgDb != "&dbpro&")
             {
                 var chgLines = new List<string>();
-                foreach (var l in change_log.compileLines("MESSAGES", "updated messages"))
+                foreach (var l in change_log.compileLines("MESSAGES", "updated messages", profile.ServerType))
                     chgLines.Add(myOptions.ReplaceOptions(l));
                 chgLines.Add("go");
                 executor.ExecuteSql(string.Join(Environment.NewLine, chgLines), chgDb, false, cmdvars.OutFile);
@@ -202,7 +202,13 @@ namespace ibsCompiler
             string[] statsTables = { "ibs_messages", "jam_messages", "sqr_messages", "sql_messages", "gui_messages" };
             foreach (var tbl in statsTables)
             {
-                cmdvars.Command = $"update statistics {dbtbl}..{tbl}";
+                if (profile.ServerType == SQLServerTypes.POSTGRES)
+                {
+                    var pgTbl = tbl.Contains('#') ? $"\"{tbl}\"" : tbl;
+                    cmdvars.Command = $"ANALYZE {dbtbl}.{pgTbl}";
+                }
+                else
+                    cmdvars.Command = $"update statistics {dbtbl}..{tbl}";
                 ibs_compiler_common.WriteLine($"Executing {cmdvars.Command}", cmdvars.OutFile);
                 isqlline_main.Run(cmdvars, profile, executor, myOptions);
             }
