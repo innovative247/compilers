@@ -133,7 +133,7 @@ namespace ibsCompiler
                 Port = portOverride > 0 ? portOverride : p.Port,
                 User = userOverride ?? p.Username,
                 Pass = passOverride ?? p.Password,
-                ServerType = (platformOverride ?? p.Platform)?.ToUpper() == "MSSQL" ? SQLServerTypes.MSSQL : SQLServerTypes.SYBASE,
+                ServerType = ibs_compiler_common.ParsePlatform(platformOverride ?? p.Platform),
                 Company = p.Company ?? "101",
                 Language = p.DefaultLanguage ?? "1",
                 IRPath = p.SqlSource ?? "",

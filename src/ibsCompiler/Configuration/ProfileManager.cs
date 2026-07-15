@@ -145,12 +145,13 @@ namespace ibsCompiler.Configuration
                     Port = p.Port,
                     User = string.IsNullOrEmpty(cmdvars.User) || cmdvars.User == "sbn0" ? p.Username : cmdvars.User,
                     Pass = string.IsNullOrEmpty(cmdvars.Pass) || cmdvars.Pass == "ibsibs" ? p.Password : cmdvars.Pass,
-                    ServerType = cmdvars.ServerType != default ? cmdvars.ServerType : (p.Platform?.ToUpper() == "MSSQL" ? SQLServerTypes.MSSQL : SQLServerTypes.SYBASE),
+                    ServerType = cmdvars.ServerType != default ? cmdvars.ServerType : ibs_compiler_common.ParsePlatform(p.Platform),
                     Company = p.Company ?? "101",
                     Language = p.DefaultLanguage ?? "1",
                     IRPath = p.SqlSource ?? "",
                     RawMode = p.RawMode,
                     DataCharset = p.DataCharset ?? "",
+                    Database = p.Database,
                     IsProfile = true
                 };
             }
@@ -169,13 +170,11 @@ namespace ibsCompiler.Configuration
             SQLServerTypes serverType;
             if (cmdvars.ServerType != default)
                 serverType = cmdvars.ServerType;
-            else if (dbcmd.ToUpper() == "MSSQL")
-                serverType = SQLServerTypes.MSSQL;
             else
-                serverType = SQLServerTypes.SYBASE;
+                serverType = ibs_compiler_common.ParsePlatform(dbcmd);
 
             // When no profile, treat -S as a literal hostname
-            var port = serverType == SQLServerTypes.MSSQL ? 1433 : 5000;
+            var port = ibs_compiler_common.DefaultPort(serverType);
             if (!string.IsNullOrEmpty(cmdvars.Port))
             {
                 var portStr = cmdvars.Port.TrimStart(':', ',');
@@ -195,6 +194,7 @@ namespace ibsCompiler.Configuration
                 IRPath = irPath,
                 RawMode = false,
                 DataCharset = Environment.GetEnvironmentVariable("DATA_CHARSET") ?? "",
+                Database = "",
                 IsProfile = false
             };
         }
@@ -238,6 +238,20 @@ namespace ibsCompiler.Configuration
         // Actual code page of char/varchar data when it differs from the server's
         // declared charset; empty = trust the server charset. See ProfileData.DataCharset.
         public string DataCharset { get; set; } = "";
+        // Target/admin database name. For POSTGRES an explicit DB is required to
+        // connect; empty defaults to "postgres" (see AdminDatabase). Ignored for
+        // Sybase/MSSQL, which use "master".
+        public string Database { get; set; } = "";
         public bool IsProfile { get; set; }
+
+        /// <summary>
+        /// Database to use for admin/bootstrap connections. POSTGRES has no
+        /// "master": use the configured Database, or "postgres" when unset.
+        /// Sybase/MSSQL always use "master". Wave 3 switches call sites to this.
+        /// </summary>
+        public string AdminDatabase =>
+            ServerType == SQLServerTypes.POSTGRES
+                ? (Database == "" ? "postgres" : Database)
+                : "master";
     }
 }

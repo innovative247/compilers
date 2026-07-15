@@ -14,6 +14,37 @@ namespace ibsCompiler
         public static string DefaultOutFile { get; set; } = "";
         public static string DefaultErrFile { get; set; } = "";
 
+        #region Platform parsing
+        /// <summary>
+        /// Canonicalizes a platform string to a SQLServerTypes value.
+        /// "MSSQL" -> MSSQL, "POSTGRES"/"PG" -> POSTGRES, anything else
+        /// (including null) -> SYBASE (preserves the legacy unknown->SYBASE default).
+        /// </summary>
+        public static SQLServerTypes ParsePlatform(string? platform)
+        {
+            switch (platform?.Trim().ToUpperInvariant())
+            {
+                case "MSSQL": return SQLServerTypes.MSSQL;
+                case "POSTGRES":
+                case "PG": return SQLServerTypes.POSTGRES;
+                default: return SQLServerTypes.SYBASE;
+            }
+        }
+
+        /// <summary>
+        /// Default TCP port for a database platform: MSSQL=1433, POSTGRES=5432, else 5000.
+        /// </summary>
+        public static int DefaultPort(SQLServerTypes t)
+        {
+            switch (t)
+            {
+                case SQLServerTypes.MSSQL: return 1433;
+                case SQLServerTypes.POSTGRES: return 5432;
+                default: return 5000;
+            }
+        }
+        #endregion
+
         #region Console output
         public static void WriteLine(string text, string outputFile = "")
         {
@@ -779,6 +810,11 @@ namespace ibsCompiler
                 {
                     arguments.RemoveAt(i);
                     return SQLServerTypes.SYBASE;
+                }
+                else if (arguments[i].ToUpper() == "-PG")
+                {
+                    arguments.RemoveAt(i);
+                    return SQLServerTypes.POSTGRES;
                 }
             }
             return default;

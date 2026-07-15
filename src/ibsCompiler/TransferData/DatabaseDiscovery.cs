@@ -122,7 +122,7 @@ namespace ibsCompiler.TransferData
                 Port = conn.Port,
                 User = conn.Username,
                 Pass = conn.Password,
-                ServerType = conn.Platform.ToUpperInvariant() == "MSSQL" ? SQLServerTypes.MSSQL : SQLServerTypes.SYBASE,
+                ServerType = ibs_compiler_common.ParsePlatform(conn.Platform),
                 Company = "101",
                 Language = "1",
                 IRPath = "",

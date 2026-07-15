@@ -459,13 +459,21 @@ namespace ibsCompiler
             Console.WriteLine();
             PrintMenu(1, "Sybase ASE");
             PrintMenu(2, "Microsoft SQL Server");
+            PrintMenu(3, "PostgreSQL");
             while (true)
             {
-                Console.Write("\n  Choose [1-2]: ");
+                Console.Write("\n  Choose [1-3]: ");
                 var platform = Console.ReadLine()?.Trim();
                 if (platform == "1") { profile.Platform = "SYBASE"; break; }
                 if (platform == "2") { profile.Platform = "MSSQL"; break; }
-                Console.WriteLine("  Invalid choice. Please enter 1 or 2.");
+                if (platform == "3") { profile.Platform = "POSTGRES"; break; }
+                Console.WriteLine("  Invalid choice. Please enter 1, 2, or 3.");
+            }
+            if (profile.Platform == "POSTGRES")
+            {
+                Console.Write("  Database name [postgres]: ");
+                var db = Console.ReadLine()?.Trim();
+                profile.Database = string.IsNullOrEmpty(db) ? "postgres" : db;
             }
 
             // 5. Host + Port
@@ -482,7 +490,7 @@ namespace ibsCompiler
             }
             profile.Host = host;
 
-            var defaultPort = profile.Platform == "MSSQL" ? "1433" : "5000";
+            var defaultPort = ibs_compiler_common.DefaultPort(ibs_compiler_common.ParsePlatform(profile.Platform)).ToString();
             while (true)
             {
                 Console.Write($"  Port [{defaultPort}]: ");
@@ -712,10 +720,11 @@ namespace ibsCompiler
             if (val == "y") profile.RawMode = true;
             else if (val == "n") profile.RawMode = false;
 
-            Console.Write($"  Platform [{profile.Platform}] (1=Sybase, 2=MSSQL): ");
+            Console.Write($"  Platform [{profile.Platform}] (1=Sybase, 2=MSSQL, 3=PostgreSQL): ");
             val = Console.ReadLine()?.Trim();
             if (val == "1") profile.Platform = "SYBASE";
             else if (val == "2") profile.Platform = "MSSQL";
+            else if (val == "3") profile.Platform = "POSTGRES";
 
             Console.Write($"  Host [{profile.Host}] (do not include port): ");
             val = Console.ReadLine()?.Trim();
@@ -906,7 +915,7 @@ namespace ibsCompiler
                 Port = profile.Port,
                 User = profile.Username,
                 Pass = profile.Password,
-                ServerType = profile.Platform?.ToUpper() == "MSSQL" ? SQLServerTypes.MSSQL : SQLServerTypes.SYBASE,
+                ServerType = ibs_compiler_common.ParsePlatform(profile.Platform),
                 Company = profile.Company ?? "101",
                 Language = profile.DefaultLanguage ?? "1",
                 IRPath = profile.SqlSource ?? ""
@@ -989,7 +998,7 @@ namespace ibsCompiler
             }
 
             var company = profile.Company ?? "101";
-            var serverType = profile.Platform?.ToUpper() == "MSSQL" ? "MSSQL" : "SYBASE";
+            var serverType = ibs_compiler_common.ParsePlatform(profile.Platform).ToString();
 
             // Mirror exactly what Options.GenerateOptionFiles merges into the
             // fully-resolved set, in order, so the test reflects the real compile
@@ -1055,7 +1064,7 @@ namespace ibsCompiler
                 Port = profile.Port,
                 User = profile.Username,
                 Pass = profile.Password,
-                ServerType = profile.Platform?.ToUpper() == "MSSQL" ? SQLServerTypes.MSSQL : SQLServerTypes.SYBASE,
+                ServerType = ibs_compiler_common.ParsePlatform(profile.Platform),
                 Company = company,
                 Language = profile.DefaultLanguage ?? "1",
                 IRPath = profile.SqlSource,
@@ -1066,7 +1075,7 @@ namespace ibsCompiler
             {
                 User = profile.Username,
                 Pass = profile.Password,
-                ServerType = profile.Platform?.ToUpper() == "MSSQL" ? SQLServerTypes.MSSQL : SQLServerTypes.SYBASE,
+                ServerType = ibs_compiler_common.ParsePlatform(profile.Platform),
                 Database = $"{company}pr",
                 Command = "TEST"
             };
@@ -1112,7 +1121,7 @@ namespace ibsCompiler
                 Port = profile.Port,
                 User = profile.Username,
                 Pass = profile.Password,
-                ServerType = profile.Platform?.ToUpper() == "MSSQL" ? SQLServerTypes.MSSQL : SQLServerTypes.SYBASE,
+                ServerType = ibs_compiler_common.ParsePlatform(profile.Platform),
                 Company = profile.Company ?? "101",
                 Language = profile.DefaultLanguage ?? "1",
                 IRPath = profile.SqlSource ?? "",
@@ -1124,7 +1133,7 @@ namespace ibsCompiler
             {
                 User = profile.Username,
                 Pass = profile.Password,
-                ServerType = profile.Platform?.ToUpper() == "MSSQL" ? SQLServerTypes.MSSQL : SQLServerTypes.SYBASE,
+                ServerType = ibs_compiler_common.ParsePlatform(profile.Platform),
                 Database = $"{profile.Company}pr",
                 Command = "TEST"
             };
@@ -2087,17 +2096,21 @@ namespace ibsCompiler
             {
                 var p = platform.Trim().ToUpperInvariant();
                 if (p == "MSSQL" || p == "SYBASE") profile.Platform = p;
+                else if (p == "POSTGRES" || p == "PG") profile.Platform = "POSTGRES";
                 else
                 {
-                    Console.Error.WriteLine("ERROR: --platform must be 'mssql' or 'sybase'.");
+                    Console.Error.WriteLine("ERROR: --platform must be 'mssql', 'sybase' or 'postgres'.");
                     return false;
                 }
             }
             else if (isCreate)
             {
-                Console.Error.WriteLine("ERROR: --create requires --platform mssql|sybase.");
+                Console.Error.WriteLine("ERROR: --create requires --platform mssql|sybase|postgres.");
                 return false;
             }
+
+            var database = CliArgs.GetOption(args, "--database");
+            if (database != null) profile.Database = database.Trim();
 
             var host = CliArgs.GetOption(args, "--host");
             if (host != null)
@@ -2127,7 +2140,7 @@ namespace ibsCompiler
             }
             else if (isCreate)
             {
-                profile.Port = profile.Platform == "MSSQL" ? 1433 : 5000;
+                profile.Port = ibs_compiler_common.DefaultPort(ibs_compiler_common.ParsePlatform(profile.Platform));
             }
 
             var user = CliArgs.GetOption(args, "--user");
