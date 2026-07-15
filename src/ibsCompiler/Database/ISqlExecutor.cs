@@ -51,6 +51,7 @@ namespace ibsCompiler.Database
             {
                 SQLServerTypes.MSSQL => new MssqlExecutor(profile),
                 SQLServerTypes.SYBASE => new SybaseExecutor(profile),
+                SQLServerTypes.POSTGRES => new PostgresExecutor(profile),
                 _ => throw new ArgumentException($"Unknown server type: {profile.ServerType}")
             };
         }
