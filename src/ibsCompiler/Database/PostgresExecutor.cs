@@ -683,9 +683,14 @@ namespace ibsCompiler.Database
                 if (schema != null && i < schema.Count)
                 {
                     var cs = schema[i].ColumnSize;
-                    // PG fix (2): unbounded text/varchar (ColumnSize null or <= 0) → MaxColumnWidth,
-                    // NOT the 30 default — silent truncation of text columns is a known trap.
-                    colSize = (cs.HasValue && cs.Value > 0) ? Math.Min(cs.Value, MaxColumnWidth) : MaxColumnWidth;
+                    // PG fix (2): ColumnSize null/<=0 covers both fixed-length types (int4, timestamp,
+                    // bool — Npgsql never reports a size for these) and genuinely unbounded text/varchar.
+                    // Use the type's display-width floor when it has one; only fall back to MaxColumnWidth
+                    // for the true unbounded case (floor 0) — NOT the 30 default, to avoid silent truncation.
+                    if (cs.HasValue && cs.Value > 0)
+                        colSize = Math.Min(cs.Value, MaxColumnWidth);
+                    else
+                        colSize = MinDisplayWidthForType(t) > 0 ? MinDisplayWidthForType(t) : MaxColumnWidth;
                 }
                 else
                 {
