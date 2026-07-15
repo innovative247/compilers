@@ -8,6 +8,7 @@
 |----------|----------|---------|
 | MSSQL | `Microsoft.Data.SqlClient` | NuGet package |
 | Sybase ASE | `AdoNetCore.AseClient` | Local DLL (`src/AdoNetCore.AseClient.dll`) |
+| PostgreSQL | `Npgsql` 8.0.5 | NuGet package |
 
 All database operations go through the `ISqlExecutor` interface:
 
@@ -22,7 +23,7 @@ public interface ISqlExecutor
 Factory creates the appropriate executor based on profile platform:
 
 ```csharp
-var executor = SqlExecutorFactory.Create(profile);  // MssqlExecutor or SybaseExecutor
+var executor = SqlExecutorFactory.Create(profile);  // MssqlExecutor, SybaseExecutor, or PostgresExecutor
 ```
 
 ### BCP Implementation
@@ -31,6 +32,7 @@ var executor = SqlExecutorFactory.Create(profile);  // MssqlExecutor or SybaseEx
 |----------|-------------|------------|
 | MSSQL | `SqlBulkCopy` + DataReader | `SqlBulkCopy` from tab-delimited file |
 | Sybase | SELECT → tab-delimited file | Row-by-row INSERT |
+| PostgreSQL | `BeginTextExport` (`COPY ... TO STDOUT (FORMAT text)`), unescaped to tab-delimited file | `BeginTextImport` (`COPY ... FROM STDIN (FORMAT text)`), PG-escaped straight from the tab-delimited file |
 
 ### Result-Set Display Widths
 
@@ -42,7 +44,7 @@ Column widths in streamed result-sets (`isqlline`, `runsql`, anything that hits 
 
 Input #3 exists because `SchemaTable.ColumnSize` reports the **byte width** for fixed-length types — `datetime`=8, `int`=4, `bigint`=8, `bit`=1, `uniqueidentifier`=16. Without a type-aware floor, those byte counts collapse the column to ~10 chars (the hardcoded baseline) and `Substring(0, width)` in the row loop chops the rendered string. The original symptom: `dateadd(ss, min(int_col), "800101")` rendered as `MM/dd/yyyy` with the time silently dropped, while a non-aggregate `dateadd(ss, literal, ...)` in the same SELECT kept its time because that column's name/text happened to push the width higher.
 
-Floors (kept symmetric in `SybaseExecutor.cs` and `MssqlExecutor.cs`):
+Floors (kept symmetric in `SybaseExecutor.cs`, `MssqlExecutor.cs`, and `PostgresExecutor.cs`):
 
 | .NET type | Floor | Rationale |
 |---|---|---|
@@ -103,6 +105,8 @@ Connection profiles stored alongside executables:
   }
 }
 ```
+
+A PostgreSQL profile sets `"PLATFORM": "POSTGRES"` and `"PORT": 5432` (the default when `--port` is omitted at create); an optional `"DATABASE"` key names the physical PG database to connect to (see PG platform model below) — when absent, the executor connects to `postgres`.
 
 ### Profile Resolution
 
@@ -230,6 +234,28 @@ SET QUOTED_IDENTIFIER        OFF
 - Prepended as its own batch before user SQL
 - If file missing: warning logged, execution continues
 
+## PostgreSQL Connection Initialization (PGSQLINI)
+
+Same mechanism, PG-side: set `PGSQLINI` env var to point to a SQL file that runs after every PG connect (including bulk-copy connects). If unset, `PostgresExecutor` looks for `PGSQLINI.sql` next to `settings.json` (falling back to the binaries directory). Missing file: no error, just skipped.
+
+After the optional init script, the executor always runs `SET datestyle TO 'ISO, MDY'` on every connection — this is not conditional on PGSQLINI being present, it pins PG's date rendering to match the compiler's date-parsing assumptions.
+
+`use <db>` inside a batch (and a `database` argument that names a schema, not the connection database) maps to `SET search_path TO <schema>, public` rather than a Sybase-style `USE` — see the PG platform model below.
+
+---
+
+## PostgreSQL Platform Model
+
+SBN "databases" are PostgreSQL *schemas* inside one physical database — there is no per-database isolation the way MSSQL/Sybase have it. `PostgresExecutor.ResolveTarget` decides, per call, whether the `database` argument names the connection's own database (plain connect) or a schema (connect to the profile's admin database, then `SET search_path TO <schema>, public`). The same mapping applies to `use <db>` inside a batch — the only statement-level rewrite the executor performs.
+
+For BCP, `db..table` follows suit: the `db` part becomes a schema-qualified target (`schema."table"`), not a separate database connection.
+
+**User SQL is never translated.** PG source is authored natively — no `create proc` → `create function` rewriting, no automatic DDL translation. The compiler passes user-authored batches through untouched except for the `use`/search_path substitution and the diagnostic mapping below. Generated SQL emitted *by* the compiler itself (not user-authored) is the only place `db..table` → `schema.table` rewriting happens.
+
+Diagnostic toggles (`set showplan on`, `set statistics io on`, `set noexec on`) have no PG session-level equivalent, so the executor tracks them as local state and prefixes subsequent DML with an `EXPLAIN` variant instead of forwarding the (invalid) Sybase syntax: `noexec` → `EXPLAIN`, `statistics` → `EXPLAIN (ANALYZE, BUFFERS)`, `showplan` → `EXPLAIN`. `noexec` wins if more than one is on.
+
+Each `GO`-delimited chunk is split into individual statements (a PG-aware splitter that respects quotes, comments, and dollar-quoted function bodies) and executed one at a time, matching Sybase/MSSQL's per-statement autocommit — a chunk is not one implicit multi-statement transaction.
+
 ---
 
 ## Command Architecture
@@ -274,6 +300,8 @@ Produces:
 - `bin/compilers-net8-osx-x64.tar.gz`
 
 `settings.json` is excluded from all archives so `runsql update` never overwrites a user's credentials.
+
+`src/sql-test/` and `src/bcp_data/` are Sybase-only internal utilities — not part of the cross-platform command set, not PG-ported.
 
 ### Version Checking
 
