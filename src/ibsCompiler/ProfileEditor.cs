@@ -343,6 +343,10 @@ namespace ibsCompiler
                 Console.SetCursorPosition(0, startRow + fields.Length + 2);
                 Console.WriteLine();
                 Console.WriteLine();
+                var prevTestColor = Console.ForegroundColor;
+                Console.ForegroundColor = ConsoleColor.DarkGray;
+                Console.WriteLine("(testing current editor values — not yet saved)");
+                Console.ForegroundColor = prevTestColor;
                 onTest!(profile, kind);
                 Console.WriteLine();
                 Console.Write("  Press any key to return to the editor...");

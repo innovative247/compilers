@@ -45,8 +45,17 @@ Confirm each:
       edits included), output scrolls, waits for a key, then the editor redraws intact.
       `[A]ll` (full profile only) runs the same sequence as `--test --what all` for that
       profile. `Esc` (or any other key) at the chooser cancels back to the editor.
+- [ ] **Test unsaved-values note** — right before a `[T]` test's output scrolls, a dim
+      (dark gray) line prints: `(testing current editor values — not yet saved)`. It
+      appears once per test run, above the test output, and is not repeated on the
+      "Press any key to return to the editor..." redraw.
 - [ ] **Save** — `S` validates all visible rows then exits; `--view <name>` afterward
       confirms every edited field (including `--data-charset` / Data Charset).
+- [ ] **Save confirmation** — after `S` exits the editor and the profile is written, a
+      green confirmation prints (`Settings saved to: <path>` followed by `Profile
+      'NAME' updated/created!`), visible in the scrollback after the TUI exits (not
+      cleared or overwritten by a redraw). If the write fails (e.g. settings.json
+      locked/read-only), a red error prints instead and no green line appears.
 - [ ] **Cancel discards** — with unsaved changes, `Esc` prompts "Discard changes? (y/N)";
       `y` exits without saving (`--view` shows the pre-edit values), `n` returns.
 - [ ] **Fallback** — `echo "" | set_profile SCRATCH` (redirected stdin) takes the
