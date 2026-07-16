@@ -398,6 +398,14 @@ namespace ibsCompiler
         #region Create Profile
         private static void CreateProfile(string? prefilledName = null)
         {
+            // Interactive TTY → whole-profile editor with the profile name as its first
+            // in-view row (no pre-prompt). Redirected console → sequential prompt flow.
+            if (!Console.IsInputRedirected && !Console.IsOutputRedirected)
+            {
+                CreateProfileInteractive(prefilledName);
+                return;
+            }
+
             Console.WriteLine();
             PrintSubheader("Create New Profile");
             Console.WriteLine();
@@ -418,46 +426,62 @@ namespace ibsCompiler
             }
             else
             {
-                while (true)
-                {
-                    Console.Write("  Profile name: ");
-                    name = Console.ReadLine()?.Trim().ToUpper() ?? "";
-                    if (string.IsNullOrEmpty(name) || !Regex.IsMatch(name, @"^[A-Z0-9_]+$"))
-                    {
-                        PrintWarning("Invalid name. Use alphanumeric characters and underscores only.");
-                        continue;
-                    }
-                    if (ReservedNames.Contains(name))
-                    {
-                        PrintError($"'{name}' is a reserved command name and cannot be used as a profile name.");
-                        continue;
-                    }
-                    if (_settings.Profiles.Keys.Any(k => string.Equals(k, name, StringComparison.OrdinalIgnoreCase)))
-                    {
-                        PrintError($"Profile '{name}' already exists.");
-                        continue;
-                    }
-                    break;
-                }
-            }
-
-            // Interactive TTY → whole-profile editor. Redirected console → sequential prompts.
-            if (!Console.IsInputRedirected && !Console.IsOutputRedirected)
-            {
-                CreateProfileInteractive(name, profile);
-                return;
+                name = PromptNewProfileName();
             }
 
             CreateProfileSequential(name, profile);
         }
 
-        private static void CreateProfileInteractive(string name, ProfileData profile)
+        /// <summary>Sequential (redirected-console) new-profile name prompt loop.</summary>
+        private static string PromptNewProfileName()
         {
-            profile.DefaultLanguage = "1";
-            var result = ProfileEditor.Edit(name, profile, isCreate: true, (p, kind) => RunNamedTest(kind, name, p), ValidateAliasConflicts);
+            while (true)
+            {
+                Console.Write("  Profile name: ");
+                var name = Console.ReadLine()?.Trim().ToUpper() ?? "";
+                var err = ValidateNewProfileName(name);
+                if (err == null) return name;
+                PrintWarning(err);
+            }
+        }
+
+        /// <summary>
+        /// Full new-profile name rule set (required, charset, reserved, unique vs
+        /// existing profile names AND aliases). Shared by the sequential prompt and the
+        /// interactive editor's name row so both enforce identical rules. Returns the
+        /// error string, or null when the (uppercased) name is valid.
+        /// </summary>
+        internal static string? ValidateNewProfileName(string raw)
+        {
+            var name = (raw ?? "").Trim().ToUpperInvariant();
+            if (string.IsNullOrEmpty(name))
+                return "Profile name is required.";
+            if (!Regex.IsMatch(name, @"^[A-Z0-9_]+$"))
+                return "Invalid name. Use alphanumeric characters and underscores only.";
+            if (ReservedNames.Contains(name))
+                return $"'{name}' is a reserved command name and cannot be used as a profile name.";
+            if (_settings.Profiles.Keys.Any(k => string.Equals(k, name, StringComparison.OrdinalIgnoreCase)))
+                return $"Profile '{name}' already exists.";
+            foreach (var kvp in _settings.Profiles)
+                if (kvp.Value.Aliases?.Any(a => a.ToUpperInvariant() == name) == true)
+                    return $"Name '{name}' is already used as an alias by profile '{kvp.Key}'.";
+            return null;
+        }
+
+        private static void CreateProfileInteractive(string? prefilledName)
+        {
+            // Company mirrors the wizard default (raw side-effects zero it in the editor).
+            var profile = new ProfileData { DefaultLanguage = "1", Company = "101" };
+            var nameHolder = new ProfileEditor.NameHolder { Value = (prefilledName ?? "").ToUpperInvariant() };
+            var result = ProfileEditor.Edit(
+                nameHolder.Value, profile, isCreate: true,
+                (p, kind) => RunNamedTest(kind, string.IsNullOrEmpty(nameHolder.Value) ? "NEW" : nameHolder.Value, p),
+                ValidateAliasConflicts, nameHolder, ValidateNewProfileName);
             if (result == null)
             {
-                CreateProfileSequential(name, profile);
+                // Terminal too small → sequential fallback; prompt for a name if blank.
+                var seqName = string.IsNullOrEmpty(nameHolder.Value) ? PromptNewProfileName() : nameHolder.Value;
+                CreateProfileSequential(seqName, profile);
                 return;
             }
             if (!result.Value)
@@ -466,6 +490,7 @@ namespace ibsCompiler
                 return;
             }
 
+            var name = nameHolder.Value;
             _settings.Profiles[name] = profile;
             if (SaveSettings())
             {
@@ -726,7 +751,12 @@ namespace ibsCompiler
                         EditProfile(profileName, profile);
                         break;
                     case "2":
-                        CopyProfile(profileName, profile);
+                        // Interactive TTY → full editor prefilled from source (name +
+                        // aliases blank). Redirected console → legacy prompt-based copy.
+                        if (Console.IsInputRedirected || Console.IsOutputRedirected)
+                            CopyProfile(profileName, profile);
+                        else
+                            CopyProfileInteractive(profileName, profile);
                         break;
                     case "3":
                         if (DeleteProfile(profileName)) return;
@@ -873,6 +903,53 @@ namespace ibsCompiler
         #endregion
 
         #region Copy Profile
+        /// <summary>
+        /// Interactive TTY copy: opens the same full editor prefilled with a clone of
+        /// the source profile, but with Profile Name and Aliases blank. Saving creates
+        /// the new profile (same validation as create — blocked until a valid, unique
+        /// name is entered). The redirected-console path keeps the legacy prompt flow
+        /// (<see cref="CopyProfile"/>); headless --copy is unchanged.
+        /// </summary>
+        private static void CopyProfileInteractive(string sourceName, ProfileData sourceProfile)
+        {
+            // Snapshot = the prefilled clone, so every carried-over field shows clean
+            // until edited; name + aliases start blank and the name is required.
+            var json = JsonSerializer.Serialize(sourceProfile);
+            var working = JsonSerializer.Deserialize<ProfileData>(json)!;
+            working.Aliases = new List<string>();
+
+            var nameHolder = new ProfileEditor.NameHolder { Value = "" };
+            // profileName = "" so alias-conflict validation excludes nothing and checks
+            // the new aliases against ALL existing profiles (including the source).
+            var result = ProfileEditor.Edit(
+                "", working, isCreate: true,
+                (p, kind) => RunNamedTest(kind, sourceName, p),
+                ValidateAliasConflicts, nameHolder, ValidateNewProfileName,
+                titleOverride: $"Copy Profile (from {sourceName})");
+            if (result == null)
+            {
+                // Terminal too small → legacy prompt-based copy flow.
+                CopyProfile(sourceName, sourceProfile);
+                return;
+            }
+            if (!result.Value)
+            {
+                PrintDim("  Copy cancelled — no profile saved.");
+                return;
+            }
+
+            var newName = nameHolder.Value;
+            _settings.Profiles[newName] = working;
+            if (SaveSettings())
+            {
+                Console.WriteLine();
+                PrintSuccess($"Profile '{sourceName}' copied to '{newName}'.");
+                DisplayProfile(newName, working);
+                if (!working.RawMode)
+                    ibs_compiler_common.EnsureSymbolicLinks(working.SqlSource ?? "");
+            }
+        }
+
         private static void CopyProfile(string sourceName, ProfileData sourceProfile)
         {
             Console.Write("New profile name: ");

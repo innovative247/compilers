@@ -16,6 +16,13 @@ namespace ibsCompiler
     /// </summary>
     internal static class ProfileEditor
     {
+        /// <summary>
+        /// Backs the create/copy "Profile Name" row. The name is not part of
+        /// <see cref="ProfileData"/>; the editor mutates this holder and the caller
+        /// reads <see cref="Value"/> after a successful save.
+        /// </summary>
+        internal sealed class NameHolder { public string Value = ""; }
+
         private enum FieldKind { Text, Enum, Bool, Int, Password, Path, AliasList }
 
         private sealed class Field
@@ -40,9 +47,29 @@ namespace ibsCompiler
         }
 
         private static Field[] BuildFields(
-            string profileName, Func<string, IEnumerable<string>, string?>? validateAliases)
+            string profileName, Func<string, IEnumerable<string>, string?>? validateAliases,
+            NameHolder? nameHolder, Func<string, string?>? validateName)
         {
-            return new[]
+            // Create/copy mode: the profile name is entered in-view as the first row,
+            // backed by nameHolder (not ProfileData). It also switches on the extra
+            // REQUIRED rules the legacy create wizard enforced (Password, SQL Source).
+            bool createMode = nameHolder != null;
+            var fields = new List<Field>();
+            if (createMode)
+            {
+                fields.Add(new Field
+                {
+                    Label = "Profile Name", Kind = FieldKind.Text,
+                    Raw = _ => nameHolder!.Value,
+                    Display = _ => string.IsNullOrEmpty(nameHolder!.Value) ? "(required)" : nameHolder!.Value,
+                    // Uppercase on entry, mirroring the sequential/headless name rules.
+                    Set = (_, v) => nameHolder!.Value = v.Trim().ToUpperInvariant(),
+                    // Required + charset + reserved + uniqueness — enforced at [S] even
+                    // if the row is never visited (validateName owns the full rule set).
+                    Validate = validateName == null ? null : (_, v) => validateName(v),
+                });
+            }
+            fields.AddRange(new[]
             {
                 new Field
                 {
@@ -116,6 +143,9 @@ namespace ibsCompiler
                     Label = "Password", Kind = FieldKind.Password,
                     Raw = p => p.Password ?? "",
                     Display = p => string.IsNullOrEmpty(p.Password) ? "(unset)" : "****",
+                    // Required on create/copy (the legacy wizard loops until non-empty;
+                    // no default password). Edit-existing keeps the stored value.
+                    Validate = createMode ? (_, v) => string.IsNullOrEmpty(v) ? "Password is required." : null : null,
                 },
                 new Field
                 {
@@ -152,8 +182,12 @@ namespace ibsCompiler
                         var t = v.Trim();
                         p.SqlSource = (t == "." || t == "./" || t == ".\\") ? Directory.GetCurrentDirectory() : t;
                     },
+                    // Required on create/copy when not raw (skipped by IsApplicable in
+                    // raw mode). A missing directory is still only a warning, not a block.
+                    Validate = createMode ? (_, v) => string.IsNullOrWhiteSpace(v) ? "SQL Source is required." : null : null,
                 },
-            };
+            });
+            return fields.ToArray();
         }
 
         /// <summary>
@@ -165,14 +199,21 @@ namespace ibsCompiler
         /// </summary>
         public static bool? Edit(string profileName, ProfileData profile, bool isCreate,
             Action<ProfileData, string>? onTest,
-            Func<string, IEnumerable<string>, string?>? validateAliases = null)
+            Func<string, IEnumerable<string>, string?>? validateAliases = null,
+            NameHolder? nameHolder = null,
+            Func<string, string?>? validateName = null,
+            string? titleOverride = null)
         {
             // Belt-and-suspenders: never drive a ReadKey loop on a redirected console.
             // The caller already routes those to the sequential/headless paths.
             if (Console.IsInputRedirected || Console.IsOutputRedirected)
                 return false;
 
-            var fields = BuildFields(profileName, validateAliases);
+            var fields = BuildFields(profileName, validateAliases, nameHolder, validateName);
+            // In create/copy mode the name row is index 0; track its pre-edit value so
+            // its dirty marker and the Esc discard-guard behave like the other rows.
+            var nameField = nameHolder != null ? fields[0] : null;
+            var snapshotName = nameHolder?.Value ?? "";
 
             // Layout needs: 1 blank + title + 1 blank + N field rows + 1 blank +
             // footer + message row = fields.Length + 5 rows, minimum. Width must also
@@ -185,7 +226,7 @@ namespace ibsCompiler
             }
             var snapshot = JsonSerializer.Deserialize<ProfileData>(JsonSerializer.Serialize(profile))!;
 
-            var title = (isCreate ? "Create Profile: " : "Edit Profile: ") + profileName;
+            var title = titleOverride ?? ((isCreate ? "Create Profile: " : "Edit Profile: ") + profileName);
             const string footer = "  [Up/Down] move  [Enter] edit  [S] save  [T] test  [Esc] cancel";
 
             int startRow = 0;
@@ -212,6 +253,13 @@ namespace ibsCompiler
             bool IsApplicable(int fieldIdx)
                 => fields[fieldIdx].Applicable == null || fields[fieldIdx].Applicable!(profile);
 
+            // The name row is backed by nameHolder (not ProfileData / snapshot), so its
+            // dirty state compares against the captured pre-edit name instead.
+            bool FieldDirty(Field f)
+                => (nameField != null && f == nameField)
+                    ? nameHolder!.Value != snapshotName
+                    : f.Raw(profile) != f.Raw(snapshot);
+
             int cursor = 0; // field index — every field is navigable, even disabled ones.
 
             void DrawRow(int fieldIdx, bool isCursor)
@@ -229,7 +277,7 @@ namespace ibsCompiler
                 }
                 else
                 {
-                    var dirty = f.Raw(profile) != f.Raw(snapshot) ? " *" : "";
+                    var dirty = FieldDirty(f) ? " *" : "";
                     var hint = f.Hint != null ? $"  ({f.Hint(profile)})" : "";
                     line = $"  {pointer} {f.Label,-16}: {f.Display(profile)}{dirty}{hint}";
                 }
@@ -512,7 +560,7 @@ namespace ibsCompiler
                         case ConsoleKey.Escape:
                         case ConsoleKey.Q:
                         {
-                            bool dirty = fields.Any(x => x.Raw(profile) != x.Raw(snapshot));
+                            bool dirty = fields.Any(FieldDirty);
                             if (!dirty) return false;
                             Message("Discard changes? (y/N) ", ConsoleColor.Yellow);
                             Console.SetCursorPosition(

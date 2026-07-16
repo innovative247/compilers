@@ -15,6 +15,44 @@ The existing-profile menu is now `1. Open (view / edit / test)`, `2. Copy`, `3. 
 `98. Back`, `99. Exit`. Open routes to the same editor; if you save nothing it is just a
 view. View and Test are no longer separate menu items — Test lives on the editor's `[T]`.
 
+## New profile — name row in-view, save blocked until valid
+
+`New profile` (Main Menu → 1) and `set_profile NEWNAME` now open the SAME editor for
+everything — the profile name is the FIRST row ("Profile Name"), not a pre-prompt.
+`set_profile NEWNAME` prefills that row with `NEWNAME` (uppercased); Main Menu → 1 opens
+with it blank and the `>` pointer already on it.
+
+- [ ] **Name row present + first** — the editor's top row is `Profile Name`; a blank name
+      renders `(required)`. Editing it (Enter) uppercases on commit.
+- [ ] **Save blocked until valid** — with any required field invalid, `[S]` does NOT exit:
+      it jumps the cursor to the first offending row and prints the specific error in red
+      on the message line. Fix all of them and `[S]` saves. Required set enforced at `[S]`
+      even for rows you never visited: **Profile Name** (required, `^[A-Z0-9_]+$`, not a
+      reserved word, unique vs existing profile names AND aliases), **Host**, **Username**,
+      **Password**, **Port** (must be a positive int; blank keeps the platform default),
+      and **SQL Source** (required unless Raw Mode — a missing directory still only warns).
+- [ ] **Name uniqueness** — typing an existing profile name or an existing alias is
+      rejected at `[S]` with the collision named.
+- [ ] **Save creates the profile** — after `[S]`, `--view NEWNAME` shows every entered
+      field; the green `Profile 'NEWNAME' created!` line is in the scrollback.
+
+## Copy profile — params prefilled, name + aliases blank
+
+`Existing profile → 2. Copy` (interactive TTY) now opens the SAME editor prefilled with a
+clone of the source's parameters, but with **Profile Name and Aliases blank**. Title reads
+`Copy Profile (from SOURCE)`.
+
+- [ ] **Prefilled from source** — Host/Port/Username/Password/Platform/Company/SQL Source/
+      Raw Mode/Charset all carry the source's values and show CLEAN (no ` *`) until edited.
+- [ ] **Name + aliases blank** — the `Profile Name` row is blank/`(required)`; `Aliases`
+      is `(none)`. Everything else clean.
+- [ ] **Same validation** — `[S]` is blocked until a valid, unique name is entered (same
+      rules as New profile). Saving creates the new profile from the (possibly edited)
+      prefilled values; the source is untouched.
+- [ ] **Redirected-console fallback** — piping stdin (`echo "" | ...`) to the Copy path
+      takes the legacy prompt-based copy (asks new name, clones, saves), never the TUI.
+      Headless `set_profile --copy NAME --to NEW` is unchanged.
+
 Confirm each:
 
 - [ ] **Arrow nav** — `Up`/`Down` moves the `>` pointer over EVERY row (all fields are
