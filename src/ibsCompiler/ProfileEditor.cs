@@ -5,14 +5,38 @@ using ibsCompiler.Configuration;
 namespace ibsCompiler
 {
     /// <summary>
-    /// Whole-profile interactive TUI editor. Every field renders as a label:value
-    /// row and stays visible at all times; Up/Down moves, Enter edits in place,
-    /// S saves, T opens the test chooser, Esc cancels (confirming a discard when
-    /// dirty). Fields that don't apply to the current profile (Company / SQL Source
-    /// under raw mode, Database off PostgreSQL) render a dim <c>---</c> and reject
-    /// edits with a one-line note. Headless flags retain full parity — this path is
-    /// used only when the console is a real TTY (not redirected); the caller falls
-    /// back to the sequential prompt flow otherwise.
+    /// What the editor hub returned. The editor is the single interactive surface for
+    /// an existing profile (open/save/test/copy/delete) as well as create/copy-into.
+    /// </summary>
+    internal enum ProfileEditorOutcome
+    {
+        /// User saved (passed the full validation gate). Caller persists.
+        Saved,
+        /// User backed out (Back / Esc) — discard confirmed when dirty. Nothing to persist.
+        Cancelled,
+        /// User chose Copy — caller launches the copy-into-editor flow for this profile.
+        Copy,
+        /// User chose Delete — caller runs the legacy type-'delete' confirmation + removal.
+        Delete,
+        /// User chose Exit (99) — caller leaves the app entirely.
+        Exit,
+        /// Terminal too small to host the widget — caller falls back to sequential prompts.
+        TooSmall,
+    }
+
+    /// <summary>
+    /// Whole-profile interactive TUI editor and hub. Every field renders as a
+    /// label:value row and stays visible; Up/Down moves the field cursor, Enter edits
+    /// the focused field. A numbered action menu is rendered below the field list —
+    /// Save, the per-test items (raw-aware), Copy, Delete, Back (98), Exit (99). Typing
+    /// a digit starts a menu-choice buffer shown on the prompt line (<c>Choice: 9_</c>);
+    /// Enter commits it, Backspace edits it, Esc clears it. Plain Enter with an empty
+    /// buffer still edits the focused field; Esc with an empty buffer acts like Back
+    /// (discard-confirm when dirty). Fields that don't apply to the current profile
+    /// (Company / SQL Source under raw mode, Database off PostgreSQL) render a dim
+    /// <c>---</c> and reject edits. Headless flags retain full parity — this path is
+    /// used only when the console is a real TTY (not redirected); the caller falls back
+    /// to the sequential prompt flow otherwise.
     /// </summary>
     internal static class ProfileEditor
     {
@@ -64,7 +88,7 @@ namespace ibsCompiler
                     Display = _ => string.IsNullOrEmpty(nameHolder!.Value) ? "(required)" : nameHolder!.Value,
                     // Uppercase on entry, mirroring the sequential/headless name rules.
                     Set = (_, v) => nameHolder!.Value = v.Trim().ToUpperInvariant(),
-                    // Required + charset + reserved + uniqueness — enforced at [S] even
+                    // Required + charset + reserved + uniqueness — enforced at Save even
                     // if the row is never visited (validateName owns the full rule set).
                     Validate = validateName == null ? null : (_, v) => validateName(v),
                 });
@@ -191,23 +215,25 @@ namespace ibsCompiler
         }
 
         /// <summary>
-        /// Edits <paramref name="profile"/> in place (caller passes a working copy).
-        /// <paramref name="onTest"/> runs a named test (the --what vocabulary) against
-        /// the working copy so unsaved edits are what get tested. Returns true when the
-        /// user saved, false when cancelled, null when the terminal is too small to host
-        /// the widget (caller must fall back to the sequential prompt flow).
+        /// Edits <paramref name="profile"/> in place (caller passes a working copy) and
+        /// hosts the numbered action menu. <paramref name="onTest"/> runs a named test
+        /// (the --what vocabulary) against the working copy so unsaved edits are what get
+        /// tested. When <paramref name="allowCopyDelete"/> is true the menu adds Copy and
+        /// Delete items (existing-profile edit); create/copy-into flows leave it false.
+        /// Returns the chosen <see cref="ProfileEditorOutcome"/>.
         /// </summary>
-        public static bool? Edit(string profileName, ProfileData profile, bool isCreate,
+        public static ProfileEditorOutcome Edit(string profileName, ProfileData profile, bool isCreate,
             Action<ProfileData, string>? onTest,
             Func<string, IEnumerable<string>, string?>? validateAliases = null,
             NameHolder? nameHolder = null,
             Func<string, string?>? validateName = null,
-            string? titleOverride = null)
+            string? titleOverride = null,
+            bool allowCopyDelete = false)
         {
             // Belt-and-suspenders: never drive a ReadKey loop on a redirected console.
             // The caller already routes those to the sequential/headless paths.
             if (Console.IsInputRedirected || Console.IsOutputRedirected)
-                return false;
+                return ProfileEditorOutcome.Cancelled;
 
             var fields = BuildFields(profileName, validateAliases, nameHolder, validateName);
             // In create/copy mode the name row is index 0; track its pre-edit value so
@@ -215,21 +241,31 @@ namespace ibsCompiler
             var nameField = nameHolder != null ? fields[0] : null;
             var snapshotName = nameHolder?.Value ?? "";
 
-            // Layout needs: 1 blank + title + 1 blank + N field rows + 1 blank +
-            // footer + message row = fields.Length + 5 rows, minimum. Width must also
-            // clear the widest fixed-column cursor moves (Discard prompt lands at 25).
-            if (Console.WindowHeight < fields.Length + 5 || Console.WindowWidth < 40)
+            // The action menu row count CHANGES live with Raw Mode (raw collapses the six
+            // extra Test items to just Test connection). Reserve the MAX height (non-raw)
+            // so the layout / message-row arithmetic is stable; raw renders fewer items
+            // and pads the remaining rows blank. Copy/Delete add two rows when allowed.
+            int maxMenuRows = 1 /*Save*/ + 7 /*Test connection + 6 full-profile tests*/
+                            + (allowCopyDelete ? 2 : 0) /*Copy + Delete*/
+                            + 2 /*Back + Exit*/;
+
+            // Layout needs (top→bottom): blank + title + blank + N field rows + blank +
+            // footer + blank + maxMenuRows menu rows + message row. Width must clear the
+            // widest fixed-column cursor move (the Discard prompt).
+            if (Console.WindowHeight < fields.Length + maxMenuRows + 7 || Console.WindowWidth < 40)
             {
                 Console.WriteLine();
                 Console.WriteLine("  Terminal too small for the profile editor — using sequential prompts.");
-                return null;
+                return ProfileEditorOutcome.TooSmall;
             }
             var snapshot = JsonSerializer.Deserialize<ProfileData>(JsonSerializer.Serialize(profile))!;
 
             var title = titleOverride ?? ((isCreate ? "Create Profile: " : "Edit Profile: ") + profileName);
-            const string footer = "  [Up/Down] move  [Enter] edit  [S] save  [T] test  [Esc] cancel";
+            const string footer = "  [Up/Down] move  [Enter] edit";
 
-            int startRow = 0;
+            int startRow = 0;   // first field row
+            int menuRow0 = 0;   // first action-menu row
+            int messageRow = 0; // transient message / choice-buffer line (below the menu)
 
             void Scaffold()
             {
@@ -241,13 +277,17 @@ namespace ibsCompiler
                 Console.WriteLine();
                 for (int i = 0; i < fields.Length; i++) Console.WriteLine();
                 Console.WriteLine();
-                Console.Write(footer);
-                // Reserve the message row below the footer explicitly: WriteLine (unlike
-                // SetCursorPosition) auto-scrolls the buffer when it is written at the
-                // bottom of the window, so this row is guaranteed to exist afterward.
+                Console.WriteLine(footer);
                 Console.WriteLine();
-                int messageRow = Console.CursorTop;
-                startRow = messageRow - fields.Length - 2;
+                // Reserve the menu block + message row via WriteLine (unlike
+                // SetCursorPosition it auto-scrolls the buffer when written at the bottom
+                // of the window, so every row below is guaranteed to exist afterward).
+                for (int j = 0; j < maxMenuRows; j++) Console.WriteLine();
+                // After the menu loop the cursor sits on the line below the last menu row
+                // — that is the (blank, reserved) message row. Derive everything from it.
+                messageRow = Console.CursorTop;
+                menuRow0 = messageRow - maxMenuRows;
+                startRow = messageRow - maxMenuRows - 3 - fields.Length;
             }
 
             bool IsApplicable(int fieldIdx)
@@ -296,19 +336,61 @@ namespace ibsCompiler
                 }
             }
 
+            // The numbered action menu, built for the CURRENT raw state. Numbers 1..N are
+            // assigned dynamically (raw hides the six full-profile Test items, so Copy/
+            // Delete shift up); Back/Exit are always 98/99.
+            List<(int Num, string Label, string Action)> BuildMenu()
+            {
+                var items = new List<(int, string, string)>();
+                int n = 1;
+                items.Add((n++, "Save", "save"));
+                items.Add((n++, "Test connection", "test:connection"));
+                if (!profile.RawMode)
+                {
+                    items.Add((n++, "Test SQL Source path", "test:sql-source"));
+                    items.Add((n++, "Test options", "test:options"));
+                    items.Add((n++, "Test table locations", "test:table-locations"));
+                    items.Add((n++, "Test changelog", "test:changelog"));
+                    items.Add((n++, "Test symlinks", "test:symlinks"));
+                    items.Add((n++, "Test all", "test:all"));
+                }
+                if (allowCopyDelete)
+                {
+                    items.Add((n++, "Copy", "copy"));
+                    items.Add((n++, "Delete", "delete"));
+                }
+                items.Add((98, "Back", "back"));
+                items.Add((99, "Exit", "exit"));
+                return items;
+            }
+
+            void RenderMenu()
+            {
+                var items = BuildMenu();
+                for (int j = 0; j < maxMenuRows; j++)
+                {
+                    Console.SetCursorPosition(0, menuRow0 + j);
+                    string line = j < items.Count ? $"  {items[j].Num,2}. {items[j].Label}" : "";
+                    if (line.Length < Console.WindowWidth - 1) line = line.PadRight(Console.WindowWidth - 1);
+                    else line = line.Substring(0, Console.WindowWidth - 1);
+                    Console.Write(line);
+                }
+            }
+
             void Render()
             {
                 if (cursor >= fields.Length) cursor = fields.Length - 1;
                 if (cursor < 0) cursor = 0;
                 for (int i = 0; i < fields.Length; i++)
                     DrawRow(i, i == cursor);
+                RenderMenu();
                 Console.SetCursorPosition(0, startRow + cursor);
             }
 
-            // A transient message line just below the footer.
+            // A transient message line just below the action menu.
             void Message(string text, ConsoleColor color)
             {
-                Console.SetCursorPosition(0, startRow + fields.Length + 2);
+                Console.SetCursorPosition(0, messageRow);
                 var prev = Console.ForegroundColor;
                 Console.ForegroundColor = color;
                 var line = "  " + text;
@@ -319,8 +401,19 @@ namespace ibsCompiler
 
             void ClearMessage()
             {
-                Console.SetCursorPosition(0, startRow + fields.Length + 2);
+                Console.SetCursorPosition(0, messageRow);
                 Console.Write(new string(' ', Console.WindowWidth - 1));
+            }
+
+            // Draws the in-progress menu-choice buffer on the prompt line as `Choice: 9`
+            // with the hardware cursor parked right after it (the blinking caret is the
+            // trailing underscore).
+            void ShowMenuBuffer(string buf)
+            {
+                Message("Choice: " + buf, ConsoleColor.Cyan);
+                Console.CursorVisible = true;
+                int col = 2 + "Choice: ".Length + buf.Length;
+                Console.SetCursorPosition(Math.Min(col, Console.WindowWidth - 1), messageRow);
             }
 
             // In-place single-line editor seeded with the current value.
@@ -380,44 +473,15 @@ namespace ibsCompiler
                 }
             }
 
-            // Reads a numbered-menu choice one keystroke at a time (digits + Backspace),
-            // echoing as typed, terminated by Enter. Esc backs out immediately (treated
-            // as 98/Back by the caller's switch, since no case matches "").
-            string ReadMenuChoice()
-            {
-                var sb = new System.Text.StringBuilder();
-                while (true)
-                {
-                    var k = Console.ReadKey(intercept: true);
-                    if (k.Key == ConsoleKey.Enter) break;
-                    if (k.Key == ConsoleKey.Escape) return "";
-                    if (k.Key == ConsoleKey.Backspace)
-                    {
-                        if (sb.Length > 0)
-                        {
-                            sb.Length--;
-                            Console.Write("\b \b");
-                        }
-                        continue;
-                    }
-                    if (char.IsDigit(k.KeyChar))
-                    {
-                        sb.Append(k.KeyChar);
-                        Console.Write(k.KeyChar);
-                    }
-                }
-                return sb.ToString();
-            }
-
             // Suspend the TUI, let scrolling test output print, wait for a key, then
-            // re-scaffold and redraw the editor intact. Shared by the [T] chooser.
+            // re-scaffold and redraw the editor intact. Shared by every Test menu item.
             void RunTestSuspended(string kind)
             {
                 Console.CursorVisible = true;
                 // Land on the message row (guaranteed to exist — see Scaffold), then
                 // WriteLine from there so the buffer scrolls as needed instead of
                 // SetCursorPosition-ing to a row that may not exist yet.
-                Console.SetCursorPosition(0, startRow + fields.Length + 2);
+                Console.SetCursorPosition(0, messageRow);
                 Console.WriteLine();
                 Console.WriteLine();
                 var prevTestColor = Console.ForegroundColor;
@@ -433,10 +497,10 @@ namespace ibsCompiler
                 Render();
             }
 
-            // Full required-field validation, incl. unvisited rows: used by both
-            // [S]ave and [T]est so a test run can never be launched against an
-            // incomplete/invalid profile. On failure, jumps the cursor to the
-            // first offending row and shows the error on the message line.
+            // Full required-field validation, incl. unvisited rows: used by Save and by
+            // every Test item so a test run can never be launched against an incomplete/
+            // invalid profile. On failure, jumps the cursor to the first offending row
+            // and shows the error on the message line.
             bool ValidateAll()
             {
                 string? firstError = null;
@@ -459,15 +523,57 @@ namespace ibsCompiler
                 return true;
             }
 
+            // Discard-guard shared by Back / Exit / Esc. Returns true when it is safe to
+            // leave (clean, or the user confirmed the discard); false to stay.
+            bool ConfirmDiscardIfDirty()
+            {
+                if (!fields.Any(FieldDirty)) return true;
+                Message("Discard changes? (y/N) ", ConsoleColor.Yellow);
+                Console.SetCursorPosition(
+                    Math.Min(2 + "Discard changes? (y/N) ".Length, Console.WindowWidth - 1),
+                    messageRow);
+                Console.CursorVisible = true;
+                var ans = Console.ReadKey(intercept: true);
+                Console.CursorVisible = false;
+                if (ans.Key == ConsoleKey.Y) return true;
+                ClearMessage();
+                Render();
+                return false;
+            }
+
             try
             {
                 Console.CursorVisible = false;
                 Scaffold();
                 Render();
 
+                var menuBuf = new StringBuilder();
+
                 while (true)
                 {
                     var key = Console.ReadKey(intercept: true);
+
+                    // Digits build the menu-choice buffer, echoed on the prompt line.
+                    if (char.IsDigit(key.KeyChar))
+                    {
+                        menuBuf.Append(key.KeyChar);
+                        ShowMenuBuffer(menuBuf.ToString());
+                        continue;
+                    }
+
+                    // Any non-buffer key other than Enter/Backspace/Esc abandons an
+                    // in-progress choice and falls through to normal handling.
+                    if (menuBuf.Length > 0 &&
+                        key.Key != ConsoleKey.Enter &&
+                        key.Key != ConsoleKey.Backspace &&
+                        key.Key != ConsoleKey.Escape)
+                    {
+                        menuBuf.Clear();
+                        Console.CursorVisible = false;
+                        ClearMessage();
+                        Render();
+                    }
+
                     var f = fields[cursor];
 
                     switch (key.Key)
@@ -482,7 +588,70 @@ namespace ibsCompiler
                             Render();
                             break;
 
+                        case ConsoleKey.Backspace:
+                            // Only meaningful while composing a menu choice.
+                            if (menuBuf.Length > 0)
+                            {
+                                menuBuf.Length--;
+                                if (menuBuf.Length == 0)
+                                {
+                                    Console.CursorVisible = false;
+                                    ClearMessage();
+                                    Render();
+                                }
+                                else
+                                {
+                                    ShowMenuBuffer(menuBuf.ToString());
+                                }
+                            }
+                            break;
+
                         case ConsoleKey.Enter:
+                            // Committing a menu choice takes precedence over field edit.
+                            if (menuBuf.Length > 0)
+                            {
+                                var choice = menuBuf.ToString();
+                                menuBuf.Clear();
+                                Console.CursorVisible = false;
+                                ClearMessage();
+
+                                var menu = BuildMenu();
+                                var hit = menu.FirstOrDefault(it => it.Num.ToString() == choice);
+                                if (hit.Action == null)
+                                {
+                                    Message($"No menu item {choice}.", ConsoleColor.Yellow);
+                                    Console.ReadKey(intercept: true);
+                                    ClearMessage();
+                                    Render();
+                                    break;
+                                }
+                                switch (hit.Action)
+                                {
+                                    case "save":
+                                        if (!ValidateAll()) break;
+                                        return ProfileEditorOutcome.Saved;
+                                    case "copy":
+                                        return ProfileEditorOutcome.Copy;
+                                    case "delete":
+                                        return ProfileEditorOutcome.Delete;
+                                    case "back":
+                                        if (ConfirmDiscardIfDirty()) return ProfileEditorOutcome.Cancelled;
+                                        break;
+                                    case "exit":
+                                        if (ConfirmDiscardIfDirty()) return ProfileEditorOutcome.Exit;
+                                        break;
+                                    default: // test:<what>
+                                        if (hit.Action.StartsWith("test:") && onTest != null)
+                                        {
+                                            if (!ValidateAll()) break;
+                                            RunTestSuspended(hit.Action.Substring("test:".Length));
+                                        }
+                                        break;
+                                }
+                                break;
+                            }
+
+                            // Empty buffer → edit the focused field.
                             ClearMessage();
                             if (!IsApplicable(cursor))
                             {
@@ -497,10 +666,10 @@ namespace ibsCompiler
                             }
                             else if (f.Kind == FieldKind.Enum)
                             {
-                                var menu = ibs_compiler_common.PlatformMenu;
+                                var pmenu = ibs_compiler_common.PlatformMenu;
                                 var cur = ibs_compiler_common.ParsePlatform(profile.Platform);
-                                int idx = Array.IndexOf(menu, cur);
-                                var next = menu[(idx + 1) % menu.Length];
+                                int idx = Array.IndexOf(pmenu, cur);
+                                var next = pmenu[(idx + 1) % pmenu.Length];
                                 profile.Platform = ibs_compiler_common.CanonicalName(next);
                                 Render();
                             }
@@ -549,73 +718,23 @@ namespace ibsCompiler
                             break;
 
                         case ConsoleKey.S:
+                            // Save accelerator (the menu item is the documented surface).
                             if (!ValidateAll()) break;
-                            return true;
-
-                        case ConsoleKey.T:
-                            if (onTest != null)
-                            {
-                                // Same full-validation gate as [S] — never open the test
-                                // chooser against an incomplete/invalid profile.
-                                if (!ValidateAll()) break;
-                                // Raw profiles skip SBN-specific preprocessing entirely —
-                                // same rule as the headless --test path — so only Connection
-                                // applies. Full profiles get the whole legacy test set plus
-                                // [7] All. Rendered as a numbered vertical list in the scroll
-                                // region (same pattern as RunTestSuspended's test output),
-                                // matching the numbered-menu / 98=Back convention used
-                                // elsewhere in set_profile.
-                                Console.CursorVisible = true;
-                                Console.SetCursorPosition(0, startRow + fields.Length + 2);
-                                Console.WriteLine();
-                                Console.WriteLine("  Test:");
-                                Console.WriteLine("    1. Connection");
-                                if (!profile.RawMode)
-                                {
-                                    Console.WriteLine("    2. SQL Source path");
-                                    Console.WriteLine("    3. Options");
-                                    Console.WriteLine("    4. Table Locations");
-                                    Console.WriteLine("    5. Changelog");
-                                    Console.WriteLine("    6. Symlinks");
-                                    Console.WriteLine("    7. All");
-                                }
-                                Console.WriteLine("   98. Back");
-                                Console.Write("  Choose: ");
-                                var choiceInput = ReadMenuChoice();
-                                Console.CursorVisible = false;
-                                string? kind = choiceInput switch
-                                {
-                                    "1" => "connection",
-                                    "2" => profile.RawMode ? null : "sql-source",
-                                    "3" => profile.RawMode ? null : "options",
-                                    "4" => profile.RawMode ? null : "table-locations",
-                                    "5" => profile.RawMode ? null : "changelog",
-                                    "6" => profile.RawMode ? null : "symlinks",
-                                    "7" => profile.RawMode ? null : "all",
-                                    _ => null,
-                                };
-                                if (kind == null) { Scaffold(); Render(); break; }
-                                RunTestSuspended(kind);
-                            }
-                            break;
+                            return ProfileEditorOutcome.Saved;
 
                         case ConsoleKey.Escape:
                         case ConsoleKey.Q:
-                        {
-                            bool dirty = fields.Any(FieldDirty);
-                            if (!dirty) return false;
-                            Message("Discard changes? (y/N) ", ConsoleColor.Yellow);
-                            Console.SetCursorPosition(
-                                Math.Min(2 + "Discard changes? (y/N) ".Length, Console.WindowWidth - 1),
-                                startRow + fields.Length + 2);
-                            Console.CursorVisible = true;
-                            var ans = Console.ReadKey(intercept: true);
-                            Console.CursorVisible = false;
-                            if (ans.Key == ConsoleKey.Y) return false;
-                            ClearMessage();
-                            Render();
+                            // Esc clears an in-progress choice; otherwise it is Back.
+                            if (menuBuf.Length > 0)
+                            {
+                                menuBuf.Clear();
+                                Console.CursorVisible = false;
+                                ClearMessage();
+                                Render();
+                                break;
+                            }
+                            if (ConfirmDiscardIfDirty()) return ProfileEditorOutcome.Cancelled;
                             break;
-                        }
                     }
                 }
             }
@@ -628,7 +747,7 @@ namespace ibsCompiler
                 // SetCursorPosition to a row that was never written.
                 try
                 {
-                    Console.SetCursorPosition(0, startRow + fields.Length + 2);
+                    Console.SetCursorPosition(0, messageRow);
                     Console.WriteLine();
                     Console.WriteLine();
                 }

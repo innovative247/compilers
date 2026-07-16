@@ -473,18 +473,20 @@ namespace ibsCompiler
             // Company mirrors the wizard default (raw side-effects zero it in the editor).
             var profile = new ProfileData { DefaultLanguage = "1", Company = "101" };
             var nameHolder = new ProfileEditor.NameHolder { Value = (prefilledName ?? "").ToUpperInvariant() };
-            var result = ProfileEditor.Edit(
+            var outcome = ProfileEditor.Edit(
                 nameHolder.Value, profile, isCreate: true,
                 (p, kind) => RunNamedTest(kind, string.IsNullOrEmpty(nameHolder.Value) ? "NEW" : nameHolder.Value, p),
                 ValidateAliasConflicts, nameHolder, ValidateNewProfileName);
-            if (result == null)
+            if (outcome == ProfileEditorOutcome.TooSmall)
             {
                 // Terminal too small → sequential fallback; prompt for a name if blank.
                 var seqName = string.IsNullOrEmpty(nameHolder.Value) ? PromptNewProfileName() : nameHolder.Value;
                 CreateProfileSequential(seqName, profile);
                 return;
             }
-            if (!result.Value)
+            if (outcome == ProfileEditorOutcome.Exit)
+                Environment.Exit(0);
+            if (outcome != ProfileEditorOutcome.Saved)
             {
                 PrintDim("  Create cancelled — no profile saved.");
                 return;
@@ -688,6 +690,61 @@ namespace ibsCompiler
                 return;
             }
 
+            // Redirected console (suite / piped stdin) keeps the legacy numbered submenu.
+            if (Console.IsInputRedirected || Console.IsOutputRedirected)
+            {
+                ExistingProfileMenuSequential(preselected);
+                return;
+            }
+
+            // Interactive TTY: selecting a profile drops STRAIGHT into the editor hub —
+            // no intermediate Open/Copy/Delete submenu. Copy/Delete/Back/Exit are menu
+            // actions inside the editor; the editor returns here and we re-list.
+            if (preselected != null)
+            {
+                var m = FindProfile(preselected);
+                if (m == null)
+                {
+                    PrintError($"Profile '{preselected}' not found.");
+                    return;
+                }
+                EditProfile(m.Value.Name, m.Value.Profile);
+                return;
+            }
+
+            while (true)
+            {
+                var names = ListProfiles();
+                if (names.Count == 0) return;
+
+                Console.Write($"Select [1-{names.Count}, name, or blank to cancel]: ");
+                var sel = Console.ReadLine()?.Trim();
+                if (string.IsNullOrEmpty(sel)) return;
+
+                (string Name, ProfileData Profile)? pick = null;
+                if (int.TryParse(sel, out var pidx) && pidx >= 1 && pidx <= names.Count)
+                    pick = FindProfile(names[pidx - 1]);
+                if (pick == null)
+                    pick = FindProfile(sel.ToUpperInvariant());
+                if (pick == null)
+                {
+                    PrintError($"Profile '{sel}' not found.");
+                    Console.WriteLine();
+                    continue;
+                }
+
+                // Editor is the hub; on return (Back/Save/Copy/Delete) re-list for another pick.
+                EditProfile(pick.Value.Name, pick.Value.Profile);
+            }
+        }
+
+        /// <summary>
+        /// Legacy numbered submenu (Open / Copy / Delete / Back / Exit) for the
+        /// redirected-console path, where the full-screen editor cannot run. The
+        /// interactive TTY path opens the editor hub directly instead.
+        /// </summary>
+        private static void ExistingProfileMenuSequential(string? preselected = null)
+        {
             string? input;
             (string Name, ProfileData Profile)? match;
 
@@ -781,25 +838,37 @@ namespace ibsCompiler
 
             // Work on a JSON clone so a cancel leaves the stored profile untouched.
             var working = JsonSerializer.Deserialize<ProfileData>(JsonSerializer.Serialize(profile))!;
-            var result = ProfileEditor.Edit(name, working, isCreate: false, (p, kind) => RunNamedTest(kind, name, p), ValidateAliasConflicts);
-            if (result == null)
+            var outcome = ProfileEditor.Edit(name, working, isCreate: false,
+                (p, kind) => RunNamedTest(kind, name, p), ValidateAliasConflicts,
+                allowCopyDelete: true);
+            switch (outcome)
             {
-                EditProfileSequential(name, profile);
-                return;
-            }
-            if (!result.Value)
-            {
-                PrintDim("  Edit cancelled — no changes saved.");
-                return;
-            }
-
-            CopyProfileInto(profile, working); // profile is the live store object; mutate it in place
-            if (SaveSettings())
-            {
-                PrintSuccess($"Profile '{name}' updated.");
-                DisplayProfile(name, profile);
-                if (!profile.RawMode)
-                    ibs_compiler_common.EnsureSymbolicLinks(profile.SqlSource ?? "");
+                case ProfileEditorOutcome.TooSmall:
+                    EditProfileSequential(name, profile);
+                    return;
+                case ProfileEditorOutcome.Cancelled:
+                    PrintDim("  Edit cancelled — no changes saved.");
+                    return;
+                case ProfileEditorOutcome.Copy:
+                    // Copy this profile via the same full editor (name+aliases blank).
+                    CopyProfileInteractive(name, profile);
+                    return;
+                case ProfileEditorOutcome.Delete:
+                    DeleteProfile(name); // legacy type-'delete' confirmation
+                    return;
+                case ProfileEditorOutcome.Exit:
+                    Environment.Exit(0);
+                    return;
+                case ProfileEditorOutcome.Saved:
+                    CopyProfileInto(profile, working); // profile is the live store object; mutate in place
+                    if (SaveSettings())
+                    {
+                        PrintSuccess($"Profile '{name}' updated.");
+                        DisplayProfile(name, profile);
+                        if (!profile.RawMode)
+                            ibs_compiler_common.EnsureSymbolicLinks(profile.SqlSource ?? "");
+                    }
+                    return;
             }
         }
 
@@ -921,18 +990,20 @@ namespace ibsCompiler
             var nameHolder = new ProfileEditor.NameHolder { Value = "" };
             // profileName = "" so alias-conflict validation excludes nothing and checks
             // the new aliases against ALL existing profiles (including the source).
-            var result = ProfileEditor.Edit(
+            var outcome = ProfileEditor.Edit(
                 "", working, isCreate: true,
                 (p, kind) => RunNamedTest(kind, sourceName, p),
                 ValidateAliasConflicts, nameHolder, ValidateNewProfileName,
                 titleOverride: $"Copy Profile (from {sourceName})");
-            if (result == null)
+            if (outcome == ProfileEditorOutcome.TooSmall)
             {
                 // Terminal too small → legacy prompt-based copy flow.
                 CopyProfile(sourceName, sourceProfile);
                 return;
             }
-            if (!result.Value)
+            if (outcome == ProfileEditorOutcome.Exit)
+                Environment.Exit(0);
+            if (outcome != ProfileEditorOutcome.Saved)
             {
                 PrintDim("  Copy cancelled — no profile saved.");
                 return;
