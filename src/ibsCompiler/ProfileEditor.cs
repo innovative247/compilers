@@ -380,6 +380,35 @@ namespace ibsCompiler
                 }
             }
 
+            // Reads a numbered-menu choice one keystroke at a time (digits + Backspace),
+            // echoing as typed, terminated by Enter. Esc backs out immediately (treated
+            // as 98/Back by the caller's switch, since no case matches "").
+            string ReadMenuChoice()
+            {
+                var sb = new System.Text.StringBuilder();
+                while (true)
+                {
+                    var k = Console.ReadKey(intercept: true);
+                    if (k.Key == ConsoleKey.Enter) break;
+                    if (k.Key == ConsoleKey.Escape) return "";
+                    if (k.Key == ConsoleKey.Backspace)
+                    {
+                        if (sb.Length > 0)
+                        {
+                            sb.Length--;
+                            Console.Write("\b \b");
+                        }
+                        continue;
+                    }
+                    if (char.IsDigit(k.KeyChar))
+                    {
+                        sb.Append(k.KeyChar);
+                        Console.Write(k.KeyChar);
+                    }
+                }
+                return sb.ToString();
+            }
+
             // Suspend the TUI, let scrolling test output print, wait for a key, then
             // re-scaffold and redraw the editor intact. Shared by the [T] chooser.
             void RunTestSuspended(string kind)
@@ -402,6 +431,32 @@ namespace ibsCompiler
                 Console.CursorVisible = false;
                 Scaffold();
                 Render();
+            }
+
+            // Full required-field validation, incl. unvisited rows: used by both
+            // [S]ave and [T]est so a test run can never be launched against an
+            // incomplete/invalid profile. On failure, jumps the cursor to the
+            // first offending row and shows the error on the message line.
+            bool ValidateAll()
+            {
+                string? firstError = null;
+                for (int idx = 0; idx < fields.Length; idx++)
+                {
+                    var vf = fields[idx];
+                    if (!IsApplicable(idx) || vf.Validate == null) continue;
+                    var err = vf.Validate(profile, vf.Raw(profile));
+                    if (err != null) { firstError = $"{vf.Label}: {err}"; cursor = idx; break; }
+                }
+                if (firstError != null)
+                {
+                    Render();
+                    Message(firstError + "  (press a key)", ConsoleColor.Red);
+                    Console.ReadKey(intercept: true);
+                    ClearMessage();
+                    Render();
+                    return false;
+                }
+                return true;
             }
 
             try
@@ -494,62 +549,49 @@ namespace ibsCompiler
                             break;
 
                         case ConsoleKey.S:
-                        {
-                            string? firstError = null;
-                            for (int idx = 0; idx < fields.Length; idx++)
-                            {
-                                var vf = fields[idx];
-                                if (!IsApplicable(idx) || vf.Validate == null) continue;
-                                var err = vf.Validate(profile, vf.Raw(profile));
-                                if (err != null) { firstError = $"{vf.Label}: {err}"; cursor = idx; break; }
-                            }
-                            if (firstError != null)
-                            {
-                                Render();
-                                Message(firstError + "  (press a key)", ConsoleColor.Red);
-                                Console.ReadKey(intercept: true);
-                                ClearMessage();
-                                Render();
-                                break;
-                            }
+                            if (!ValidateAll()) break;
                             return true;
-                        }
 
                         case ConsoleKey.T:
                             if (onTest != null)
                             {
+                                // Same full-validation gate as [S] — never open the test
+                                // chooser against an incomplete/invalid profile.
+                                if (!ValidateAll()) break;
                                 // Raw profiles skip SBN-specific preprocessing entirely —
                                 // same rule as the headless --test path — so only Connection
                                 // applies. Full profiles get the whole legacy test set plus
-                                // [A]ll. Rendered as a vertical list in the scroll region
-                                // (same pattern as RunTestSuspended's test output) since the
-                                // row list no longer fits a single message line.
+                                // [7] All. Rendered as a numbered vertical list in the scroll
+                                // region (same pattern as RunTestSuspended's test output),
+                                // matching the numbered-menu / 98=Back convention used
+                                // elsewhere in set_profile.
                                 Console.CursorVisible = true;
                                 Console.SetCursorPosition(0, startRow + fields.Length + 2);
                                 Console.WriteLine();
                                 Console.WriteLine("  Test:");
-                                Console.WriteLine("    [C] Connection");
+                                Console.WriteLine("    1. Connection");
                                 if (!profile.RawMode)
                                 {
-                                    Console.WriteLine("    [P] SQL Source path");
-                                    Console.WriteLine("    [O] Options");
-                                    Console.WriteLine("    [L] Table Locations");
-                                    Console.WriteLine("    [G] Changelog");
-                                    Console.WriteLine("    [S] Symlinks");
-                                    Console.WriteLine("    [A] All");
+                                    Console.WriteLine("    2. SQL Source path");
+                                    Console.WriteLine("    3. Options");
+                                    Console.WriteLine("    4. Table Locations");
+                                    Console.WriteLine("    5. Changelog");
+                                    Console.WriteLine("    6. Symlinks");
+                                    Console.WriteLine("    7. All");
                                 }
-                                Console.WriteLine("    [Esc] cancel");
-                                var choice = Console.ReadKey(intercept: true);
+                                Console.WriteLine("   98. Back");
+                                Console.Write("  Choose: ");
+                                var choiceInput = ReadMenuChoice();
                                 Console.CursorVisible = false;
-                                string? kind = char.ToUpperInvariant(choice.KeyChar) switch
+                                string? kind = choiceInput switch
                                 {
-                                    'C' => "connection",
-                                    'P' => profile.RawMode ? null : "sql-source",
-                                    'O' => profile.RawMode ? null : "options",
-                                    'L' => profile.RawMode ? null : "table-locations",
-                                    'G' => profile.RawMode ? null : "changelog",
-                                    'S' => profile.RawMode ? null : "symlinks",
-                                    'A' => profile.RawMode ? null : "all",
+                                    "1" => "connection",
+                                    "2" => profile.RawMode ? null : "sql-source",
+                                    "3" => profile.RawMode ? null : "options",
+                                    "4" => profile.RawMode ? null : "table-locations",
+                                    "5" => profile.RawMode ? null : "changelog",
+                                    "6" => profile.RawMode ? null : "symlinks",
+                                    "7" => profile.RawMode ? null : "all",
                                     _ => null,
                                 };
                                 if (kind == null) { Scaffold(); Render(); break; }

@@ -75,26 +75,33 @@ Confirm each:
       Platform is POSTGRES".
 - [ ] **Password** — `Enter` on Password prompts masked (`*`); empty keeps the existing
       value; a new value shows as `****`.
-- [ ] **Test chooser** — `T` shows a vertical chooser in the scroll region below the
-      footer (same area test output prints in):
+- [ ] **Test blocked until valid** — in ALL editor modes (New profile, Copy, and Edit an
+      existing profile), pressing `T` with any required field invalid/unvisited does NOT
+      open the test chooser: it runs the exact same full validate-all routine as `[S]`
+      (including rows you never visited), jumps the cursor to the first offending row, and
+      prints the specific error in red on the message line — identical to the `[S]`-blocked
+      behavior above. Fix all required fields and `T` then opens the chooser normally.
+- [ ] **Test chooser** — `T` (once validation passes) shows a NUMBERED chooser in the
+      scroll region below the footer (same area test output prints in), matching the
+      numbered-menu / `98. Back` convention used elsewhere in `set_profile`:
       ```
         Test:
-          [C] Connection
-          [P] SQL Source path
-          [O] Options
-          [L] Table Locations
-          [G] Changelog
-          [S] Symlinks
-          [A] All
-          [Esc] cancel
+          1. Connection
+          2. SQL Source path
+          3. Options
+          4. Table Locations
+          5. Changelog
+          6. Symlinks
+          7. All
+         98. Back
       ```
-      Raw profile shows only `[C] Connection` and `[Esc] cancel` — matches the legacy
+      Raw profile shows only `1. Connection` and `98. Back` — matches the legacy
       TestProfileMenu raw behavior: only Connection is available, everything else
-      (including SQL Source path) is hidden. The chosen test runs against the WORKING
-      COPY (unsaved edits included), output scrolls, waits for a key, then the editor
-      redraws intact. `[A]ll` (full profile only) runs the same sequence as
-      `--test --what all` for that profile. `Esc` (or any other key) at the chooser
-      cancels back to the editor.
+      (including SQL Source path) is hidden. Type the number and press `Enter`; `Esc`
+      also backs out. The chosen test runs against the WORKING COPY (unsaved edits
+      included), output scrolls, waits for a key, then the editor redraws intact.
+      `7. All` (full profile only) runs the same sequence as `--test --what all` for that
+      profile. `98. Back` (or `Esc`) at the chooser cancels back to the editor.
 - [ ] **Test unsaved-values note** — right before a `[T]` test's output scrolls, a dim
       (dark gray) line prints: `(testing current editor values — not yet saved)`. It
       appears once per test run, above the test output, and is not repeated on the
