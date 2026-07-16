@@ -376,8 +376,12 @@ namespace ibsCompiler
             if (!profile.RawMode)
                 PrintField(Icons.GEAR, "Company:", profile.Company ?? "unknown");
             PrintField(Icons.DATABASE, "Platform:", profile.Platform ?? "unknown", ConsoleColor.Cyan);
+            if (ibs_compiler_common.ParsePlatform(profile.Platform) == SQLServerTypes.POSTGRES)
+                PrintField(Icons.DATABASE, "Database:", string.IsNullOrEmpty(profile.Database) ? "(none)" : profile.Database, ConsoleColor.Cyan);
             PrintField(Icons.ARROW, "Server:", $"{profile.Host}:{profile.Port}", ConsoleColor.Green);
             PrintField(Icons.BULLET, "Username:", profile.Username ?? "unknown");
+            PrintField(Icons.GEAR, "Language:", string.IsNullOrEmpty(profile.DefaultLanguage) ? "1" : profile.DefaultLanguage);
+            PrintField(Icons.GEAR, "Charset:", string.IsNullOrEmpty(profile.DataCharset) ? "(server default)" : profile.DataCharset);
 
             if (!profile.RawMode)
             {
@@ -437,6 +441,50 @@ namespace ibsCompiler
                 }
             }
 
+            // Interactive TTY → whole-profile editor. Redirected console → sequential prompts.
+            if (!Console.IsInputRedirected && !Console.IsOutputRedirected)
+            {
+                CreateProfileInteractive(name, profile);
+                return;
+            }
+
+            CreateProfileSequential(name, profile);
+        }
+
+        private static void CreateProfileInteractive(string name, ProfileData profile)
+        {
+            profile.DefaultLanguage = "1";
+            var result = ProfileEditor.Edit(name, profile, isCreate: true, (p, kind) => RunNamedTest(kind, name, p), ValidateAliasConflicts);
+            if (result == null)
+            {
+                CreateProfileSequential(name, profile);
+                return;
+            }
+            if (!result.Value)
+            {
+                PrintDim("  Create cancelled — no profile saved.");
+                return;
+            }
+
+            _settings.Profiles[name] = profile;
+            if (SaveSettings())
+            {
+                Console.WriteLine();
+                PrintSuccess($"Profile '{name}' created!");
+                DisplayProfile(name, profile);
+
+                if (!profile.RawMode)
+                    ibs_compiler_common.EnsureSymbolicLinks(profile.SqlSource ?? "");
+
+                Console.Write("\nTest connection now? (Y/n): ");
+                var test = Console.ReadLine()?.Trim().ToUpper();
+                if (test != "N")
+                    TestConnection(profile);
+            }
+        }
+
+        private static void CreateProfileSequential(string name, ProfileData profile)
+        {
             // 2. Aliases
             Console.WriteLine();
             PrintStep(2, "Aliases (Optional)");
@@ -459,14 +507,14 @@ namespace ibsCompiler
             Console.WriteLine();
             var platformMenu = ibs_compiler_common.PlatformMenu;
             for (int mi = 0; mi < platformMenu.Length; mi++)
-                PrintMenu(mi + 1, platformMenu[mi].Display);
+                PrintMenu(mi + 1, ibs_compiler_common.CanonicalName(platformMenu[mi]));
             while (true)
             {
                 Console.Write($"\n  Choose [1-{platformMenu.Length}]: ");
                 var platform = Console.ReadLine()?.Trim();
                 if (int.TryParse(platform, out var psel) && psel >= 1 && psel <= platformMenu.Length)
                 {
-                    profile.Platform = ibs_compiler_common.CanonicalName(platformMenu[psel - 1].Type);
+                    profile.Platform = ibs_compiler_common.CanonicalName(platformMenu[psel - 1]);
                     break;
                 }
                 Console.WriteLine($"  Invalid choice. Please enter 1 through {platformMenu.Length}.");
@@ -663,32 +711,24 @@ namespace ibsCompiler
                 WriteBright($"Profile: {profileName}");
                 Console.WriteLine();
                 Console.WriteLine();
-                PrintMenu(1, "View");
-                PrintMenu(2, "Test");
-                PrintMenu(3, "Edit");
-                PrintMenu(4, "Copy");
-                PrintMenu(5, "Delete");
+                PrintMenu(1, "Open (view / edit / test)");
+                PrintMenu(2, "Copy");
+                PrintMenu(3, "Delete");
                 PrintMenu(98, "Back");
                 PrintMenu(99, "Exit");
 
-                Console.Write("\nChoose [1-5]: ");
+                Console.Write("\nChoose [1-3]: ");
                 var choice = Console.ReadLine()?.Trim();
 
                 switch (choice)
                 {
                     case "1":
-                        DisplayProfile(profileName, profile);
-                        break;
-                    case "2":
-                        TestProfileMenu(profileName, profile);
-                        break;
-                    case "3":
                         EditProfile(profileName, profile);
                         break;
-                    case "4":
+                    case "2":
                         CopyProfile(profileName, profile);
                         break;
-                    case "5":
+                    case "3":
                         if (DeleteProfile(profileName)) return;
                         break;
                     case "98": return;
@@ -701,6 +741,56 @@ namespace ibsCompiler
 
         #region Edit Profile
         private static void EditProfile(string name, ProfileData profile)
+        {
+            // Redirected console (suite / piped input) → sequential fallback; never a TUI.
+            if (Console.IsInputRedirected || Console.IsOutputRedirected)
+            {
+                EditProfileSequential(name, profile);
+                return;
+            }
+
+            // Work on a JSON clone so a cancel leaves the stored profile untouched.
+            var working = JsonSerializer.Deserialize<ProfileData>(JsonSerializer.Serialize(profile))!;
+            var result = ProfileEditor.Edit(name, working, isCreate: false, (p, kind) => RunNamedTest(kind, name, p), ValidateAliasConflicts);
+            if (result == null)
+            {
+                EditProfileSequential(name, profile);
+                return;
+            }
+            if (!result.Value)
+            {
+                PrintDim("  Edit cancelled — no changes saved.");
+                return;
+            }
+
+            CopyProfileInto(profile, working); // profile is the live store object; mutate it in place
+            if (SaveSettings())
+            {
+                PrintSuccess($"Profile '{name}' updated.");
+                DisplayProfile(name, profile);
+                if (!profile.RawMode)
+                    ibs_compiler_common.EnsureSymbolicLinks(profile.SqlSource ?? "");
+            }
+        }
+
+        /// <summary>Copies every editable field from src onto dst (dst is the stored reference).</summary>
+        private static void CopyProfileInto(ProfileData dst, ProfileData src)
+        {
+            dst.Company = src.Company;
+            dst.DefaultLanguage = src.DefaultLanguage;
+            dst.Platform = src.Platform;
+            dst.Host = src.Host;
+            dst.Port = src.Port;
+            dst.Username = src.Username;
+            dst.Password = src.Password;
+            dst.SqlSource = src.SqlSource;
+            dst.RawMode = src.RawMode;
+            dst.Database = src.Database;
+            dst.DataCharset = src.DataCharset;
+            dst.Aliases = src.Aliases;
+        }
+
+        private static void EditProfileSequential(string name, ProfileData profile)
         {
             Console.WriteLine();
             PrintSubheader($"Edit Profile: {name}");
@@ -724,11 +814,11 @@ namespace ibsCompiler
 
             var editPlatformMenu = ibs_compiler_common.PlatformMenu;
             var editPlatformHint = string.Join(", ",
-                editPlatformMenu.Select((e, idx) => $"{idx + 1}={e.Display}"));
+                editPlatformMenu.Select((t, idx) => $"{idx + 1}={ibs_compiler_common.CanonicalName(t)}"));
             Console.Write($"  Platform [{profile.Platform}] ({editPlatformHint}): ");
             val = Console.ReadLine()?.Trim();
             if (int.TryParse(val, out var esel) && esel >= 1 && esel <= editPlatformMenu.Length)
-                profile.Platform = ibs_compiler_common.CanonicalName(editPlatformMenu[esel - 1].Type);
+                profile.Platform = ibs_compiler_common.CanonicalName(editPlatformMenu[esel - 1]);
 
             Console.Write($"  Host [{profile.Host}] (do not include port): ");
             val = Console.ReadLine()?.Trim();
@@ -835,56 +925,49 @@ namespace ibsCompiler
         #endregion
 
         #region Test Profile
-        private static void TestProfileMenu(string name, ProfileData profile)
+        /// <summary>
+        /// Single dispatch point for every profile test, shared by the headless
+        /// <c>--test --what</c> path and the interactive editor's [T] chooser.
+        /// <paramref name="kind"/> matches the --what vocabulary; "all" runs the
+        /// full raw-aware sequence. Connection tests suppress the credential-retry
+        /// prompt so the editor never offers to save mid-edit. Runs against the
+        /// profile object it is handed — the editor passes its working copy so
+        /// unsaved edits are what get tested.
+        /// </summary>
+        private static void RunNamedTest(string kind, string name, ProfileData profile, string? resolve = null)
         {
-            while (true)
+            switch (kind)
             {
-                Console.WriteLine();
-                WriteBright($"Test: {name}");
-                Console.WriteLine();
-                if (profile.RawMode)
-                    PrintDim("  (RAW MODE - preprocessing tests not available)");
-                Console.WriteLine();
-                PrintMenu(1, "SQL Source path");
-                PrintMenu(2, "Connection");
-                if (!profile.RawMode)
-                {
-                    PrintMenu(3, "Options");
-                    PrintMenu(4, "Table locations");
-                    PrintMenu(5, "Changelog");
-                    PrintMenu(6, "Symbolic links");
-                }
-                PrintMenu(98, "Back");
-                PrintMenu(99, "Exit");
-
-                var maxChoice = profile.RawMode ? 2 : 6;
-                Console.Write($"\nChoose [1-{maxChoice}]: ");
-                var choice = Console.ReadLine()?.Trim();
-
-                switch (choice)
-                {
-                    case "1":
-                        TestSqlSource(profile);
-                        break;
-                    case "2":
-                        TestConnection(profile);
-                        break;
-                    case "3" when !profile.RawMode:
-                        TestOptions(name, profile);
-                        break;
-                    case "4" when !profile.RawMode:
-                        TestTableLocations(profile);
-                        break;
-                    case "5" when !profile.RawMode:
-                        TestChangelog(name, profile);
-                        break;
-                    case "6" when !profile.RawMode:
-                        TestSymbolicLinks(profile);
-                        break;
-                    case "98": return;
-                    case "99": Environment.Exit(0); break;
-                    default: Console.WriteLine("Invalid selection."); break;
-                }
+                case "sql-source":       TestSqlSource(profile); break;
+                case "connection":       TestConnection(profile, allowCredentialRetry: false); break;
+                case "options":
+                    if (profile.RawMode) PrintDim("  (skipped: profile is in raw mode)");
+                    else TestOptions(name, profile, presetPlaceholder: resolve ?? "&users&");
+                    break;
+                case "table-locations":
+                    if (profile.RawMode) PrintDim("  (skipped: profile is in raw mode)");
+                    else TestTableLocations(profile);
+                    break;
+                case "changelog":
+                    if (profile.RawMode) PrintDim("  (skipped: profile is in raw mode)");
+                    else TestChangelog(name, profile);
+                    break;
+                case "symlinks":
+                    if (profile.RawMode) PrintDim("  (skipped: profile is in raw mode)");
+                    else TestSymbolicLinks(profile);
+                    break;
+                case "all":
+                    foreach (var k in new[] { "sql-source", "connection", "options", "table-locations", "changelog", "symlinks" })
+                    {
+                        Console.WriteLine();
+                        WriteBright($"-- {k} --");
+                        RunNamedTest(k, name, profile, resolve);
+                    }
+                    break;
+                default:
+                    Console.Error.WriteLine($"ERROR: unknown --what value '{kind}'.");
+                    Environment.Exit(1);
+                    break;
             }
         }
 
@@ -1750,28 +1833,40 @@ namespace ibsCompiler
 
             var aliases = input.Split(',').Select(a => a.Trim().ToUpper()).Where(a => !string.IsNullOrEmpty(a)).ToList();
 
-            // Validate no conflicts
-            foreach (var alias in aliases)
+            var conflict = ValidateAliasConflicts(profileName, aliases);
+            if (conflict != null)
             {
-                foreach (var kvp in _settings.Profiles)
-                {
-                    if (kvp.Key == profileName) continue;
-                    if (kvp.Key.ToUpperInvariant() == alias)
-                    {
-                        PrintError($"Alias '{alias}' conflicts with profile name '{kvp.Key}'.");
-                        return current;
-                    }
-                    if (kvp.Value.Aliases?.Any(a => a.ToUpperInvariant() == alias) == true)
-                    {
-                        PrintError($"Alias '{alias}' is already used by profile '{kvp.Key}'.");
-                        return current;
-                    }
-                }
+                PrintError(conflict);
+                return current;
             }
             return aliases;
         }
 
-        private static string ReadPassword()
+        /// <summary>
+        /// Returns the first routing-safety conflict when any of <paramref name="aliases"/>
+        /// collides with another profile's name or an alias owned by another profile —
+        /// the profile named <paramref name="profileName"/> is excluded — else null.
+        /// Shared by the interactive prompt, the headless --alias path, and the TUI
+        /// editor so all three enforce identical rules.
+        /// </summary>
+        internal static string? ValidateAliasConflicts(string profileName, IEnumerable<string> aliases)
+        {
+            foreach (var alias in aliases)
+            {
+                var upper = alias.ToUpperInvariant();
+                foreach (var kvp in _settings.Profiles)
+                {
+                    if (string.Equals(kvp.Key, profileName, StringComparison.OrdinalIgnoreCase)) continue;
+                    if (kvp.Key.ToUpperInvariant() == upper)
+                        return $"Alias '{upper}' conflicts with profile name '{kvp.Key}'.";
+                    if (kvp.Value.Aliases?.Any(a => a.ToUpperInvariant() == upper) == true)
+                        return $"Alias '{upper}' is already used by profile '{kvp.Key}'.";
+                }
+            }
+            return null;
+        }
+
+        internal static string ReadPassword()
         {
             var password = new System.Text.StringBuilder();
             while (true)
@@ -1865,48 +1960,7 @@ namespace ibsCompiler
 
             var resolve = CliArgs.GetOption(args, "--resolve");
 
-            void Run(string kind)
-            {
-                switch (kind)
-                {
-                    case "sql-source":       TestSqlSource(profile); break;
-                    case "connection":       TestConnection(profile, allowCredentialRetry: false); break;
-                    case "options":
-                        if (profile.RawMode) PrintDim("  (skipped: profile is in raw mode)");
-                        else TestOptions(name, profile, presetPlaceholder: resolve ?? "&users&");
-                        break;
-                    case "table-locations":
-                        if (profile.RawMode) PrintDim("  (skipped: profile is in raw mode)");
-                        else TestTableLocations(profile);
-                        break;
-                    case "changelog":
-                        if (profile.RawMode) PrintDim("  (skipped: profile is in raw mode)");
-                        else TestChangelog(name, profile);
-                        break;
-                    case "symlinks":
-                        if (profile.RawMode) PrintDim("  (skipped: profile is in raw mode)");
-                        else TestSymbolicLinks(profile);
-                        break;
-                    default:
-                        Console.Error.WriteLine($"ERROR: unknown --what value '{kind}'.");
-                        Environment.Exit(1);
-                        break;
-                }
-            }
-
-            if (what == "all")
-            {
-                foreach (var k in new[] { "sql-source", "connection", "options", "table-locations", "changelog", "symlinks" })
-                {
-                    Console.WriteLine();
-                    WriteBright($"-- {k} --");
-                    Run(k);
-                }
-            }
-            else
-            {
-                Run(what);
-            }
+            RunNamedTest(what, name, profile, resolve);
             return 0;
         }
 
@@ -1942,22 +1996,11 @@ namespace ibsCompiler
                     foreach (var part in a.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
                         aliases.Add(part.ToUpperInvariant());
                 }
-                foreach (var alias in aliases)
+                var conflict = ValidateAliasConflicts(name, aliases);
+                if (conflict != null)
                 {
-                    foreach (var kvp in _settings.Profiles)
-                    {
-                        if (string.Equals(kvp.Key, name, StringComparison.OrdinalIgnoreCase)) continue;
-                        if (kvp.Key.ToUpperInvariant() == alias)
-                        {
-                            Console.Error.WriteLine($"ERROR: alias '{alias}' conflicts with profile name '{kvp.Key}'.");
-                            return 1;
-                        }
-                        if (kvp.Value.Aliases?.Any(x => x.ToUpperInvariant() == alias) == true)
-                        {
-                            Console.Error.WriteLine($"ERROR: alias '{alias}' already used by profile '{kvp.Key}'.");
-                            return 1;
-                        }
-                    }
+                    Console.Error.WriteLine($"ERROR: {conflict}");
+                    return 1;
                 }
                 profile.Aliases = aliases;
             }
@@ -2124,11 +2167,11 @@ namespace ibsCompiler
             if (platform != null)
             {
                 var p = platform.Trim().ToUpperInvariant();
-                if (p is "MSSQL" or "SYBASE" or "POSTGRES" or "PG")
+                if (p is "MSSQL" or "SYBASE" or "POSTGRES")
                     profile.Platform = ibs_compiler_common.CanonicalName(ibs_compiler_common.ParsePlatform(p));
                 else
                 {
-                    Console.Error.WriteLine("ERROR: --platform must be one of mssql|sybase|postgres (pg accepted as alias).");
+                    Console.Error.WriteLine("ERROR: --platform must be one of mssql|sybase|postgres.");
                     return false;
                 }
             }
@@ -2199,6 +2242,11 @@ namespace ibsCompiler
             var lang = CliArgs.GetOption(args, "--language");
             if (lang != null) profile.DefaultLanguage = lang.Trim();
             else if (isCreate && string.IsNullOrEmpty(profile.DefaultLanguage)) profile.DefaultLanguage = "1";
+
+            // --data-charset: actual code page of char/varchar data (value flag, not boolean).
+            // The only editor field without a dedicated flag before this addition.
+            var charset = CliArgs.GetOption(args, "--data-charset");
+            if (charset != null) profile.DataCharset = charset.Trim();
 
             if (profile.RawMode)
             {

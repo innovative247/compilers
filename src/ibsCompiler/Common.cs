@@ -17,7 +17,7 @@ namespace ibsCompiler
         #region Platform parsing
         /// <summary>
         /// Canonicalizes a platform string to a SQLServerTypes value.
-        /// "MSSQL" -> MSSQL, "POSTGRES"/"PG" -> POSTGRES, anything else
+        /// "MSSQL" -> MSSQL, "POSTGRES" -> POSTGRES, anything else
         /// (including null) -> SYBASE (preserves the legacy unknown->SYBASE default).
         /// </summary>
         public static SQLServerTypes ParsePlatform(string? platform)
@@ -25,8 +25,7 @@ namespace ibsCompiler
             switch (platform?.Trim().ToUpperInvariant())
             {
                 case "MSSQL": return SQLServerTypes.MSSQL;
-                case "POSTGRES":
-                case "PG": return SQLServerTypes.POSTGRES;
+                case "POSTGRES": return SQLServerTypes.POSTGRES;
                 default: return SQLServerTypes.SYBASE;
             }
         }
@@ -54,29 +53,16 @@ namespace ibsCompiler
         public static string CanonicalName(SQLServerTypes t) => t.ToString();
 
         /// <summary>
-        /// The ONLY place a human-readable platform label may be produced.
-        /// SYBASE -> "Sybase ASE", MSSQL -> "Microsoft SQL Server",
-        /// POSTGRES -> "PostgreSQL".
+        /// The ONLY ordered source of platform values. Numeric wizard menus, the
+        /// editor platform cycle, and CLI flag-name lists must be built from this.
+        /// There is no separate "display label" — every menu/label/value shows the
+        /// canonical token (SYBASE / MSSQL / POSTGRES) via <see cref="CanonicalName"/>.
         /// </summary>
-        public static string DisplayName(SQLServerTypes t)
+        public static readonly SQLServerTypes[] PlatformMenu =
         {
-            switch (t)
-            {
-                case SQLServerTypes.MSSQL: return "Microsoft SQL Server";
-                case SQLServerTypes.POSTGRES: return "PostgreSQL";
-                default: return "Sybase ASE";
-            }
-        }
-
-        /// <summary>
-        /// The ONLY ordered source of platform (numeric-value, display-label) pairs.
-        /// Numeric wizard menus and CLI flag-name lists must be built from this.
-        /// </summary>
-        public static readonly (SQLServerTypes Type, string Display)[] PlatformMenu =
-        {
-            (SQLServerTypes.SYBASE, "Sybase ASE"),
-            (SQLServerTypes.MSSQL, "Microsoft SQL Server"),
-            (SQLServerTypes.POSTGRES, "PostgreSQL")
+            SQLServerTypes.SYBASE,
+            SQLServerTypes.MSSQL,
+            SQLServerTypes.POSTGRES
         };
 
         /// <summary>
@@ -84,7 +70,7 @@ namespace ibsCompiler
         /// The ONLY place a joined list of platform tokens may be produced.
         /// </summary>
         public static string CanonicalNamesJoined(string sep = "|")
-            => string.Join(sep, PlatformMenu.Select(e => CanonicalName(e.Type)));
+            => string.Join(sep, PlatformMenu.Select(t => CanonicalName(t)));
         #endregion
 
         #region Console output
@@ -115,6 +101,13 @@ namespace ibsCompiler
         /// </summary>
         public static StreamWriter OpenSourceWriter(string path, bool append = false)
             => new StreamWriter(path, append) { NewLine = "\n" };
+
+        /// <summary>
+        /// Seconds since the SBN epoch (1980-01-01), the int form used by
+        /// chg_tm on message rows and end_tm on upgrades (see IRunUpgrade.cs).
+        /// </summary>
+        public static int SecondsSince1980()
+            => (int)(DateTime.Now - new DateTime(1980, 1, 1)).TotalSeconds;
 
         public static bool ConsoleYesNo(string question)
         {
@@ -846,7 +839,7 @@ namespace ibsCompiler
                 if (!arguments[i].StartsWith("-"))
                     continue;
                 var tok = arguments[i].TrimStart('-').ToUpperInvariant();
-                if (tok is "MSSQL" or "SYBASE" or "POSTGRES" or "PG")
+                if (tok is "MSSQL" or "SYBASE" or "POSTGRES")
                 {
                     arguments.RemoveAt(i);
                     return ParsePlatform(tok);

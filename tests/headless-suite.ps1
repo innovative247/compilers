@@ -296,22 +296,32 @@ function Test-AdHocQueries {
         Assert-ExitCode $r
         if ($r.StdOut -notmatch '\b2\b') { throw "expected '2' in output" }
     }
-    Test-Case 'isqlline.platform_pg' {
-        # -PG is parsed identically to -MSSQL/-SYBASE (Common.cs FindAndRemove_SQLServerType),
+    Test-Case 'isqlline.platform_postgres' {
+        # -POSTGRES is parsed identically to -MSSQL/-SYBASE (Common.cs FindAndRemove_SQLServerType),
         # but unlike -MSSQL against SRM_LOCAL (already MSSQL, so the override is a no-op),
         # ProfileManager.Resolve honors a non-default cmdvars.ServerType unconditionally
-        # (ProfileManager.cs:148) — so -PG genuinely forces a PostgresExecutor against
-        # SRM_LOCAL's real MSSQL server. There's no live PG target in this suite, so the
+        # (ProfileManager.cs:148) — so -POSTGRES genuinely forces a PostgresExecutor against
+        # SRM_LOCAL's real MSSQL server. There's no live Postgres target in this suite, so the
         # only thing provable offline is that the flag is parsed/dispatched (a real connection
         # attempt that fails on protocol mismatch), not rejected as a usage/parse error.
-        $r = Invoke-Cli isqlline 'SELECT(1+1)' 'master' $script:SourceProfile '-PG'
-        if ($r.ExitCode -eq 0) { throw '-PG against a non-PG server should not succeed' }
-        if ($r.StdOut -match 'Usage:') { throw "-PG should be consumed as a valid flag, not rejected as bad usage. stdout: $($r.StdOut)" }
+        $r = Invoke-Cli isqlline 'SELECT(1+1)' 'master' $script:SourceProfile '-POSTGRES'
+        if ($r.ExitCode -eq 0) { throw '-POSTGRES against a non-Postgres server should not succeed' }
+        if ($r.StdOut -match 'Usage:') { throw "-POSTGRES should be consumed as a valid flag, not rejected as bad usage. stdout: $($r.StdOut)" }
         if ($r.StdOut -notmatch 'ERROR! Failed to Run\.') { throw "expected a dispatched-but-failed connection attempt, not a parse error. stdout: $($r.StdOut)" }
     }
     Test-Case 'isqlline.error_bad_profile' {
         $r = Invoke-Cli isqlline 'SELECT(1+1)' 'master' 'NO_SUCH_PROFILE_XYZ'
         if ($r.ExitCode -eq 0) { throw 'unknown profile should exit non-zero' }
+    }
+    Test-Case 'isqlline.error_reports_location' {
+        # A failing statement against real GONZO (Sybase) must report WHERE it failed
+        # (Server/Procedure/Line context), matching legacy isql, not just the message text.
+        # SQL must be space-free (see isqlline.basic note above).
+        $r = Invoke-Cli isqlline 'select*from[no_such_table]' 'master' 'GONZO'
+        if ($r.ExitCode -eq 0) { throw 'query against a nonexistent table should exit non-zero' }
+        $combined = "$($r.StdOut)`n$($r.StdErr)"
+        if ($combined -notmatch "Server '") { throw "expected a Server '...' context line. output: $combined" }
+        if ($combined -notmatch ', Line ') { throw "expected a ', Line N' context. output: $combined" }
     }
 
     # ===== iwho =====
@@ -479,7 +489,7 @@ function Test-ScriptExecution {
         if ($runs -ne 1) { throw "expected exactly 1 #NT dispatch (got $runs). stdout: $($r.StdOut)" }
         if ($r.StdOut -notmatch 'return status = 0') { throw "the #NT dispatch should produce a successful run" }
     }
-    Skip-Case 'runcreate.platform_lines_pg' 'the #NT/#UNIX prefixes here are OS dispatch lines, not DB platform (-MSSQL/-PG); no PG-specific create-file directive exists to mirror'
+    Skip-Case 'runcreate.platform_lines_postgres' 'the #NT/#UNIX prefixes here are OS dispatch lines, not DB platform (-MSSQL/-POSTGRES); no Postgres-specific create-file directive exists to mirror'
     Test-Case 'runcreate.dispatch_unknown_verb' {
         $unkCreate = Join-Path $script:Scratch 'unknown.create'
         @(
@@ -1120,6 +1130,172 @@ function Test-Messages {
         $r = Invoke-Cli compile_msg '--import' 'GONZO'
         if ($r.ExitCode -eq 0) { throw 'compile_msg --import GONZO must be rejected' }
     }
+
+    # ===== set_messages --add (write a row straight into css.<type>_msg) =====
+    # Hermetic per-test fixtures written LF-only, UTF-8 no BOM, trailing newline
+    # into TEST_LOCAL's scratch CSS\Setup. Each add test rewrites the fixture so
+    # ordering never matters. Values passed on the CLI must be space-free (PS5
+    # Start-Process -ArgumentList splits on spaces).
+    $setup    = Join-Path $script:Scratch 'CSS\Setup'
+    $guiMsg   = Join-Path $setup 'css.gui_msg'
+    $guiMsgrp = Join-Path $setup 'css.gui_msgrp'
+    $ibsMsg   = Join-Path $setup 'css.ibs_msg'
+    $ibsMsgrp = Join-Path $setup 'css.ibs_msgrp'
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+
+    function Write-LfFile {
+        param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string[]]$Rows)
+        $content = ($Rows -join "`n") + "`n"
+        [System.IO.File]::WriteAllText($Path, $content, $utf8NoBom)
+    }
+    function Reset-MsgFixture {
+        Write-LfFile $guiMsg @(
+            "100`t1`t0`tMENU  `tX`t100000`tFirst menu message"
+            "101`t1`t0`tMENU  `tX`t100001`tSecond menu message"
+            "101`t2`t0`tMENU  `tX`t100002`tSecond menu message fr"
+            "700`t1`t0`tSPAN  `tX`t100003`tSpan low"
+            "750`t1`t0`tSPAN  `tX`t100004`tSpan high"
+        )
+        Write-LfFile $guiMsgrp @(
+            "MENU  `t100`tMenu messages"
+            "BLANK `t500`tEmpty block seeded at 500"
+            "ZEROG `t0`tZero-minmsg group"
+            "COLL  `t100`tCollides with MENU block"
+            "SPAN  `t700`tSpan group (live rows 700..750)"
+            "LOWSED`t720`tSparse seed sitting inside SPAN's live range"
+        )
+        Write-LfFile $ibsMsg   @("200`t1`t0`tCORE  `t `t100010`tCore ibs message")
+        Write-LfFile $ibsMsgrp @("CORE  `t200`tCore ibs messages")
+    }
+
+    Test-Case 'set_messages.add_normal' {
+        Reset-MsgFixture
+        $before = [System.IO.File]::ReadAllLines($guiMsg).Count
+        $r = Invoke-Cli set_messages '--add' '--type' 'gui' '--group' 'MENU' '--text' 'AddedMenuMsg' $script:TestProfile
+        Assert-ExitCode $r
+        if ($r.StdOut.Trim() -ne 'MSGNO 102') { throw "expected single line 'MSGNO 102', got: '$($r.StdOut)'" }
+        $after = [System.IO.File]::ReadAllLines($guiMsg)
+        if ($after.Count -ne $before + 1) { throw "expected exactly one new line (was $before, now $($after.Count))" }
+        $raw = [System.IO.File]::ReadAllText($guiMsg)
+        if ($raw -match "`r") { throw 'file must not contain CR (LF-only)' }
+        if (-not $raw.EndsWith("`n")) { throw 'file must end with trailing newline' }
+    }
+    Test-Case 'set_messages.add_multilang_maxplus1' {
+        # MENU has msgno 101 on two languages; next must be max+1 (102), not max.
+        Reset-MsgFixture
+        $r = Invoke-Cli set_messages '--add' '--type' 'gui' '--group' 'MENU' '--text' 'MultiLangMsg' $script:TestProfile
+        Assert-ExitCode $r
+        if ($r.StdOut.Trim() -ne 'MSGNO 102') { throw "expected 'MSGNO 102', got: '$($r.StdOut)'" }
+    }
+    Test-Case 'set_messages.add_empty_group_uses_minmsg' {
+        # BLANK has no rows in _msg but s#minmsg=500 -> next is 500.
+        Reset-MsgFixture
+        $r = Invoke-Cli set_messages '--add' '--type' 'gui' '--group' 'BLANK' '--text' 'FirstBlankMsg' $script:TestProfile
+        Assert-ExitCode $r
+        if ($r.StdOut.Trim() -ne 'MSGNO 500') { throw "expected 'MSGNO 500', got: '$($r.StdOut)'" }
+    }
+    Test-Case 'set_messages.add_zero_minmsg_errors' {
+        # ZEROG: empty in _msg and s#minmsg=0 -> cannot seed a block.
+        Reset-MsgFixture
+        $r = Invoke-Cli set_messages '--add' '--type' 'gui' '--group' 'ZEROG' '--text' 'X' $script:TestProfile
+        if ($r.ExitCode -eq 0) { throw 's#minmsg=0 with empty group must fail' }
+        if ($r.StdErr -notmatch 'ERROR:') { throw "stderr should carry ERROR: prefix: $($r.StdErr)" }
+    }
+    Test-Case 'set_messages.add_crosses_seed_now_succeeds' {
+        # SPAN's max+1 (751) sits above LOWSED's sparse seed (720). s#minmsg is a
+        # floor/seed list, not a partition map, so the old block-ceiling guard
+        # falsely rejected this. 751 is free everywhere -> the add must now SUCCEED.
+        Reset-MsgFixture
+        $r = Invoke-Cli set_messages '--add' '--type' 'gui' '--group' 'SPAN' '--text' 'CrossSeed' $script:TestProfile
+        Assert-ExitCode $r
+        if ($r.StdOut.Trim() -ne 'MSGNO 751') { throw "expected 'MSGNO 751', got: '$($r.StdOut)'" }
+    }
+    Test-Case 'set_messages.add_collision_errors' {
+        # COLL seeds at 100 which MENU already owns -> hard collision guard fires.
+        Reset-MsgFixture
+        $r = Invoke-Cli set_messages '--add' '--type' 'gui' '--group' 'COLL' '--text' 'X' $script:TestProfile
+        if ($r.ExitCode -eq 0) { throw 'collision with existing number must fail' }
+        if ($r.StdErr -notmatch 'already in use|block exhausted|overlaps') {
+            throw "stderr should explain the collision: $($r.StdErr)"
+        }
+    }
+    Test-Case 'set_messages.add_unknown_group_errors' {
+        Reset-MsgFixture
+        $r = Invoke-Cli set_messages '--add' '--type' 'gui' '--group' 'NOSUCH' '--text' 'X' $script:TestProfile
+        if ($r.ExitCode -eq 0) { throw 'unknown group must fail' }
+        if ($r.StdErr -notmatch 'unknown group') { throw "stderr should say 'unknown group': $($r.StdErr)" }
+    }
+    Test-Case 'set_messages.add_rpt_type_errors' {
+        Reset-MsgFixture
+        $r = Invoke-Cli set_messages '--add' '--type' 'rpt' '--group' 'MENU' '--text' 'X' $script:TestProfile
+        if ($r.ExitCode -eq 0) { throw '--type rpt must be rejected' }
+        if ($r.StdErr -notmatch 'rpt messages are not part of the live pipeline') {
+            throw "stderr should reject rpt explicitly: $($r.StdErr)"
+        }
+    }
+    Test-Case 'set_messages.add_text_too_long_errors' {
+        Reset-MsgFixture
+        $long = ('a' * 300)
+        $r = Invoke-Cli set_messages '--add' '--type' 'gui' '--group' 'MENU' '--text' $long $script:TestProfile
+        if ($r.ExitCode -eq 0) { throw '300-char text must be rejected (>255)' }
+        if ($r.StdErr -notmatch '255') { throw "stderr should mention the 255 limit: $($r.StdErr)" }
+    }
+    Test-Case 'set_messages.add_text_bytes_over_255_errors' {
+        # 130 ASCII + 65 'e-acute' = 195 chars but 130 + 65*2 = 260 UTF-8 bytes.
+        # <= 255 chars yet > 255 bytes -> must be rejected on the BYTE limit.
+        Reset-MsgFixture
+        $txt = ('a' * 130) + ([string][char]0xE9 * 65)
+        $r = Invoke-Cli set_messages '--add' '--type' 'gui' '--group' 'MENU' '--text' $txt $script:TestProfile
+        if ($r.ExitCode -eq 0) { throw 'text >255 bytes (<=255 chars) must be rejected' }
+        if ($r.StdErr -notmatch '255') { throw "stderr should mention the 255 byte limit: $($r.StdErr)" }
+    }
+    Test-Case 'set_messages.add_empty_text_errors' {
+        # A trailing valueless --text -> CliArgs.GetOption returns "" -> IsNullOrEmpty
+        # guard must reject it with a non-empty-value error, exit 1.
+        Reset-MsgFixture
+        $r = Invoke-Cli set_messages '--add' '--type' 'gui' '--group' 'MENU' $script:TestProfile '--text'
+        if ($r.ExitCode -eq 0) { throw 'valueless --text must be rejected' }
+        if ($r.StdErr -notmatch 'non-empty value') { throw "stderr should say --text requires a non-empty value: $($r.StdErr)" }
+    }
+    Test-Case 'set_messages.add_newline_text_errors' {
+        Reset-MsgFixture
+        $nl = "line1`nline2"
+        $r = Invoke-Cli set_messages '--add' '--type' 'gui' '--group' 'MENU' '--text' $nl $script:TestProfile
+        if ($r.ExitCode -eq 0) { throw 'text with an embedded newline must be rejected' }
+    }
+    Test-Case 'set_messages.add_dryrun_no_write' {
+        Reset-MsgFixture
+        $hashBefore = (Get-FileHash $guiMsg -Algorithm SHA256).Hash
+        $r = Invoke-Cli set_messages '--add' '--dry-run' '--type' 'gui' '--group' 'MENU' '--text' 'DryRunMsg' $script:TestProfile
+        Assert-ExitCode $r
+        if ($r.StdOut -notmatch 'DRYRUN MSGNO 102') { throw "expected 'DRYRUN MSGNO 102' in output: $($r.StdOut)" }
+        $hashAfter = (Get-FileHash $guiMsg -Algorithm SHA256).Hash
+        if ($hashBefore -ne $hashAfter) { throw '--dry-run must not modify the file' }
+    }
+    Test-Case 'set_messages.add_grp_padded_to_6' {
+        Reset-MsgFixture
+        $r = Invoke-Cli set_messages '--add' '--type' 'gui' '--group' 'MENU' '--text' 'PadCheck' $script:TestProfile
+        Assert-ExitCode $r
+        $last = ([System.IO.File]::ReadAllLines($guiMsg))[-1]
+        $cols = $last -split "`t"
+        if ($cols[3].Length -ne 6) { throw "grp column must be padded to 6 chars, got '$($cols[3])' (len $($cols[3].Length))" }
+        if ($cols[3] -ne 'MENU  ') { throw "grp column should be 'MENU  ', got '$($cols[3])'" }
+    }
+    Test-Case 'set_messages.add_updflg_default_gui_X' {
+        Reset-MsgFixture
+        $r = Invoke-Cli set_messages '--add' '--type' 'gui' '--group' 'MENU' '--text' 'GuiFlag' $script:TestProfile
+        Assert-ExitCode $r
+        $cols = (([System.IO.File]::ReadAllLines($guiMsg))[-1]) -split "`t"
+        if ($cols[4] -ne 'X') { throw "gui upd_flg should default to 'X', got '$($cols[4])'" }
+    }
+    Test-Case 'set_messages.add_updflg_default_ibs_space' {
+        Reset-MsgFixture
+        $r = Invoke-Cli set_messages '--add' '--type' 'ibs' '--group' 'CORE' '--text' 'IbsFlag' $script:TestProfile
+        Assert-ExitCode $r
+        if ($r.StdOut.Trim() -ne 'MSGNO 201') { throw "expected 'MSGNO 201', got: '$($r.StdOut)'" }
+        $cols = (([System.IO.File]::ReadAllLines($ibsMsg))[-1]) -split "`t"
+        if ($cols[4] -ne ' ') { throw "ibs upd_flg should default to a single space, got '$($cols[4])'" }
+    }
 }
 
 function Test-ProfileManagement {
@@ -1127,7 +1303,7 @@ function Test-ProfileManagement {
 
     $scratchProfile = 'TEST_PROFILE_SUITE'
     # Defensive: in case a prior run left these behind
-    foreach ($n in @($scratchProfile, "${scratchProfile}_2", "${scratchProfile}_RAW", "${scratchProfile}_PG", "${scratchProfile}_PG2")) {
+    foreach ($n in @($scratchProfile, "${scratchProfile}_2", "${scratchProfile}_RAW", "${scratchProfile}_PG", "${scratchProfile}_PG2", "${scratchProfile}_CS", "${scratchProfile}_MIX", "${scratchProfile}_MIX2")) {
         Invoke-Cli set_profile '--delete' $n '--yes' | Out-Null
     }
 
@@ -1152,55 +1328,85 @@ function Test-ProfileManagement {
         }
     }
 
-    Test-Case 'set_profile.create_pg' {
+    Test-Case 'set_profile.create_postgres' {
         $r = Invoke-Cli set_profile '--create' "${scratchProfile}_PG" `
-            '--platform' 'pg' '--host' '127.0.0.1' `
+            '--platform' 'postgres' '--host' '127.0.0.1' `
             '--user' 'postgres' '--password' 'placeholder' `
             '--company' '101' '--sql-source' $script:Scratch
         Assert-ExitCode $r
         Assert-ProfileExists "${scratchProfile}_PG"
         $p = Get-Profile "${scratchProfile}_PG"
-        # '--platform pg' must canonicalize to PLATFORM=POSTGRES and default PORT=5432
+        # '--platform postgres' must canonicalize to PLATFORM=POSTGRES and default PORT=5432
         Assert-Field $p 'PLATFORM' 'POSTGRES'
         Assert-Field $p 'PORT'     5432
         $viewOut = Invoke-Cli set_profile '--view' "${scratchProfile}_PG"
         Assert-ExitCode $viewOut
-        if ($viewOut.StdOut -notmatch '5432') { throw "view output missing default PG port. stdout: $($viewOut.StdOut)" }
+        if ($viewOut.StdOut -notmatch '5432') { throw "view output missing default Postgres port. stdout: $($viewOut.StdOut)" }
         Invoke-Cli set_profile '--delete' "${scratchProfile}_PG" '--yes' | Out-Null
     }
-    Test-Case 'set_profile.create_pg_platform_alias' {
-        # '--platform postgres' (the long form) must also be accepted
+    Test-Case 'set_profile.create_platform_pg_rejected' {
+        # PG was retired as a --platform value; only mssql|sybase|postgres are accepted.
         $r = Invoke-Cli set_profile '--create' "${scratchProfile}_PG2" `
+            '--platform' 'pg' '--host' '127.0.0.1' `
+            '--user' 'postgres' '--password' 'placeholder' `
+            '--company' '101' '--sql-source' $script:Scratch
+        if ($r.ExitCode -eq 0) { throw "--platform pg should be rejected now that PG is retired" }
+        if ($r.StdErr -notmatch 'mssql\|sybase\|postgres') { throw "expected the mssql|sybase|postgres usage error. stderr: $($r.StdErr)" }
+        Assert-ProfileAbsent "${scratchProfile}_PG2"
+    }
+
+    Test-Case 'set_profile.create_platform_mixed_case' {
+        # Mixed-case --platform input must land stored as the uppercase canonical
+        # token (ParsePlatform + CanonicalName). "PoStGrEs" -> PLATFORM=POSTGRES.
+        $mix = "${scratchProfile}_MIX"
+        $r = Invoke-Cli set_profile '--create' $mix `
+            '--platform' 'PoStGrEs' '--host' '127.0.0.1' `
+            '--user' 'postgres' '--password' 'placeholder' `
+            '--company' '101' '--sql-source' $script:Scratch
+        Assert-ExitCode $r
+        Assert-Field (Get-Profile $mix) 'PLATFORM' 'POSTGRES'
+
+        # A second mixed-case spelling of a different platform, for good measure.
+        $mix2 = "${scratchProfile}_MIX2"
+        $r2 = Invoke-Cli set_profile '--create' $mix2 `
+            '--platform' 'sYbAsE' '--host' '127.0.0.1' `
+            '--user' 'sa' '--password' 'placeholder' `
+            '--company' '101' '--sql-source' $script:Scratch
+        Assert-ExitCode $r2
+        Assert-Field (Get-Profile $mix2) 'PLATFORM' 'SYBASE'
+
+        Invoke-Cli set_profile '--delete' $mix '--yes' | Out-Null
+        Invoke-Cli set_profile '--delete' $mix2 '--yes' | Out-Null
+    }
+
+    Test-Case 'set_profile.cleanup_canonicalizes_postgres_case' {
+        # Simulate a settings.json where PLATFORM was persisted lowercase/mixed-case.
+        # CleanupSettings must canonicalize "postgres" -> "POSTGRES" on load, and must
+        # leave an unrecognized "PG" token untouched (PG is no longer a valid alias).
+        $legacy = "${scratchProfile}_LEGACYPG"
+        $r = Invoke-Cli set_profile '--create' $legacy `
             '--platform' 'postgres' '--host' '127.0.0.1' `
             '--user' 'postgres' '--password' 'placeholder' `
             '--company' '101' '--sql-source' $script:Scratch
         Assert-ExitCode $r
-        Assert-Field (Get-Profile "${scratchProfile}_PG2") 'PLATFORM' 'POSTGRES'
-        Invoke-Cli set_profile '--delete' "${scratchProfile}_PG2" '--yes' | Out-Null
-    }
-
-    Test-Case 'set_profile.cleanup_migrates_legacy_pg' {
-        # Simulate a legacy/unmigrated settings.json where PLATFORM was persisted as
-        # the "PG" alias. Any command that loads the profile store runs CleanupSettings,
-        # which must canonicalize "PG" -> "POSTGRES" in place.
-        $legacy = "${scratchProfile}_LEGACYPG"
-        $r = Invoke-Cli set_profile '--create' $legacy `
-            '--platform' 'pg' '--host' '127.0.0.1' `
-            '--user' 'postgres' '--password' 'placeholder' `
-            '--company' '101' '--sql-source' $script:Scratch
-        Assert-ExitCode $r
-        # Hand-edit the persisted file back to the legacy "PG" token.
         $path = Join-Path $script:Bin 'settings.json'
+
+        # Case 1: lowercase "postgres" gets canonicalized to "POSTGRES".
+        $obj = Get-Content $path -Raw | ConvertFrom-Json
+        $obj.Profiles.$legacy.PLATFORM = 'postgres'
+        $obj | ConvertTo-Json -Depth 20 | Set-Content $path
+        Assert-Field (Get-Profile $legacy) 'PLATFORM' 'postgres'   # sanity: lowercase value is in place
+        Invoke-Cli iwho $legacy | Out-Null
+        Assert-Field (Get-Profile $legacy) 'PLATFORM' 'POSTGRES'
+
+        # Case 2: unrecognized "PG" token is left untouched, not migrated.
         $obj = Get-Content $path -Raw | ConvertFrom-Json
         $obj.Profiles.$legacy.PLATFORM = 'PG'
         $obj | ConvertTo-Json -Depth 20 | Set-Content $path
         Assert-Field (Get-Profile $legacy) 'PLATFORM' 'PG'   # sanity: legacy value is in place
-        # Any command that constructs a ProfileManager runs CleanupSettings on load
-        # (set_profile has its own loader that bypasses it; iwho uses ProfileManager).
-        # The connection attempt itself may fail against a placeholder host — we only
-        # care that CleanupSettings migrated the persisted PLATFORM before that.
         Invoke-Cli iwho $legacy | Out-Null
-        Assert-Field (Get-Profile $legacy) 'PLATFORM' 'POSTGRES'
+        Assert-Field (Get-Profile $legacy) 'PLATFORM' 'PG'   # left untouched, not silently rewritten
+
         Invoke-Cli set_profile '--delete' $legacy '--yes' | Out-Null
     }
 
@@ -1210,6 +1416,34 @@ function Test-ProfileManagement {
         if ($r.StdOut -notmatch $scratchProfile) { throw "view output missing profile name" }
         if ($r.StdOut -notmatch '127\.0\.0\.1') { throw "view output missing host" }
         if ($r.StdOut -notmatch '1433')        { throw "view output missing port" }
+    }
+
+    Test-Case 'set_profile.create_data_charset' {
+        # --data-charset is the only editor field with a dedicated value flag added
+        # alongside the interactive editor. It must persist on create.
+        $r = Invoke-Cli set_profile '--create' "${scratchProfile}_CS" `
+            '--platform' 'mssql' '--host' '127.0.0.1' `
+            '--user' 'sa' '--password' 'placeholder' `
+            '--company' '101' '--sql-source' $script:Scratch `
+            '--data-charset' 'Windows-1252'
+        Assert-ExitCode $r
+        Assert-Field (Get-Profile "${scratchProfile}_CS") 'DATA_CHARSET' 'Windows-1252'
+    }
+
+    Test-Case 'set_profile.edit_data_charset' {
+        Assert-ExitCode (Invoke-Cli set_profile '--edit' "${scratchProfile}_CS" '--data-charset' 'cp850')
+        Assert-Field (Get-Profile "${scratchProfile}_CS") 'DATA_CHARSET' 'cp850'
+    }
+
+    Test-Case 'set_profile.view_extended_fields' {
+        # --view must surface the fields the whole-profile editor added: DATA_CHARSET,
+        # DEFAULT_LANGUAGE, and (for PostgreSQL) DATABASE.
+        $r = Invoke-Cli set_profile '--view' "${scratchProfile}_CS"
+        Assert-ExitCode $r
+        if ($r.StdOut -notmatch 'cp850')    { throw "view output missing data charset. stdout: $($r.StdOut)" }
+        if ($r.StdOut -notmatch 'Language') { throw "view output missing default language row. stdout: $($r.StdOut)" }
+        if ($r.StdOut -notmatch 'Charset')  { throw "view output missing charset row. stdout: $($r.StdOut)" }
+        Invoke-Cli set_profile '--delete' "${scratchProfile}_CS" '--yes' | Out-Null
     }
 
     Test-Case 'set_profile.edit_port' {

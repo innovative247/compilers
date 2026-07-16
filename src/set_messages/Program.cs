@@ -2,7 +2,8 @@ using ibsCompiler;
 using ibsCompiler.Configuration;
 using ibsCompiler.Database;
 
-const string Usage = "Usage: set_messages <server/profile> [-U user] [-P pass] [-O outfile] [-MSSQL|-SYBASE]";
+const string Usage = "Usage: set_messages <server/profile> [-U user] [-P pass] [-O outfile] [-MSSQL|-SYBASE|-POSTGRES]\n"
+    + "       set_messages <server/profile> --add --type <ibs|gui|sql|sqr|jam> --group <grp> --text <msg> [--lang N] [--cmpy N] [--upd-flg C] [--dry-run]";
 if (!VersionCheck.CheckForUpdates("set_messages", args, Usage)) return 0;
 
 var arguments = args.ToList();
