@@ -457,19 +457,21 @@ namespace ibsCompiler
             PrintStep(4, "Database Platform");
             PrintDim("  Select the type of database server you are connecting to.");
             Console.WriteLine();
-            PrintMenu(1, "Sybase ASE");
-            PrintMenu(2, "Microsoft SQL Server");
-            PrintMenu(3, "PostgreSQL");
+            var platformMenu = ibs_compiler_common.PlatformMenu;
+            for (int mi = 0; mi < platformMenu.Length; mi++)
+                PrintMenu(mi + 1, platformMenu[mi].Display);
             while (true)
             {
-                Console.Write("\n  Choose [1-3]: ");
+                Console.Write($"\n  Choose [1-{platformMenu.Length}]: ");
                 var platform = Console.ReadLine()?.Trim();
-                if (platform == "1") { profile.Platform = "SYBASE"; break; }
-                if (platform == "2") { profile.Platform = "MSSQL"; break; }
-                if (platform == "3") { profile.Platform = "POSTGRES"; break; }
-                Console.WriteLine("  Invalid choice. Please enter 1, 2, or 3.");
+                if (int.TryParse(platform, out var psel) && psel >= 1 && psel <= platformMenu.Length)
+                {
+                    profile.Platform = ibs_compiler_common.CanonicalName(platformMenu[psel - 1].Type);
+                    break;
+                }
+                Console.WriteLine($"  Invalid choice. Please enter 1 through {platformMenu.Length}.");
             }
-            if (profile.Platform == "POSTGRES")
+            if (profile.Platform == ibs_compiler_common.CanonicalName(SQLServerTypes.POSTGRES))
             {
                 Console.Write("  Database name [postgres]: ");
                 var db = Console.ReadLine()?.Trim();
@@ -720,11 +722,13 @@ namespace ibsCompiler
             if (val == "y") profile.RawMode = true;
             else if (val == "n") profile.RawMode = false;
 
-            Console.Write($"  Platform [{profile.Platform}] (1=Sybase, 2=MSSQL, 3=PostgreSQL): ");
+            var editPlatformMenu = ibs_compiler_common.PlatformMenu;
+            var editPlatformHint = string.Join(", ",
+                editPlatformMenu.Select((e, idx) => $"{idx + 1}={e.Display}"));
+            Console.Write($"  Platform [{profile.Platform}] ({editPlatformHint}): ");
             val = Console.ReadLine()?.Trim();
-            if (val == "1") profile.Platform = "SYBASE";
-            else if (val == "2") profile.Platform = "MSSQL";
-            else if (val == "3") profile.Platform = "POSTGRES";
+            if (int.TryParse(val, out var esel) && esel >= 1 && esel <= editPlatformMenu.Length)
+                profile.Platform = ibs_compiler_common.CanonicalName(editPlatformMenu[esel - 1].Type);
 
             Console.Write($"  Host [{profile.Host}] (do not include port): ");
             val = Console.ReadLine()?.Trim();
@@ -2120,11 +2124,11 @@ namespace ibsCompiler
             if (platform != null)
             {
                 var p = platform.Trim().ToUpperInvariant();
-                if (p == "MSSQL" || p == "SYBASE") profile.Platform = p;
-                else if (p == "POSTGRES" || p == "PG") profile.Platform = "POSTGRES";
+                if (p is "MSSQL" or "SYBASE" or "POSTGRES" or "PG")
+                    profile.Platform = ibs_compiler_common.CanonicalName(ibs_compiler_common.ParsePlatform(p));
                 else
                 {
-                    Console.Error.WriteLine("ERROR: --platform must be 'mssql', 'sybase' or 'postgres'.");
+                    Console.Error.WriteLine("ERROR: --platform must be one of mssql|sybase|postgres (pg accepted as alias).");
                     return false;
                 }
             }

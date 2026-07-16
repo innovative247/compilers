@@ -40,7 +40,7 @@ namespace ibsCompiler
             var serverName = (_profile.IsProfile ? _profile.ProfileName : _cmdvars.Server)
                 .Replace('\\', '_').Replace('.', '_');
             if (File.Exists(optFileSQL))
-                optFileFinal = Path.Combine(tempPath, $"options.{_profile.ServerType}.{_profile.Company}.{serverName}.tmp");
+                optFileFinal = Path.Combine(tempPath, $"options.{ibs_compiler_common.CanonicalName(_profile.ServerType)}.{_profile.Company}.{serverName}.tmp");
             else
                 optFileFinal = Path.Combine(tempPath, $"options.{_profile.Company}.{serverName}.tmp");
 

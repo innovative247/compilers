@@ -1179,6 +1179,31 @@ function Test-ProfileManagement {
         Invoke-Cli set_profile '--delete' "${scratchProfile}_PG2" '--yes' | Out-Null
     }
 
+    Test-Case 'set_profile.cleanup_migrates_legacy_pg' {
+        # Simulate a legacy/unmigrated settings.json where PLATFORM was persisted as
+        # the "PG" alias. Any command that loads the profile store runs CleanupSettings,
+        # which must canonicalize "PG" -> "POSTGRES" in place.
+        $legacy = "${scratchProfile}_LEGACYPG"
+        $r = Invoke-Cli set_profile '--create' $legacy `
+            '--platform' 'pg' '--host' '127.0.0.1' `
+            '--user' 'postgres' '--password' 'placeholder' `
+            '--company' '101' '--sql-source' $script:Scratch
+        Assert-ExitCode $r
+        # Hand-edit the persisted file back to the legacy "PG" token.
+        $path = Join-Path $script:Bin 'settings.json'
+        $obj = Get-Content $path -Raw | ConvertFrom-Json
+        $obj.Profiles.$legacy.PLATFORM = 'PG'
+        $obj | ConvertTo-Json -Depth 20 | Set-Content $path
+        Assert-Field (Get-Profile $legacy) 'PLATFORM' 'PG'   # sanity: legacy value is in place
+        # Any command that constructs a ProfileManager runs CleanupSettings on load
+        # (set_profile has its own loader that bypasses it; iwho uses ProfileManager).
+        # The connection attempt itself may fail against a placeholder host — we only
+        # care that CleanupSettings migrated the persisted PLATFORM before that.
+        Invoke-Cli iwho $legacy | Out-Null
+        Assert-Field (Get-Profile $legacy) 'PLATFORM' 'POSTGRES'
+        Invoke-Cli set_profile '--delete' $legacy '--yes' | Out-Null
+    }
+
     Test-Case 'set_profile.view' {
         $r = Invoke-Cli set_profile '--view' $scratchProfile
         Assert-ExitCode $r

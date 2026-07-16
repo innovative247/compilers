@@ -102,10 +102,10 @@ namespace ibsCompiler.TransferData
                 Password = current.Password
             };
 
-            Console.Write($"  Platform (MSSQL/SYBASE/POSTGRES) [{conn.Platform}]: ");
+            Console.Write($"  Platform ({ibs_compiler_common.CanonicalNamesJoined("/")}) [{conn.Platform}]: ");
             var input = Console.ReadLine()?.Trim();
             if (!string.IsNullOrEmpty(input))
-                conn.Platform = ibs_compiler_common.ParsePlatform(input).ToString();
+                conn.Platform = ibs_compiler_common.CanonicalName(ibs_compiler_common.ParsePlatform(input));
 
             Console.Write($"  Host [{conn.Host}]: ");
             input = Console.ReadLine()?.Trim();

@@ -56,7 +56,15 @@ namespace ibsCompiler.Configuration
                 foreach (var profile in _settings.Profiles.Values)
                 {
                     if (profile.Platform != null)
+                    {
                         profile.Platform = profile.Platform.ToUpperInvariant();
+                        // Canonicalize only recognized tokens (PG -> POSTGRES, etc.);
+                        // leave unrecognized strings untouched so a typo isn't silently
+                        // rewritten to the SYBASE default by ParsePlatform's fallback.
+                        if (profile.Platform is "PG" or "POSTGRES" or "MSSQL" or "SYBASE")
+                            profile.Platform = ibs_compiler_common.CanonicalName(
+                                ibs_compiler_common.ParsePlatform(profile.Platform));
+                    }
                 }
 
                 var writeOptions = new JsonSerializerOptions { WriteIndented = true };
