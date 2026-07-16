@@ -60,8 +60,9 @@ namespace ibsCompiler
 
             if (text == null)
                 return AddMessageResult.Fail("message text is required");
-            if (text.Length > 255)
-                return AddMessageResult.Fail($"message text exceeds 255 characters (got {text.Length})");
+            var textBytes = System.Text.Encoding.UTF8.GetByteCount(text);
+            if (textBytes > 255)
+                return AddMessageResult.Fail($"message text exceeds 255 bytes (got {textBytes})");
             if (text.IndexOf('\r') >= 0 || text.IndexOf('\n') >= 0)
                 return AddMessageResult.Fail("message text may not contain a carriage return or newline");
 
@@ -107,7 +108,6 @@ namespace ibsCompiler
 
             // ---- parse css.<type>_msgrp (grp \t s#minmsg \t description) ----
             var minMsgByGroup = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-            var allMinMsgs = new List<int>();
             if (File.Exists(msgrpPath))
             {
                 foreach (var line in File.ReadAllLines(msgrpPath))
@@ -119,7 +119,6 @@ namespace ibsCompiler
                     if (g.Length == 0) continue;
                     if (!int.TryParse(cols[1].Trim(), out var min)) continue;
                     minMsgByGroup[g] = min;
-                    allMinMsgs.Add(min);
                 }
             }
 
@@ -132,12 +131,9 @@ namespace ibsCompiler
 
             // ---- next number ----
             int next;
-            int groupStart;
             if (knownInMsg)
             {
                 next = groupMsgnos.Max() + 1;
-                groupStart = (minMsgByGroup.TryGetValue(groupKey, out var gm) && gm > 0)
-                    ? gm : groupMsgnos.Min();
             }
             else
             {
@@ -146,7 +142,6 @@ namespace ibsCompiler
                     return AddMessageResult.Fail(
                         $"group '{groupKey}' has no messages and its css.{t}_msgrp s#minmsg is {min} (need > 0 to seed a block)");
                 next = min;
-                groupStart = min;
             }
 
             // ---- hard collision guard: number must be free everywhere ----
@@ -156,14 +151,6 @@ namespace ibsCompiler
                 return AddMessageResult.Fail(
                     $"message number {next} is already in use (block exhausted / overlaps group {collisionOwner ?? "?"})");
             }
-
-            // ---- best-effort ceiling: don't cross into the next block's start ----
-            int nextBlockStart = int.MaxValue;
-            foreach (var m in allMinMsgs)
-                if (m > groupStart && m < nextBlockStart) nextBlockStart = m;
-            if (nextBlockStart != int.MaxValue && next >= nextBlockStart)
-                return AddMessageResult.Fail(
-                    $"message number {next} crosses into the next block (group start {nextBlockStart})");
 
             // ---- build the row ----
             char flag = updFlg ?? (t == "gui" ? 'X' : ' ');

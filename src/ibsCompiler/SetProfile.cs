@@ -454,7 +454,7 @@ namespace ibsCompiler
         private static void CreateProfileInteractive(string name, ProfileData profile)
         {
             profile.DefaultLanguage = "1";
-            var result = ProfileEditor.Edit(name, profile, isCreate: true, p => { TestConnection(p); return true; });
+            var result = ProfileEditor.Edit(name, profile, isCreate: true, p => { TestConnection(p); return true; }, ValidateAliasConflicts);
             if (result == null)
             {
                 CreateProfileSequential(name, profile);
@@ -759,7 +759,7 @@ namespace ibsCompiler
 
             // Work on a JSON clone so a cancel leaves the stored profile untouched.
             var working = JsonSerializer.Deserialize<ProfileData>(JsonSerializer.Serialize(profile))!;
-            var result = ProfileEditor.Edit(name, working, isCreate: false, p => { TestConnection(p); return true; });
+            var result = ProfileEditor.Edit(name, working, isCreate: false, p => { TestConnection(p); return true; }, ValidateAliasConflicts);
             if (result == null)
             {
                 EditProfileSequential(name, profile);
@@ -1848,25 +1848,37 @@ namespace ibsCompiler
 
             var aliases = input.Split(',').Select(a => a.Trim().ToUpper()).Where(a => !string.IsNullOrEmpty(a)).ToList();
 
-            // Validate no conflicts
-            foreach (var alias in aliases)
+            var conflict = ValidateAliasConflicts(profileName, aliases);
+            if (conflict != null)
             {
-                foreach (var kvp in _settings.Profiles)
-                {
-                    if (kvp.Key == profileName) continue;
-                    if (kvp.Key.ToUpperInvariant() == alias)
-                    {
-                        PrintError($"Alias '{alias}' conflicts with profile name '{kvp.Key}'.");
-                        return current;
-                    }
-                    if (kvp.Value.Aliases?.Any(a => a.ToUpperInvariant() == alias) == true)
-                    {
-                        PrintError($"Alias '{alias}' is already used by profile '{kvp.Key}'.");
-                        return current;
-                    }
-                }
+                PrintError(conflict);
+                return current;
             }
             return aliases;
+        }
+
+        /// <summary>
+        /// Returns the first routing-safety conflict when any of <paramref name="aliases"/>
+        /// collides with another profile's name or an alias owned by another profile —
+        /// the profile named <paramref name="profileName"/> is excluded — else null.
+        /// Shared by the interactive prompt, the headless --alias path, and the TUI
+        /// editor so all three enforce identical rules.
+        /// </summary>
+        internal static string? ValidateAliasConflicts(string profileName, IEnumerable<string> aliases)
+        {
+            foreach (var alias in aliases)
+            {
+                var upper = alias.ToUpperInvariant();
+                foreach (var kvp in _settings.Profiles)
+                {
+                    if (string.Equals(kvp.Key, profileName, StringComparison.OrdinalIgnoreCase)) continue;
+                    if (kvp.Key.ToUpperInvariant() == upper)
+                        return $"Alias '{upper}' conflicts with profile name '{kvp.Key}'.";
+                    if (kvp.Value.Aliases?.Any(a => a.ToUpperInvariant() == upper) == true)
+                        return $"Alias '{upper}' is already used by profile '{kvp.Key}'.";
+                }
+            }
+            return null;
         }
 
         internal static string ReadPassword()
@@ -2040,22 +2052,11 @@ namespace ibsCompiler
                     foreach (var part in a.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
                         aliases.Add(part.ToUpperInvariant());
                 }
-                foreach (var alias in aliases)
+                var conflict = ValidateAliasConflicts(name, aliases);
+                if (conflict != null)
                 {
-                    foreach (var kvp in _settings.Profiles)
-                    {
-                        if (string.Equals(kvp.Key, name, StringComparison.OrdinalIgnoreCase)) continue;
-                        if (kvp.Key.ToUpperInvariant() == alias)
-                        {
-                            Console.Error.WriteLine($"ERROR: alias '{alias}' conflicts with profile name '{kvp.Key}'.");
-                            return 1;
-                        }
-                        if (kvp.Value.Aliases?.Any(x => x.ToUpperInvariant() == alias) == true)
-                        {
-                            Console.Error.WriteLine($"ERROR: alias '{alias}' already used by profile '{kvp.Key}'.");
-                            return 1;
-                        }
-                    }
+                    Console.Error.WriteLine($"ERROR: {conflict}");
+                    return 1;
                 }
                 profile.Aliases = aliases;
             }

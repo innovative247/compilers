@@ -32,7 +32,8 @@ namespace ibsCompiler
             public Func<ProfileData, string>? Hint;
         }
 
-        private static Field[] BuildFields()
+        private static Field[] BuildFields(
+            string profileName, Func<string, IEnumerable<string>, string?>? validateAliases)
         {
             return new[]
             {
@@ -45,6 +46,12 @@ namespace ibsCompiler
                     Set = (p, v) => p.Aliases = v
                         .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                         .Select(a => a.ToUpperInvariant()).Distinct().ToList(),
+                    // Same routing-safety rule the sequential/headless paths enforce:
+                    // a saved alias may not collide with another profile's name/alias.
+                    Validate = validateAliases == null ? null : (_, v) =>
+                        validateAliases(profileName, v
+                            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                            .Select(a => a.ToUpperInvariant()).Distinct().ToList()),
                 },
                 new Field
                 {
@@ -144,18 +151,20 @@ namespace ibsCompiler
         /// terminal is too small to host the widget (caller must fall back to the
         /// sequential prompt flow).
         /// </summary>
-        public static bool? Edit(string profileName, ProfileData profile, bool isCreate, Func<ProfileData, bool>? onTest)
+        public static bool? Edit(string profileName, ProfileData profile, bool isCreate, Func<ProfileData, bool>? onTest,
+            Func<string, IEnumerable<string>, string?>? validateAliases = null)
         {
             // Belt-and-suspenders: never drive a ReadKey loop on a redirected console.
             // The caller already routes those to the sequential/headless paths.
             if (Console.IsInputRedirected || Console.IsOutputRedirected)
                 return false;
 
-            var fields = BuildFields();
+            var fields = BuildFields(profileName, validateAliases);
 
             // Layout needs: 1 blank + title + 1 blank + N field rows + 1 blank +
-            // footer + message row = fields.Length + 5 rows, minimum.
-            if (Console.WindowHeight < fields.Length + 5)
+            // footer + message row = fields.Length + 5 rows, minimum. Width must also
+            // clear the widest fixed-column cursor moves (Discard prompt lands at 25).
+            if (Console.WindowHeight < fields.Length + 5 || Console.WindowWidth < 40)
             {
                 Console.WriteLine();
                 Console.WriteLine("  Terminal too small for the profile editor — using sequential prompts.");
@@ -286,12 +295,23 @@ namespace ibsCompiler
                 }
             }
 
+            // Stash Company/SqlSource when Raw Mode blanks them so toggling Raw back
+            // off round-trips to the original values instead of losing them.
+            string? stashedCompany = null;
+            string? stashedSqlSource = null;
             void ApplyRawSideEffects()
             {
                 if (profile.RawMode)
                 {
+                    stashedCompany = profile.Company;
+                    stashedSqlSource = profile.SqlSource;
                     profile.Company = "0";
                     profile.SqlSource = "";
+                }
+                else
+                {
+                    profile.Company = stashedCompany ?? snapshot.Company;
+                    profile.SqlSource = stashedSqlSource ?? snapshot.SqlSource;
                 }
             }
 
@@ -429,7 +449,9 @@ namespace ibsCompiler
                             bool dirty = fields.Any(x => x.Raw(profile) != x.Raw(snapshot));
                             if (!dirty) return false;
                             Message("Discard changes? (y/N) ", ConsoleColor.Yellow);
-                            Console.SetCursorPosition(2 + "Discard changes? (y/N) ".Length, startRow + fields.Length + 2);
+                            Console.SetCursorPosition(
+                                Math.Min(2 + "Discard changes? (y/N) ".Length, Console.WindowWidth - 1),
+                                startRow + fields.Length + 2);
                             Console.CursorVisible = true;
                             var ans = Console.ReadKey(intercept: true);
                             Console.CursorVisible = false;

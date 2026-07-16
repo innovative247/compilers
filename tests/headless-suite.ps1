@@ -1153,12 +1153,16 @@ function Test-Messages {
             "100`t1`t0`tMENU  `tX`t100000`tFirst menu message"
             "101`t1`t0`tMENU  `tX`t100001`tSecond menu message"
             "101`t2`t0`tMENU  `tX`t100002`tSecond menu message fr"
+            "700`t1`t0`tSPAN  `tX`t100003`tSpan low"
+            "750`t1`t0`tSPAN  `tX`t100004`tSpan high"
         )
         Write-LfFile $guiMsgrp @(
             "MENU  `t100`tMenu messages"
             "BLANK `t500`tEmpty block seeded at 500"
             "ZEROG `t0`tZero-minmsg group"
             "COLL  `t100`tCollides with MENU block"
+            "SPAN  `t700`tSpan group (live rows 700..750)"
+            "LOWSED`t720`tSparse seed sitting inside SPAN's live range"
         )
         Write-LfFile $ibsMsg   @("200`t1`t0`tCORE  `t `t100010`tCore ibs message")
         Write-LfFile $ibsMsgrp @("CORE  `t200`tCore ibs messages")
@@ -1197,6 +1201,15 @@ function Test-Messages {
         if ($r.ExitCode -eq 0) { throw 's#minmsg=0 with empty group must fail' }
         if ($r.StdErr -notmatch 'ERROR:') { throw "stderr should carry ERROR: prefix: $($r.StdErr)" }
     }
+    Test-Case 'set_messages.add_crosses_seed_now_succeeds' {
+        # SPAN's max+1 (751) sits above LOWSED's sparse seed (720). s#minmsg is a
+        # floor/seed list, not a partition map, so the old block-ceiling guard
+        # falsely rejected this. 751 is free everywhere -> the add must now SUCCEED.
+        Reset-MsgFixture
+        $r = Invoke-Cli set_messages '--add' '--type' 'gui' '--group' 'SPAN' '--text' 'CrossSeed' $script:TestProfile
+        Assert-ExitCode $r
+        if ($r.StdOut.Trim() -ne 'MSGNO 751') { throw "expected 'MSGNO 751', got: '$($r.StdOut)'" }
+    }
     Test-Case 'set_messages.add_collision_errors' {
         # COLL seeds at 100 which MENU already owns -> hard collision guard fires.
         Reset-MsgFixture
@@ -1226,6 +1239,23 @@ function Test-Messages {
         $r = Invoke-Cli set_messages '--add' '--type' 'gui' '--group' 'MENU' '--text' $long $script:TestProfile
         if ($r.ExitCode -eq 0) { throw '300-char text must be rejected (>255)' }
         if ($r.StdErr -notmatch '255') { throw "stderr should mention the 255 limit: $($r.StdErr)" }
+    }
+    Test-Case 'set_messages.add_text_bytes_over_255_errors' {
+        # 130 ASCII + 65 'e-acute' = 195 chars but 130 + 65*2 = 260 UTF-8 bytes.
+        # <= 255 chars yet > 255 bytes -> must be rejected on the BYTE limit.
+        Reset-MsgFixture
+        $txt = ('a' * 130) + ([string][char]0xE9 * 65)
+        $r = Invoke-Cli set_messages '--add' '--type' 'gui' '--group' 'MENU' '--text' $txt $script:TestProfile
+        if ($r.ExitCode -eq 0) { throw 'text >255 bytes (<=255 chars) must be rejected' }
+        if ($r.StdErr -notmatch '255') { throw "stderr should mention the 255 byte limit: $($r.StdErr)" }
+    }
+    Test-Case 'set_messages.add_empty_text_errors' {
+        # A trailing valueless --text -> CliArgs.GetOption returns "" -> IsNullOrEmpty
+        # guard must reject it with a non-empty-value error, exit 1.
+        Reset-MsgFixture
+        $r = Invoke-Cli set_messages '--add' '--type' 'gui' '--group' 'MENU' $script:TestProfile '--text'
+        if ($r.ExitCode -eq 0) { throw 'valueless --text must be rejected' }
+        if ($r.StdErr -notmatch 'non-empty value') { throw "stderr should say --text requires a non-empty value: $($r.StdErr)" }
     }
     Test-Case 'set_messages.add_newline_text_errors' {
         Reset-MsgFixture

@@ -2049,9 +2049,9 @@ namespace ibsCompiler
                 Console.Error.WriteLine("ERROR: --add requires --group.");
                 return 1;
             }
-            if (text == null)
+            if (string.IsNullOrEmpty(text))
             {
-                Console.Error.WriteLine("ERROR: --add requires --text.");
+                Console.Error.WriteLine("ERROR: --text requires a non-empty value");
                 return 1;
             }
 
