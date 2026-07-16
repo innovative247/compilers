@@ -296,17 +296,17 @@ function Test-AdHocQueries {
         Assert-ExitCode $r
         if ($r.StdOut -notmatch '\b2\b') { throw "expected '2' in output" }
     }
-    Test-Case 'isqlline.platform_pg' {
-        # -PG is parsed identically to -MSSQL/-SYBASE (Common.cs FindAndRemove_SQLServerType),
+    Test-Case 'isqlline.platform_postgres' {
+        # -POSTGRES is parsed identically to -MSSQL/-SYBASE (Common.cs FindAndRemove_SQLServerType),
         # but unlike -MSSQL against SRM_LOCAL (already MSSQL, so the override is a no-op),
         # ProfileManager.Resolve honors a non-default cmdvars.ServerType unconditionally
-        # (ProfileManager.cs:148) — so -PG genuinely forces a PostgresExecutor against
-        # SRM_LOCAL's real MSSQL server. There's no live PG target in this suite, so the
+        # (ProfileManager.cs:148) — so -POSTGRES genuinely forces a PostgresExecutor against
+        # SRM_LOCAL's real MSSQL server. There's no live Postgres target in this suite, so the
         # only thing provable offline is that the flag is parsed/dispatched (a real connection
         # attempt that fails on protocol mismatch), not rejected as a usage/parse error.
-        $r = Invoke-Cli isqlline 'SELECT(1+1)' 'master' $script:SourceProfile '-PG'
-        if ($r.ExitCode -eq 0) { throw '-PG against a non-PG server should not succeed' }
-        if ($r.StdOut -match 'Usage:') { throw "-PG should be consumed as a valid flag, not rejected as bad usage. stdout: $($r.StdOut)" }
+        $r = Invoke-Cli isqlline 'SELECT(1+1)' 'master' $script:SourceProfile '-POSTGRES'
+        if ($r.ExitCode -eq 0) { throw '-POSTGRES against a non-Postgres server should not succeed' }
+        if ($r.StdOut -match 'Usage:') { throw "-POSTGRES should be consumed as a valid flag, not rejected as bad usage. stdout: $($r.StdOut)" }
         if ($r.StdOut -notmatch 'ERROR! Failed to Run\.') { throw "expected a dispatched-but-failed connection attempt, not a parse error. stdout: $($r.StdOut)" }
     }
     Test-Case 'isqlline.error_bad_profile' {
@@ -479,7 +479,7 @@ function Test-ScriptExecution {
         if ($runs -ne 1) { throw "expected exactly 1 #NT dispatch (got $runs). stdout: $($r.StdOut)" }
         if ($r.StdOut -notmatch 'return status = 0') { throw "the #NT dispatch should produce a successful run" }
     }
-    Skip-Case 'runcreate.platform_lines_pg' 'the #NT/#UNIX prefixes here are OS dispatch lines, not DB platform (-MSSQL/-PG); no PG-specific create-file directive exists to mirror'
+    Skip-Case 'runcreate.platform_lines_postgres' 'the #NT/#UNIX prefixes here are OS dispatch lines, not DB platform (-MSSQL/-POSTGRES); no Postgres-specific create-file directive exists to mirror'
     Test-Case 'runcreate.dispatch_unknown_verb' {
         $unkCreate = Join-Path $script:Scratch 'unknown.create'
         @(
@@ -1288,55 +1288,61 @@ function Test-ProfileManagement {
         }
     }
 
-    Test-Case 'set_profile.create_pg' {
+    Test-Case 'set_profile.create_postgres' {
         $r = Invoke-Cli set_profile '--create' "${scratchProfile}_PG" `
-            '--platform' 'pg' '--host' '127.0.0.1' `
+            '--platform' 'postgres' '--host' '127.0.0.1' `
             '--user' 'postgres' '--password' 'placeholder' `
             '--company' '101' '--sql-source' $script:Scratch
         Assert-ExitCode $r
         Assert-ProfileExists "${scratchProfile}_PG"
         $p = Get-Profile "${scratchProfile}_PG"
-        # '--platform pg' must canonicalize to PLATFORM=POSTGRES and default PORT=5432
+        # '--platform postgres' must canonicalize to PLATFORM=POSTGRES and default PORT=5432
         Assert-Field $p 'PLATFORM' 'POSTGRES'
         Assert-Field $p 'PORT'     5432
         $viewOut = Invoke-Cli set_profile '--view' "${scratchProfile}_PG"
         Assert-ExitCode $viewOut
-        if ($viewOut.StdOut -notmatch '5432') { throw "view output missing default PG port. stdout: $($viewOut.StdOut)" }
+        if ($viewOut.StdOut -notmatch '5432') { throw "view output missing default Postgres port. stdout: $($viewOut.StdOut)" }
         Invoke-Cli set_profile '--delete' "${scratchProfile}_PG" '--yes' | Out-Null
     }
-    Test-Case 'set_profile.create_pg_platform_alias' {
-        # '--platform postgres' (the long form) must also be accepted
+    Test-Case 'set_profile.create_platform_pg_rejected' {
+        # PG was retired as a --platform value; only mssql|sybase|postgres are accepted.
         $r = Invoke-Cli set_profile '--create' "${scratchProfile}_PG2" `
+            '--platform' 'pg' '--host' '127.0.0.1' `
+            '--user' 'postgres' '--password' 'placeholder' `
+            '--company' '101' '--sql-source' $script:Scratch
+        if ($r.ExitCode -eq 0) { throw "--platform pg should be rejected now that PG is retired" }
+        if ($r.StdErr -notmatch 'mssql\|sybase\|postgres') { throw "expected the mssql|sybase|postgres usage error. stderr: $($r.StdErr)" }
+        Assert-ProfileAbsent "${scratchProfile}_PG2"
+    }
+
+    Test-Case 'set_profile.cleanup_canonicalizes_postgres_case' {
+        # Simulate a settings.json where PLATFORM was persisted lowercase/mixed-case.
+        # CleanupSettings must canonicalize "postgres" -> "POSTGRES" on load, and must
+        # leave an unrecognized "PG" token untouched (PG is no longer a valid alias).
+        $legacy = "${scratchProfile}_LEGACYPG"
+        $r = Invoke-Cli set_profile '--create' $legacy `
             '--platform' 'postgres' '--host' '127.0.0.1' `
             '--user' 'postgres' '--password' 'placeholder' `
             '--company' '101' '--sql-source' $script:Scratch
         Assert-ExitCode $r
-        Assert-Field (Get-Profile "${scratchProfile}_PG2") 'PLATFORM' 'POSTGRES'
-        Invoke-Cli set_profile '--delete' "${scratchProfile}_PG2" '--yes' | Out-Null
-    }
-
-    Test-Case 'set_profile.cleanup_migrates_legacy_pg' {
-        # Simulate a legacy/unmigrated settings.json where PLATFORM was persisted as
-        # the "PG" alias. Any command that loads the profile store runs CleanupSettings,
-        # which must canonicalize "PG" -> "POSTGRES" in place.
-        $legacy = "${scratchProfile}_LEGACYPG"
-        $r = Invoke-Cli set_profile '--create' $legacy `
-            '--platform' 'pg' '--host' '127.0.0.1' `
-            '--user' 'postgres' '--password' 'placeholder' `
-            '--company' '101' '--sql-source' $script:Scratch
-        Assert-ExitCode $r
-        # Hand-edit the persisted file back to the legacy "PG" token.
         $path = Join-Path $script:Bin 'settings.json'
+
+        # Case 1: lowercase "postgres" gets canonicalized to "POSTGRES".
+        $obj = Get-Content $path -Raw | ConvertFrom-Json
+        $obj.Profiles.$legacy.PLATFORM = 'postgres'
+        $obj | ConvertTo-Json -Depth 20 | Set-Content $path
+        Assert-Field (Get-Profile $legacy) 'PLATFORM' 'postgres'   # sanity: lowercase value is in place
+        Invoke-Cli iwho $legacy | Out-Null
+        Assert-Field (Get-Profile $legacy) 'PLATFORM' 'POSTGRES'
+
+        # Case 2: unrecognized "PG" token is left untouched, not migrated.
         $obj = Get-Content $path -Raw | ConvertFrom-Json
         $obj.Profiles.$legacy.PLATFORM = 'PG'
         $obj | ConvertTo-Json -Depth 20 | Set-Content $path
         Assert-Field (Get-Profile $legacy) 'PLATFORM' 'PG'   # sanity: legacy value is in place
-        # Any command that constructs a ProfileManager runs CleanupSettings on load
-        # (set_profile has its own loader that bypasses it; iwho uses ProfileManager).
-        # The connection attempt itself may fail against a placeholder host — we only
-        # care that CleanupSettings migrated the persisted PLATFORM before that.
         Invoke-Cli iwho $legacy | Out-Null
-        Assert-Field (Get-Profile $legacy) 'PLATFORM' 'POSTGRES'
+        Assert-Field (Get-Profile $legacy) 'PLATFORM' 'PG'   # left untouched, not silently rewritten
+
         Invoke-Cli set_profile '--delete' $legacy '--yes' | Out-Null
     }
 

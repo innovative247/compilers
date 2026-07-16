@@ -17,7 +17,7 @@ namespace ibsCompiler
         #region Platform parsing
         /// <summary>
         /// Canonicalizes a platform string to a SQLServerTypes value.
-        /// "MSSQL" -> MSSQL, "POSTGRES"/"PG" -> POSTGRES, anything else
+        /// "MSSQL" -> MSSQL, "POSTGRES" -> POSTGRES, anything else
         /// (including null) -> SYBASE (preserves the legacy unknown->SYBASE default).
         /// </summary>
         public static SQLServerTypes ParsePlatform(string? platform)
@@ -25,8 +25,7 @@ namespace ibsCompiler
             switch (platform?.Trim().ToUpperInvariant())
             {
                 case "MSSQL": return SQLServerTypes.MSSQL;
-                case "POSTGRES":
-                case "PG": return SQLServerTypes.POSTGRES;
+                case "POSTGRES": return SQLServerTypes.POSTGRES;
                 default: return SQLServerTypes.SYBASE;
             }
         }
@@ -853,7 +852,7 @@ namespace ibsCompiler
                 if (!arguments[i].StartsWith("-"))
                     continue;
                 var tok = arguments[i].TrimStart('-').ToUpperInvariant();
-                if (tok is "MSSQL" or "SYBASE" or "POSTGRES" or "PG")
+                if (tok is "MSSQL" or "SYBASE" or "POSTGRES")
                 {
                     arguments.RemoveAt(i);
                     return ParsePlatform(tok);

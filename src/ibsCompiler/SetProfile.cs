@@ -2212,11 +2212,11 @@ namespace ibsCompiler
             if (platform != null)
             {
                 var p = platform.Trim().ToUpperInvariant();
-                if (p is "MSSQL" or "SYBASE" or "POSTGRES" or "PG")
+                if (p is "MSSQL" or "SYBASE" or "POSTGRES")
                     profile.Platform = ibs_compiler_common.CanonicalName(ibs_compiler_common.ParsePlatform(p));
                 else
                 {
-                    Console.Error.WriteLine("ERROR: --platform must be one of mssql|sybase|postgres (pg accepted as alias).");
+                    Console.Error.WriteLine("ERROR: --platform must be one of mssql|sybase|postgres.");
                     return false;
                 }
             }

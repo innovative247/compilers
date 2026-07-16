@@ -19,7 +19,7 @@ namespace ibsCompiler
             var cmdvars = ibs_compiler_common.compile_variables(arguments, profileMgr);
             if (string.IsNullOrEmpty(cmdvars.Server))
             {
-                Console.Error.WriteLine("Usage: extract_msg <server/profile> [-U user] [-P pass] [-O outfile] [-MSSQL|-SYBASE|-PG]");
+                Console.Error.WriteLine("Usage: extract_msg <server/profile> [-U user] [-P pass] [-O outfile] [-MSSQL|-SYBASE|-POSTGRES]");
                 return 1;
             }
 
