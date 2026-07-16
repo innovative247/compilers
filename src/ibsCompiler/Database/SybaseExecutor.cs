@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Data;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -304,7 +305,20 @@ namespace ibsCompiler.Database
         {
             foreach (AseError err in ex.Errors)
             {
-                emit($"Msg {err.MessageNumber}, Level {err.Severity}, State {err.State}");
+                emit($"Msg {err.MessageNumber}, Level {err.Severity}, State {err.State}:");
+
+                var hasServer = !string.IsNullOrEmpty(err.ServerName);
+                var hasProc = !string.IsNullOrEmpty(err.ProcName);
+                var hasLine = err.LineNum > 0;
+                if (hasServer || hasProc || hasLine)
+                {
+                    var parts = new List<string>();
+                    if (hasServer) parts.Add($"Server '{err.ServerName}'");
+                    if (hasProc) parts.Add($"Procedure '{err.ProcName}'");
+                    if (hasLine) parts.Add($"Line {err.LineNum}");
+                    emit(string.Join(", ", parts) + ":");
+                }
+
                 emit(err.Message);
             }
         }

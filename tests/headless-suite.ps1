@@ -313,6 +313,16 @@ function Test-AdHocQueries {
         $r = Invoke-Cli isqlline 'SELECT(1+1)' 'master' 'NO_SUCH_PROFILE_XYZ'
         if ($r.ExitCode -eq 0) { throw 'unknown profile should exit non-zero' }
     }
+    Test-Case 'isqlline.error_reports_location' {
+        # A failing statement against real GONZO (Sybase) must report WHERE it failed
+        # (Server/Procedure/Line context), matching legacy isql, not just the message text.
+        # SQL must be space-free (see isqlline.basic note above).
+        $r = Invoke-Cli isqlline 'select*from[no_such_table]' 'master' 'GONZO'
+        if ($r.ExitCode -eq 0) { throw 'query against a nonexistent table should exit non-zero' }
+        $combined = "$($r.StdOut)`n$($r.StdErr)"
+        if ($combined -notmatch "Server '") { throw "expected a Server '...' context line. output: $combined" }
+        if ($combined -notmatch ', Line ') { throw "expected a ', Line N' context. output: $combined" }
+    }
 
     # ===== iwho =====
     Test-Case 'iwho.all' {
