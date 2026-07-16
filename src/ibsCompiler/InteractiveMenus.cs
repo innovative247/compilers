@@ -1780,7 +1780,7 @@ namespace ibsCompiler
         /// </summary>
         public static readonly string[] SetMessagesBoolFlagNames = new[]
         {
-            "--import", "--export", "--yes",
+            "--import", "--export", "--yes", "--add", "--dry-run",
         };
 
         /// <summary>
@@ -1801,7 +1801,7 @@ namespace ibsCompiler
             // Headless CLI dispatch when ANY long flag is present. Including
             // --on-saved / --yes here means a misuse like "--on-saved keep" without
             // --import gets a clean error, not a stdin hang in the interactive menu.
-            if (args != null && CliArgs.AnyPresent(args, "--import", "--export", "--on-saved", "--yes"))
+            if (args != null && CliArgs.AnyPresent(args, "--import", "--export", "--on-saved", "--yes", "--add", "--dry-run"))
                 return RunSetMessagesHeadless(args, cmdvars, profile, executor);
 
             var profileName = profile.IsProfile ? profile.ProfileName : cmdvars.ServerNameOnly;
@@ -1826,18 +1826,20 @@ namespace ibsCompiler
             Console.WriteLine("Select operation:");
             Console.WriteLine("  1) Import messages from the files into the database");
             Console.WriteLine("  2) Export messages from the database into the files");
+            Console.WriteLine("  3) Add a message to the files");
             Console.WriteLine("  99) Cancel");
             Console.WriteLine();
 
             string mode;
             while (true)
             {
-                Console.Write("Enter choice (1, 2, or 99): ");
+                Console.Write("Enter choice (1, 2, 3, or 99): ");
                 var choice = Console.ReadLine()?.Trim() ?? "";
                 if (choice == "1") { mode = "import"; break; }
                 if (choice == "2") { mode = "export"; break; }
+                if (choice == "3") { return RunAddMessageInteractive(profile); }
                 if (choice == "99") { Console.WriteLine("Cancelled."); return 0; }
-                Console.WriteLine("Invalid choice. Please enter 1, 2, or 99.");
+                Console.WriteLine("Invalid choice. Please enter 1, 2, 3, or 99.");
             }
 
             if (mode == "export")
@@ -1934,6 +1936,11 @@ namespace ibsCompiler
             List<string> args,
             CommandVariables cmdvars, ResolvedProfile profile, ISqlExecutor executor)
         {
+            // --add is a pure file operation (no DB, no import/export mutex, no
+            // GONZO guard). Dispatch it before any of that machinery.
+            if (CliArgs.HasFlag(args, "--add"))
+                return RunAddMessageHeadless(args, profile);
+
             var doImport = CliArgs.HasFlag(args, "--import");
             var doExport = CliArgs.HasFlag(args, "--export");
             var onSavedRaw = CliArgs.GetOption(args, "--on-saved");
@@ -2009,6 +2016,158 @@ namespace ibsCompiler
             Console.WriteLine($"Exporting messages from {profileName}...");
             RunMessageExport(cmdvars, profile, executor);
             Console.WriteLine("compile_msg DONE.");
+            return 0;
+        }
+
+        /// <summary>
+        /// Headless "add a message row directly to the flat files":
+        ///   set_messages PROFILE --add --type gui --group MENU --text "..." [--lang N] [--cmpy N] [--upd-flg X] [--dry-run]
+        /// Output contract:
+        ///   success  -> exactly one stdout line "MSGNO &lt;n&gt;", exit 0
+        ///   dry-run  -> "DRYRUN MSGNO &lt;n&gt;" then the row, exit 0, file untouched
+        ///   failure  -> "ERROR: &lt;reason&gt;" on stderr, exit 1
+        /// A duplicate-text warning goes to stderr and does not change the exit code
+        /// or the single stdout line.
+        /// </summary>
+        private static int RunAddMessageHeadless(List<string> args, ResolvedProfile profile)
+        {
+            var type = CliArgs.GetOption(args, "--type");
+            var group = CliArgs.GetOption(args, "--group");
+            var text = CliArgs.GetOption(args, "--text");
+            var langStr = CliArgs.GetOption(args, "--lang");
+            var cmpyStr = CliArgs.GetOption(args, "--cmpy");
+            var updFlgStr = CliArgs.GetOption(args, "--upd-flg");
+            var dryRun = CliArgs.HasFlag(args, "--dry-run");
+
+            if (string.IsNullOrEmpty(type))
+            {
+                Console.Error.WriteLine("ERROR: --add requires --type (ibs|gui|sql|sqr|jam).");
+                return 1;
+            }
+            if (string.IsNullOrEmpty(group))
+            {
+                Console.Error.WriteLine("ERROR: --add requires --group.");
+                return 1;
+            }
+            if (text == null)
+            {
+                Console.Error.WriteLine("ERROR: --add requires --text.");
+                return 1;
+            }
+
+            int lang = 1;
+            if (!string.IsNullOrEmpty(langStr) && !int.TryParse(langStr, out lang))
+            {
+                Console.Error.WriteLine("ERROR: --lang must be an integer.");
+                return 1;
+            }
+            int cmpy = 0;
+            if (!string.IsNullOrEmpty(cmpyStr) && !int.TryParse(cmpyStr, out cmpy))
+            {
+                Console.Error.WriteLine("ERROR: --cmpy must be an integer.");
+                return 1;
+            }
+            char? updFlg = null;
+            if (updFlgStr != null)
+            {
+                if (updFlgStr.Length != 1)
+                {
+                    Console.Error.WriteLine("ERROR: --upd-flg must be exactly one character.");
+                    return 1;
+                }
+                updFlg = updFlgStr[0];
+            }
+
+            var result = MessageFileEditor.AddMessage(profile, type, group, text, lang, cmpy, updFlg, dryRun);
+            if (!result.Success)
+            {
+                Console.Error.WriteLine($"ERROR: {result.Error}");
+                return 1;
+            }
+            if (result.Warning != null)
+                Console.Error.WriteLine($"WARNING: {result.Warning}");
+
+            if (dryRun)
+            {
+                Console.WriteLine($"DRYRUN MSGNO {result.Msgno}");
+                Console.WriteLine(result.Row);
+            }
+            else
+            {
+                Console.WriteLine($"MSGNO {result.Msgno}");
+            }
+            return 0;
+        }
+
+        /// <summary>
+        /// Interactive "add a message" flow: prompt for type/group/text and the
+        /// optional lang/cmpy/upd-flg (Enter = defaults), show the computed msgno
+        /// and the exact tab row, confirm, then write.
+        /// </summary>
+        private static int RunAddMessageInteractive(ResolvedProfile profile)
+        {
+            Console.WriteLine();
+            Console.Write("Message type (ibs|gui|sql|sqr|jam): ");
+            var type = (Console.ReadLine() ?? "").Trim();
+            Console.Write("Group: ");
+            var group = (Console.ReadLine() ?? "").Trim();
+            Console.Write("Message text: ");
+            var text = Console.ReadLine() ?? "";
+            Console.Write("Language [1]: ");
+            var langStr = (Console.ReadLine() ?? "").Trim();
+            Console.Write("Company [0]: ");
+            var cmpyStr = (Console.ReadLine() ?? "").Trim();
+            Console.Write("Update flag (Enter = X for gui, space otherwise): ");
+            var updStr = Console.ReadLine() ?? "";
+
+            int lang = 1;
+            if (langStr.Length > 0 && !int.TryParse(langStr, out lang))
+            {
+                Console.Error.WriteLine("ERROR: language must be an integer.");
+                return 1;
+            }
+            int cmpy = 0;
+            if (cmpyStr.Length > 0 && !int.TryParse(cmpyStr, out cmpy))
+            {
+                Console.Error.WriteLine("ERROR: company must be an integer.");
+                return 1;
+            }
+            char? updFlg = null;
+            if (updStr.Length == 1) updFlg = updStr[0];
+            else if (updStr.Length > 1)
+            {
+                Console.Error.WriteLine("ERROR: update flag must be a single character.");
+                return 1;
+            }
+
+            // Preview (dry-run) first so the user sees the computed number and row.
+            var preview = MessageFileEditor.AddMessage(profile, type, group, text, lang, cmpy, updFlg, dryRun: true);
+            if (!preview.Success)
+            {
+                Console.Error.WriteLine($"ERROR: {preview.Error}");
+                return 1;
+            }
+            if (preview.Warning != null)
+                Console.Error.WriteLine($"WARNING: {preview.Warning}");
+
+            Console.WriteLine();
+            Console.WriteLine($"Computed message number: {preview.Msgno}");
+            Console.WriteLine("Row to append (tab-delimited):");
+            Console.WriteLine("  " + preview.Row.Replace("\t", " | "));
+            Console.WriteLine();
+            if (!ConsoleYesNo("Write this message to the file?"))
+            {
+                Console.WriteLine("Cancelled.");
+                return 0;
+            }
+
+            var result = MessageFileEditor.AddMessage(profile, type, group, text, lang, cmpy, updFlg, dryRun: false);
+            if (!result.Success)
+            {
+                Console.Error.WriteLine($"ERROR: {result.Error}");
+                return 1;
+            }
+            Console.WriteLine($"Added message {result.Msgno} to css.{type.Trim().ToLowerInvariant()}_msg.");
             return 0;
         }
 

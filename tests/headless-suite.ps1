@@ -1120,6 +1120,142 @@ function Test-Messages {
         $r = Invoke-Cli compile_msg '--import' 'GONZO'
         if ($r.ExitCode -eq 0) { throw 'compile_msg --import GONZO must be rejected' }
     }
+
+    # ===== set_messages --add (write a row straight into css.<type>_msg) =====
+    # Hermetic per-test fixtures written LF-only, UTF-8 no BOM, trailing newline
+    # into TEST_LOCAL's scratch CSS\Setup. Each add test rewrites the fixture so
+    # ordering never matters. Values passed on the CLI must be space-free (PS5
+    # Start-Process -ArgumentList splits on spaces).
+    $setup    = Join-Path $script:Scratch 'CSS\Setup'
+    $guiMsg   = Join-Path $setup 'css.gui_msg'
+    $guiMsgrp = Join-Path $setup 'css.gui_msgrp'
+    $ibsMsg   = Join-Path $setup 'css.ibs_msg'
+    $ibsMsgrp = Join-Path $setup 'css.ibs_msgrp'
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+
+    function Write-LfFile {
+        param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string[]]$Rows)
+        $content = ($Rows -join "`n") + "`n"
+        [System.IO.File]::WriteAllText($Path, $content, $utf8NoBom)
+    }
+    function Reset-MsgFixture {
+        Write-LfFile $guiMsg @(
+            "100`t1`t0`tMENU  `tX`t100000`tFirst menu message"
+            "101`t1`t0`tMENU  `tX`t100001`tSecond menu message"
+            "101`t2`t0`tMENU  `tX`t100002`tSecond menu message fr"
+        )
+        Write-LfFile $guiMsgrp @(
+            "MENU  `t100`tMenu messages"
+            "BLANK `t500`tEmpty block seeded at 500"
+            "ZEROG `t0`tZero-minmsg group"
+            "COLL  `t100`tCollides with MENU block"
+        )
+        Write-LfFile $ibsMsg   @("200`t1`t0`tCORE  `t `t100010`tCore ibs message")
+        Write-LfFile $ibsMsgrp @("CORE  `t200`tCore ibs messages")
+    }
+
+    Test-Case 'set_messages.add_normal' {
+        Reset-MsgFixture
+        $before = [System.IO.File]::ReadAllLines($guiMsg).Count
+        $r = Invoke-Cli set_messages '--add' '--type' 'gui' '--group' 'MENU' '--text' 'AddedMenuMsg' $script:TestProfile
+        Assert-ExitCode $r
+        if ($r.StdOut.Trim() -ne 'MSGNO 102') { throw "expected single line 'MSGNO 102', got: '$($r.StdOut)'" }
+        $after = [System.IO.File]::ReadAllLines($guiMsg)
+        if ($after.Count -ne $before + 1) { throw "expected exactly one new line (was $before, now $($after.Count))" }
+        $raw = [System.IO.File]::ReadAllText($guiMsg)
+        if ($raw -match "`r") { throw 'file must not contain CR (LF-only)' }
+        if (-not $raw.EndsWith("`n")) { throw 'file must end with trailing newline' }
+    }
+    Test-Case 'set_messages.add_multilang_maxplus1' {
+        # MENU has msgno 101 on two languages; next must be max+1 (102), not max.
+        Reset-MsgFixture
+        $r = Invoke-Cli set_messages '--add' '--type' 'gui' '--group' 'MENU' '--text' 'MultiLangMsg' $script:TestProfile
+        Assert-ExitCode $r
+        if ($r.StdOut.Trim() -ne 'MSGNO 102') { throw "expected 'MSGNO 102', got: '$($r.StdOut)'" }
+    }
+    Test-Case 'set_messages.add_empty_group_uses_minmsg' {
+        # BLANK has no rows in _msg but s#minmsg=500 -> next is 500.
+        Reset-MsgFixture
+        $r = Invoke-Cli set_messages '--add' '--type' 'gui' '--group' 'BLANK' '--text' 'FirstBlankMsg' $script:TestProfile
+        Assert-ExitCode $r
+        if ($r.StdOut.Trim() -ne 'MSGNO 500') { throw "expected 'MSGNO 500', got: '$($r.StdOut)'" }
+    }
+    Test-Case 'set_messages.add_zero_minmsg_errors' {
+        # ZEROG: empty in _msg and s#minmsg=0 -> cannot seed a block.
+        Reset-MsgFixture
+        $r = Invoke-Cli set_messages '--add' '--type' 'gui' '--group' 'ZEROG' '--text' 'X' $script:TestProfile
+        if ($r.ExitCode -eq 0) { throw 's#minmsg=0 with empty group must fail' }
+        if ($r.StdErr -notmatch 'ERROR:') { throw "stderr should carry ERROR: prefix: $($r.StdErr)" }
+    }
+    Test-Case 'set_messages.add_collision_errors' {
+        # COLL seeds at 100 which MENU already owns -> hard collision guard fires.
+        Reset-MsgFixture
+        $r = Invoke-Cli set_messages '--add' '--type' 'gui' '--group' 'COLL' '--text' 'X' $script:TestProfile
+        if ($r.ExitCode -eq 0) { throw 'collision with existing number must fail' }
+        if ($r.StdErr -notmatch 'already in use|block exhausted|overlaps') {
+            throw "stderr should explain the collision: $($r.StdErr)"
+        }
+    }
+    Test-Case 'set_messages.add_unknown_group_errors' {
+        Reset-MsgFixture
+        $r = Invoke-Cli set_messages '--add' '--type' 'gui' '--group' 'NOSUCH' '--text' 'X' $script:TestProfile
+        if ($r.ExitCode -eq 0) { throw 'unknown group must fail' }
+        if ($r.StdErr -notmatch 'unknown group') { throw "stderr should say 'unknown group': $($r.StdErr)" }
+    }
+    Test-Case 'set_messages.add_rpt_type_errors' {
+        Reset-MsgFixture
+        $r = Invoke-Cli set_messages '--add' '--type' 'rpt' '--group' 'MENU' '--text' 'X' $script:TestProfile
+        if ($r.ExitCode -eq 0) { throw '--type rpt must be rejected' }
+        if ($r.StdErr -notmatch 'rpt messages are not part of the live pipeline') {
+            throw "stderr should reject rpt explicitly: $($r.StdErr)"
+        }
+    }
+    Test-Case 'set_messages.add_text_too_long_errors' {
+        Reset-MsgFixture
+        $long = ('a' * 300)
+        $r = Invoke-Cli set_messages '--add' '--type' 'gui' '--group' 'MENU' '--text' $long $script:TestProfile
+        if ($r.ExitCode -eq 0) { throw '300-char text must be rejected (>255)' }
+        if ($r.StdErr -notmatch '255') { throw "stderr should mention the 255 limit: $($r.StdErr)" }
+    }
+    Test-Case 'set_messages.add_newline_text_errors' {
+        Reset-MsgFixture
+        $nl = "line1`nline2"
+        $r = Invoke-Cli set_messages '--add' '--type' 'gui' '--group' 'MENU' '--text' $nl $script:TestProfile
+        if ($r.ExitCode -eq 0) { throw 'text with an embedded newline must be rejected' }
+    }
+    Test-Case 'set_messages.add_dryrun_no_write' {
+        Reset-MsgFixture
+        $hashBefore = (Get-FileHash $guiMsg -Algorithm SHA256).Hash
+        $r = Invoke-Cli set_messages '--add' '--dry-run' '--type' 'gui' '--group' 'MENU' '--text' 'DryRunMsg' $script:TestProfile
+        Assert-ExitCode $r
+        if ($r.StdOut -notmatch 'DRYRUN MSGNO 102') { throw "expected 'DRYRUN MSGNO 102' in output: $($r.StdOut)" }
+        $hashAfter = (Get-FileHash $guiMsg -Algorithm SHA256).Hash
+        if ($hashBefore -ne $hashAfter) { throw '--dry-run must not modify the file' }
+    }
+    Test-Case 'set_messages.add_grp_padded_to_6' {
+        Reset-MsgFixture
+        $r = Invoke-Cli set_messages '--add' '--type' 'gui' '--group' 'MENU' '--text' 'PadCheck' $script:TestProfile
+        Assert-ExitCode $r
+        $last = ([System.IO.File]::ReadAllLines($guiMsg))[-1]
+        $cols = $last -split "`t"
+        if ($cols[3].Length -ne 6) { throw "grp column must be padded to 6 chars, got '$($cols[3])' (len $($cols[3].Length))" }
+        if ($cols[3] -ne 'MENU  ') { throw "grp column should be 'MENU  ', got '$($cols[3])'" }
+    }
+    Test-Case 'set_messages.add_updflg_default_gui_X' {
+        Reset-MsgFixture
+        $r = Invoke-Cli set_messages '--add' '--type' 'gui' '--group' 'MENU' '--text' 'GuiFlag' $script:TestProfile
+        Assert-ExitCode $r
+        $cols = (([System.IO.File]::ReadAllLines($guiMsg))[-1]) -split "`t"
+        if ($cols[4] -ne 'X') { throw "gui upd_flg should default to 'X', got '$($cols[4])'" }
+    }
+    Test-Case 'set_messages.add_updflg_default_ibs_space' {
+        Reset-MsgFixture
+        $r = Invoke-Cli set_messages '--add' '--type' 'ibs' '--group' 'CORE' '--text' 'IbsFlag' $script:TestProfile
+        Assert-ExitCode $r
+        if ($r.StdOut.Trim() -ne 'MSGNO 201') { throw "expected 'MSGNO 201', got: '$($r.StdOut)'" }
+        $cols = (([System.IO.File]::ReadAllLines($ibsMsg))[-1]) -split "`t"
+        if ($cols[4] -ne ' ') { throw "ibs upd_flg should default to a single space, got '$($cols[4])'" }
+    }
 }
 
 function Test-ProfileManagement {

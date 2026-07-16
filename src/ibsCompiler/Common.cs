@@ -116,6 +116,13 @@ namespace ibsCompiler
         public static StreamWriter OpenSourceWriter(string path, bool append = false)
             => new StreamWriter(path, append) { NewLine = "\n" };
 
+        /// <summary>
+        /// Seconds since the SBN epoch (1980-01-01), the int form used by
+        /// chg_tm on message rows and end_tm on upgrades (see IRunUpgrade.cs).
+        /// </summary>
+        public static int SecondsSince1980()
+            => (int)(DateTime.Now - new DateTime(1980, 1, 1)).TotalSeconds;
+
         public static bool ConsoleYesNo(string question)
         {
             while (true)
