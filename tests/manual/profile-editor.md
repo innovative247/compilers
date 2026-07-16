@@ -38,10 +38,13 @@ Confirm each:
 - [ ] **Password** — `Enter` on Password prompts masked (`*`); empty keeps the existing
       value; a new value shows as `****`.
 - [ ] **Test chooser** — `T` shows a one-line chooser on the message row:
-      `[C]onnection [P]ath [O]ptions [L]ocations [G]changelog [A]ll` (full profile) or
-      just `[C]onnection` (raw profile). The chosen test runs against the WORKING COPY
-      (unsaved edits included), output scrolls, waits for a key, then the editor redraws
-      intact. `Esc` (or any other key) at the chooser cancels back to the editor.
+      `[C]onnection [P]ath [O]ptions [L]ocations [G]changelog [S]ymlinks [A]ll` (full
+      profile) or just `[C]onnection [P]ath` (raw profile — matches the legacy
+      TestProfileMenu raw behavior: only SQL Source path and Connection are available,
+      the other four are hidden). The chosen test runs against the WORKING COPY (unsaved
+      edits included), output scrolls, waits for a key, then the editor redraws intact.
+      `[A]ll` (full profile only) runs the same sequence as `--test --what all` for that
+      profile. `Esc` (or any other key) at the chooser cancels back to the editor.
 - [ ] **Save** — `S` validates all visible rows then exits; `--view <name>` afterward
       confirms every edited field (including `--data-charset` / Data Charset).
 - [ ] **Cancel discards** — with unsaved changes, `Esc` prompts "Discard changes? (y/N)";

@@ -466,20 +466,23 @@ namespace ibsCompiler
                         case ConsoleKey.T:
                             if (onTest != null)
                             {
-                                // Raw profiles can only be connection-tested (same rule as the
-                                // headless --test path); full profiles get the whole set.
+                                // Raw profiles skip SBN-specific preprocessing (options,
+                                // table locations, changelog, symlinks) — same rule as the
+                                // headless --test path — so only Connection + Path apply.
+                                // Full profiles get the whole legacy test set plus [A]ll.
                                 string prompt = profile.RawMode
-                                    ? "Test: [C]onnection   [Esc] cancel"
-                                    : "Test: [C]onnection [P]ath [O]ptions [L]ocations [G]changelog [A]ll   [Esc] cancel";
+                                    ? "Test: [C]onnection [P]ath   [Esc] cancel"
+                                    : "Test: [C]onnection [P]ath [O]ptions [L]ocations [G]changelog [S]ymlinks [A]ll   [Esc] cancel";
                                 Message(prompt, ConsoleColor.Cyan);
                                 var choice = Console.ReadKey(intercept: true);
                                 string? kind = char.ToUpperInvariant(choice.KeyChar) switch
                                 {
                                     'C' => "connection",
-                                    'P' => profile.RawMode ? null : "sql-source",
+                                    'P' => "sql-source",
                                     'O' => profile.RawMode ? null : "options",
                                     'L' => profile.RawMode ? null : "table-locations",
                                     'G' => profile.RawMode ? null : "changelog",
+                                    'S' => profile.RawMode ? null : "symlinks",
                                     'A' => profile.RawMode ? null : "all",
                                     _ => null,
                                 };
