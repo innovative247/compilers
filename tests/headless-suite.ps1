@@ -1127,7 +1127,7 @@ function Test-ProfileManagement {
 
     $scratchProfile = 'TEST_PROFILE_SUITE'
     # Defensive: in case a prior run left these behind
-    foreach ($n in @($scratchProfile, "${scratchProfile}_2", "${scratchProfile}_RAW", "${scratchProfile}_PG", "${scratchProfile}_PG2")) {
+    foreach ($n in @($scratchProfile, "${scratchProfile}_2", "${scratchProfile}_RAW", "${scratchProfile}_PG", "${scratchProfile}_PG2", "${scratchProfile}_CS")) {
         Invoke-Cli set_profile '--delete' $n '--yes' | Out-Null
     }
 
@@ -1210,6 +1210,34 @@ function Test-ProfileManagement {
         if ($r.StdOut -notmatch $scratchProfile) { throw "view output missing profile name" }
         if ($r.StdOut -notmatch '127\.0\.0\.1') { throw "view output missing host" }
         if ($r.StdOut -notmatch '1433')        { throw "view output missing port" }
+    }
+
+    Test-Case 'set_profile.create_data_charset' {
+        # --data-charset is the only editor field with a dedicated value flag added
+        # alongside the interactive editor. It must persist on create.
+        $r = Invoke-Cli set_profile '--create' "${scratchProfile}_CS" `
+            '--platform' 'mssql' '--host' '127.0.0.1' `
+            '--user' 'sa' '--password' 'placeholder' `
+            '--company' '101' '--sql-source' $script:Scratch `
+            '--data-charset' 'Windows-1252'
+        Assert-ExitCode $r
+        Assert-Field (Get-Profile "${scratchProfile}_CS") 'DATA_CHARSET' 'Windows-1252'
+    }
+
+    Test-Case 'set_profile.edit_data_charset' {
+        Assert-ExitCode (Invoke-Cli set_profile '--edit' "${scratchProfile}_CS" '--data-charset' 'cp850')
+        Assert-Field (Get-Profile "${scratchProfile}_CS") 'DATA_CHARSET' 'cp850'
+    }
+
+    Test-Case 'set_profile.view_extended_fields' {
+        # --view must surface the fields the whole-profile editor added: DATA_CHARSET,
+        # DEFAULT_LANGUAGE, and (for PostgreSQL) DATABASE.
+        $r = Invoke-Cli set_profile '--view' "${scratchProfile}_CS"
+        Assert-ExitCode $r
+        if ($r.StdOut -notmatch 'cp850')    { throw "view output missing data charset. stdout: $($r.StdOut)" }
+        if ($r.StdOut -notmatch 'Language') { throw "view output missing default language row. stdout: $($r.StdOut)" }
+        if ($r.StdOut -notmatch 'Charset')  { throw "view output missing charset row. stdout: $($r.StdOut)" }
+        Invoke-Cli set_profile '--delete' "${scratchProfile}_CS" '--yes' | Out-Null
     }
 
     Test-Case 'set_profile.edit_port' {

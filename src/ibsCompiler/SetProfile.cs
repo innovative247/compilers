@@ -376,8 +376,12 @@ namespace ibsCompiler
             if (!profile.RawMode)
                 PrintField(Icons.GEAR, "Company:", profile.Company ?? "unknown");
             PrintField(Icons.DATABASE, "Platform:", profile.Platform ?? "unknown", ConsoleColor.Cyan);
+            if (ibs_compiler_common.ParsePlatform(profile.Platform) == SQLServerTypes.POSTGRES)
+                PrintField(Icons.DATABASE, "Database:", string.IsNullOrEmpty(profile.Database) ? "(none)" : profile.Database, ConsoleColor.Cyan);
             PrintField(Icons.ARROW, "Server:", $"{profile.Host}:{profile.Port}", ConsoleColor.Green);
             PrintField(Icons.BULLET, "Username:", profile.Username ?? "unknown");
+            PrintField(Icons.GEAR, "Language:", string.IsNullOrEmpty(profile.DefaultLanguage) ? "1" : profile.DefaultLanguage);
+            PrintField(Icons.GEAR, "Charset:", string.IsNullOrEmpty(profile.DataCharset) ? "(server default)" : profile.DataCharset);
 
             if (!profile.RawMode)
             {
@@ -437,6 +441,45 @@ namespace ibsCompiler
                 }
             }
 
+            // Interactive TTY → whole-profile editor. Redirected console → sequential prompts.
+            if (!Console.IsInputRedirected && !Console.IsOutputRedirected)
+            {
+                CreateProfileInteractive(name, profile);
+                return;
+            }
+
+            CreateProfileSequential(name, profile);
+        }
+
+        private static void CreateProfileInteractive(string name, ProfileData profile)
+        {
+            profile.DefaultLanguage = "1";
+            var saved = ProfileEditor.Edit(name, profile, isCreate: true, p => { TestConnection(p); return true; });
+            if (!saved)
+            {
+                PrintDim("  Create cancelled — no profile saved.");
+                return;
+            }
+
+            _settings.Profiles[name] = profile;
+            if (SaveSettings())
+            {
+                Console.WriteLine();
+                PrintSuccess($"Profile '{name}' created!");
+                DisplayProfile(name, profile);
+
+                if (!profile.RawMode)
+                    ibs_compiler_common.EnsureSymbolicLinks(profile.SqlSource ?? "");
+
+                Console.Write("\nTest connection now? (Y/n): ");
+                var test = Console.ReadLine()?.Trim().ToUpper();
+                if (test != "N")
+                    TestConnection(profile);
+            }
+        }
+
+        private static void CreateProfileSequential(string name, ProfileData profile)
+        {
             // 2. Aliases
             Console.WriteLine();
             PrintStep(2, "Aliases (Optional)");
@@ -701,6 +744,51 @@ namespace ibsCompiler
 
         #region Edit Profile
         private static void EditProfile(string name, ProfileData profile)
+        {
+            // Redirected console (suite / piped input) → sequential fallback; never a TUI.
+            if (Console.IsInputRedirected || Console.IsOutputRedirected)
+            {
+                EditProfileSequential(name, profile);
+                return;
+            }
+
+            // Work on a JSON clone so a cancel leaves the stored profile untouched.
+            var working = JsonSerializer.Deserialize<ProfileData>(JsonSerializer.Serialize(profile))!;
+            var saved = ProfileEditor.Edit(name, working, isCreate: false, p => { TestConnection(p); return true; });
+            if (!saved)
+            {
+                PrintDim("  Edit cancelled — no changes saved.");
+                return;
+            }
+
+            CopyProfileInto(profile, working); // profile is the live store object; mutate it in place
+            if (SaveSettings())
+            {
+                PrintSuccess($"Profile '{name}' updated.");
+                DisplayProfile(name, profile);
+                if (!profile.RawMode)
+                    ibs_compiler_common.EnsureSymbolicLinks(profile.SqlSource ?? "");
+            }
+        }
+
+        /// <summary>Copies every editable field from src onto dst (dst is the stored reference).</summary>
+        private static void CopyProfileInto(ProfileData dst, ProfileData src)
+        {
+            dst.Company = src.Company;
+            dst.DefaultLanguage = src.DefaultLanguage;
+            dst.Platform = src.Platform;
+            dst.Host = src.Host;
+            dst.Port = src.Port;
+            dst.Username = src.Username;
+            dst.Password = src.Password;
+            dst.SqlSource = src.SqlSource;
+            dst.RawMode = src.RawMode;
+            dst.Database = src.Database;
+            dst.DataCharset = src.DataCharset;
+            dst.Aliases = src.Aliases;
+        }
+
+        private static void EditProfileSequential(string name, ProfileData profile)
         {
             Console.WriteLine();
             PrintSubheader($"Edit Profile: {name}");
@@ -1771,7 +1859,7 @@ namespace ibsCompiler
             return aliases;
         }
 
-        private static string ReadPassword()
+        internal static string ReadPassword()
         {
             var password = new System.Text.StringBuilder();
             while (true)
@@ -2199,6 +2287,11 @@ namespace ibsCompiler
             var lang = CliArgs.GetOption(args, "--language");
             if (lang != null) profile.DefaultLanguage = lang.Trim();
             else if (isCreate && string.IsNullOrEmpty(profile.DefaultLanguage)) profile.DefaultLanguage = "1";
+
+            // --data-charset: actual code page of char/varchar data (value flag, not boolean).
+            // The only editor field without a dedicated flag before this addition.
+            var charset = CliArgs.GetOption(args, "--data-charset");
+            if (charset != null) profile.DataCharset = charset.Trim();
 
             if (profile.RawMode)
             {
