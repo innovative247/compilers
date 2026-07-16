@@ -1303,7 +1303,7 @@ function Test-ProfileManagement {
 
     $scratchProfile = 'TEST_PROFILE_SUITE'
     # Defensive: in case a prior run left these behind
-    foreach ($n in @($scratchProfile, "${scratchProfile}_2", "${scratchProfile}_RAW", "${scratchProfile}_PG", "${scratchProfile}_PG2", "${scratchProfile}_CS")) {
+    foreach ($n in @($scratchProfile, "${scratchProfile}_2", "${scratchProfile}_RAW", "${scratchProfile}_PG", "${scratchProfile}_PG2", "${scratchProfile}_CS", "${scratchProfile}_MIX", "${scratchProfile}_MIX2")) {
         Invoke-Cli set_profile '--delete' $n '--yes' | Out-Null
     }
 
@@ -1353,6 +1353,30 @@ function Test-ProfileManagement {
         if ($r.ExitCode -eq 0) { throw "--platform pg should be rejected now that PG is retired" }
         if ($r.StdErr -notmatch 'mssql\|sybase\|postgres') { throw "expected the mssql|sybase|postgres usage error. stderr: $($r.StdErr)" }
         Assert-ProfileAbsent "${scratchProfile}_PG2"
+    }
+
+    Test-Case 'set_profile.create_platform_mixed_case' {
+        # Mixed-case --platform input must land stored as the uppercase canonical
+        # token (ParsePlatform + CanonicalName). "PoStGrEs" -> PLATFORM=POSTGRES.
+        $mix = "${scratchProfile}_MIX"
+        $r = Invoke-Cli set_profile '--create' $mix `
+            '--platform' 'PoStGrEs' '--host' '127.0.0.1' `
+            '--user' 'postgres' '--password' 'placeholder' `
+            '--company' '101' '--sql-source' $script:Scratch
+        Assert-ExitCode $r
+        Assert-Field (Get-Profile $mix) 'PLATFORM' 'POSTGRES'
+
+        # A second mixed-case spelling of a different platform, for good measure.
+        $mix2 = "${scratchProfile}_MIX2"
+        $r2 = Invoke-Cli set_profile '--create' $mix2 `
+            '--platform' 'sYbAsE' '--host' '127.0.0.1' `
+            '--user' 'sa' '--password' 'placeholder' `
+            '--company' '101' '--sql-source' $script:Scratch
+        Assert-ExitCode $r2
+        Assert-Field (Get-Profile $mix2) 'PLATFORM' 'SYBASE'
+
+        Invoke-Cli set_profile '--delete' $mix '--yes' | Out-Null
+        Invoke-Cli set_profile '--delete' $mix2 '--yes' | Out-Null
     }
 
     Test-Case 'set_profile.cleanup_canonicalizes_postgres_case' {

@@ -5,11 +5,14 @@ using ibsCompiler.Configuration;
 namespace ibsCompiler
 {
     /// <summary>
-    /// Whole-profile interactive TUI editor. All fields render as label:value rows;
-    /// Up/Down moves, Enter edits in place, S saves, T runs a connection test, Esc
-    /// cancels (confirming a discard when dirty). Headless flags retain full parity —
-    /// this path is used only when the console is a real TTY (not redirected); the
-    /// caller falls back to the sequential prompt flow otherwise.
+    /// Whole-profile interactive TUI editor. Every field renders as a label:value
+    /// row and stays visible at all times; Up/Down moves, Enter edits in place,
+    /// S saves, T opens the test chooser, Esc cancels (confirming a discard when
+    /// dirty). Fields that don't apply to the current profile (Company / SQL Source
+    /// under raw mode, Database off PostgreSQL) render a dim <c>---</c> and reject
+    /// edits with a one-line note. Headless flags retain full parity — this path is
+    /// used only when the console is a real TTY (not redirected); the caller falls
+    /// back to the sequential prompt flow otherwise.
     /// </summary>
     internal static class ProfileEditor
     {
@@ -25,7 +28,11 @@ namespace ibsCompiler
             public Func<ProfileData, string> Display = _ => "";
             /// Commit a validated text value (Text/Int/Path/AliasList only).
             public Action<ProfileData, string> Set = (_, __) => { };
-            public Func<ProfileData, bool>? Visible;
+            /// When present and false, the field is inapplicable: it renders a dim
+            /// <c>---</c>, is skipped by validation, and rejects edits with <see cref="DisabledNote"/>.
+            public Func<ProfileData, bool>? Applicable;
+            /// One-line reason shown when the user tries to edit an inapplicable field.
+            public string? DisabledNote;
             /// Returns an error string when the input is invalid, else null.
             public Func<ProfileData, string, string?>? Validate;
             /// Grayed resolved-default hint drawn after the value.
@@ -63,12 +70,14 @@ namespace ibsCompiler
                 {
                     Label = "Platform", Kind = FieldKind.Enum,
                     Raw = p => p.Platform ?? "",
-                    Display = p => ibs_compiler_common.DisplayName(ibs_compiler_common.ParsePlatform(p.Platform)),
+                    // Values are ALWAYS the uppercase canonical token (SYBASE/MSSQL/POSTGRES).
+                    Display = p => ibs_compiler_common.CanonicalName(ibs_compiler_common.ParsePlatform(p.Platform)),
                 },
                 new Field
                 {
                     Label = "Database", Kind = FieldKind.Text,
-                    Visible = p => ibs_compiler_common.ParsePlatform(p.Platform) == SQLServerTypes.POSTGRES,
+                    Applicable = p => ibs_compiler_common.ParsePlatform(p.Platform) == SQLServerTypes.POSTGRES,
+                    DisabledNote = "not applicable unless Platform is POSTGRES",
                     Raw = p => p.Database ?? "",
                     Display = p => string.IsNullOrEmpty(p.Database) ? "(none)" : p.Database,
                     Set = (p, v) => p.Database = v.Trim(),
@@ -111,7 +120,8 @@ namespace ibsCompiler
                 new Field
                 {
                     Label = "Company", Kind = FieldKind.Text,
-                    Visible = p => !p.RawMode,
+                    Applicable = p => !p.RawMode,
+                    DisabledNote = "not applicable in raw mode",
                     Raw = p => p.Company ?? "",
                     Display = p => string.IsNullOrEmpty(p.Company) ? "(unset)" : p.Company,
                     Set = (p, v) => p.Company = v.Trim(),
@@ -133,7 +143,8 @@ namespace ibsCompiler
                 new Field
                 {
                     Label = "SQL Source", Kind = FieldKind.Path,
-                    Visible = p => !p.RawMode,
+                    Applicable = p => !p.RawMode,
+                    DisabledNote = "not applicable in raw mode",
                     Raw = p => p.SqlSource ?? "",
                     Display = p => string.IsNullOrEmpty(p.SqlSource) ? "(unset)" : p.SqlSource,
                     Set = (p, v) =>
@@ -147,11 +158,13 @@ namespace ibsCompiler
 
         /// <summary>
         /// Edits <paramref name="profile"/> in place (caller passes a working copy).
-        /// Returns true when the user saved, false when cancelled, null when the
-        /// terminal is too small to host the widget (caller must fall back to the
-        /// sequential prompt flow).
+        /// <paramref name="onTest"/> runs a named test (the --what vocabulary) against
+        /// the working copy so unsaved edits are what get tested. Returns true when the
+        /// user saved, false when cancelled, null when the terminal is too small to host
+        /// the widget (caller must fall back to the sequential prompt flow).
         /// </summary>
-        public static bool? Edit(string profileName, ProfileData profile, bool isCreate, Func<ProfileData, bool>? onTest,
+        public static bool? Edit(string profileName, ProfileData profile, bool isCreate,
+            Action<ProfileData, string>? onTest,
             Func<string, IEnumerable<string>, string?>? validateAliases = null)
         {
             // Belt-and-suspenders: never drive a ReadKey loop on a redirected console.
@@ -196,48 +209,52 @@ namespace ibsCompiler
                 startRow = messageRow - fields.Length - 2;
             }
 
-            List<int> Visible()
-            {
-                var vis = new List<int>();
-                for (int i = 0; i < fields.Length; i++)
-                    if (fields[i].Visible == null || fields[i].Visible!(profile))
-                        vis.Add(i);
-                return vis;
-            }
+            bool IsApplicable(int fieldIdx)
+                => fields[fieldIdx].Applicable == null || fields[fieldIdx].Applicable!(profile);
 
-            int cursorVis = 0; // index into the visible list
+            int cursor = 0; // field index — every field is navigable, even disabled ones.
 
             void DrawRow(int fieldIdx, bool isCursor)
             {
                 var f = fields[fieldIdx];
-                bool visible = f.Visible == null || f.Visible!(profile);
+                bool applicable = IsApplicable(fieldIdx);
                 Console.SetCursorPosition(0, startRow + fieldIdx);
+                var pointer = isCursor ? ">" : " ";
                 string line;
-                if (!visible)
+                if (!applicable)
                 {
-                    line = "";
+                    // Inapplicable field: always visible, but shown as a dim placeholder
+                    // and non-editable. Keeps the layout stable instead of blanking rows.
+                    line = $"  {pointer} {f.Label,-16}: ---";
                 }
                 else
                 {
-                    var pointer = isCursor ? ">" : " ";
                     var dirty = f.Raw(profile) != f.Raw(snapshot) ? " *" : "";
                     var hint = f.Hint != null ? $"  ({f.Hint(profile)})" : "";
                     line = $"  {pointer} {f.Label,-16}: {f.Display(profile)}{dirty}{hint}";
                 }
                 if (line.Length < Console.WindowWidth - 1) line = line.PadRight(Console.WindowWidth - 1);
                 else line = line.Substring(0, Console.WindowWidth - 1);
-                Console.Write(line);
+                if (!applicable)
+                {
+                    var prev = Console.ForegroundColor;
+                    Console.ForegroundColor = ConsoleColor.DarkGray;
+                    Console.Write(line);
+                    Console.ForegroundColor = prev;
+                }
+                else
+                {
+                    Console.Write(line);
+                }
             }
 
             void Render()
             {
-                var vis = Visible();
-                if (cursorVis >= vis.Count) cursorVis = vis.Count - 1;
-                if (cursorVis < 0) cursorVis = 0;
-                int cursorField = vis[cursorVis];
+                if (cursor >= fields.Length) cursor = fields.Length - 1;
+                if (cursor < 0) cursor = 0;
                 for (int i = 0; i < fields.Length; i++)
-                    DrawRow(i, i == cursorField);
-                Console.SetCursorPosition(0, startRow + cursorField);
+                    DrawRow(i, i == cursor);
+                Console.SetCursorPosition(0, startRow + cursor);
             }
 
             // A transient message line just below the footer.
@@ -315,6 +332,26 @@ namespace ibsCompiler
                 }
             }
 
+            // Suspend the TUI, let scrolling test output print, wait for a key, then
+            // re-scaffold and redraw the editor intact. Shared by the [T] chooser.
+            void RunTestSuspended(string kind)
+            {
+                Console.CursorVisible = true;
+                // Land on the message row (guaranteed to exist — see Scaffold), then
+                // WriteLine from there so the buffer scrolls as needed instead of
+                // SetCursorPosition-ing to a row that may not exist yet.
+                Console.SetCursorPosition(0, startRow + fields.Length + 2);
+                Console.WriteLine();
+                Console.WriteLine();
+                onTest!(profile, kind);
+                Console.WriteLine();
+                Console.Write("  Press any key to return to the editor...");
+                Console.ReadKey(intercept: true);
+                Console.CursorVisible = false;
+                Scaffold();
+                Render();
+            }
+
             try
             {
                 Console.CursorVisible = false;
@@ -324,24 +361,27 @@ namespace ibsCompiler
                 while (true)
                 {
                     var key = Console.ReadKey(intercept: true);
-                    var vis = Visible();
-                    int fieldIdx = vis[cursorVis];
-                    var f = fields[fieldIdx];
+                    var f = fields[cursor];
 
                     switch (key.Key)
                     {
                         case ConsoleKey.UpArrow:
-                            if (cursorVis > 0) cursorVis--;
+                            if (cursor > 0) cursor--;
                             Render();
                             break;
 
                         case ConsoleKey.DownArrow:
-                            if (cursorVis < vis.Count - 1) cursorVis++;
+                            if (cursor < fields.Length - 1) cursor++;
                             Render();
                             break;
 
                         case ConsoleKey.Enter:
                             ClearMessage();
+                            if (!IsApplicable(cursor))
+                            {
+                                Message(f.DisabledNote ?? "not applicable", ConsoleColor.DarkGray);
+                                break;
+                            }
                             if (f.Kind == FieldKind.Bool)
                             {
                                 profile.RawMode = !profile.RawMode;
@@ -352,16 +392,16 @@ namespace ibsCompiler
                             {
                                 var menu = ibs_compiler_common.PlatformMenu;
                                 var cur = ibs_compiler_common.ParsePlatform(profile.Platform);
-                                int idx = Array.FindIndex(menu, m => m.Type == cur);
-                                var next = menu[(idx + 1) % menu.Length].Type;
+                                int idx = Array.IndexOf(menu, cur);
+                                var next = menu[(idx + 1) % menu.Length];
                                 profile.Platform = ibs_compiler_common.CanonicalName(next);
                                 Render();
                             }
                             else if (f.Kind == FieldKind.Password)
                             {
-                                Console.SetCursorPosition(0, startRow + fieldIdx);
+                                Console.SetCursorPosition(0, startRow + cursor);
                                 Console.Write(new string(' ', Console.WindowWidth - 1));
-                                Console.SetCursorPosition(0, startRow + fieldIdx);
+                                Console.SetCursorPosition(0, startRow + cursor);
                                 Console.Write($"  > {f.Label,-16}: ");
                                 Console.CursorVisible = true;
                                 var pw = set_profile_main.ReadPassword();
@@ -375,7 +415,7 @@ namespace ibsCompiler
                                 while (true)
                                 {
                                     var seed = f.Raw(profile);
-                                    var input = InlineEdit(fieldIdx, seed);
+                                    var input = InlineEdit(cursor, seed);
                                     if (input == null) break; // Esc = cancel this edit
                                     var err = f.Validate?.Invoke(profile, input);
                                     if (err != null) { Message(err, ConsoleColor.Yellow); continue; }
@@ -404,12 +444,12 @@ namespace ibsCompiler
                         case ConsoleKey.S:
                         {
                             string? firstError = null;
-                            foreach (var idx in Visible())
+                            for (int idx = 0; idx < fields.Length; idx++)
                             {
                                 var vf = fields[idx];
-                                if (vf.Validate == null) continue;
+                                if (!IsApplicable(idx) || vf.Validate == null) continue;
                                 var err = vf.Validate(profile, vf.Raw(profile));
-                                if (err != null) { firstError = $"{vf.Label}: {err}"; cursorVis = Visible().IndexOf(idx); break; }
+                                if (err != null) { firstError = $"{vf.Label}: {err}"; cursor = idx; break; }
                             }
                             if (firstError != null)
                             {
@@ -426,20 +466,26 @@ namespace ibsCompiler
                         case ConsoleKey.T:
                             if (onTest != null)
                             {
-                                Console.CursorVisible = true;
-                                // Land on the message row (guaranteed to exist — see Scaffold),
-                                // then WriteLine from there so the buffer scrolls as needed
-                                // instead of SetCursorPosition-ing to a row that may not exist yet.
-                                Console.SetCursorPosition(0, startRow + fields.Length + 2);
-                                Console.WriteLine();
-                                Console.WriteLine();
-                                onTest(profile);
-                                Console.WriteLine();
-                                Console.Write("  Press any key to return to the editor...");
-                                Console.ReadKey(intercept: true);
-                                Console.CursorVisible = false;
-                                Scaffold();
-                                Render();
+                                // Raw profiles can only be connection-tested (same rule as the
+                                // headless --test path); full profiles get the whole set.
+                                string prompt = profile.RawMode
+                                    ? "Test: [C]onnection   [Esc] cancel"
+                                    : "Test: [C]onnection [P]ath [O]ptions [L]ocations [G]changelog [A]ll   [Esc] cancel";
+                                Message(prompt, ConsoleColor.Cyan);
+                                var choice = Console.ReadKey(intercept: true);
+                                string? kind = char.ToUpperInvariant(choice.KeyChar) switch
+                                {
+                                    'C' => "connection",
+                                    'P' => profile.RawMode ? null : "sql-source",
+                                    'O' => profile.RawMode ? null : "options",
+                                    'L' => profile.RawMode ? null : "table-locations",
+                                    'G' => profile.RawMode ? null : "changelog",
+                                    'A' => profile.RawMode ? null : "all",
+                                    _ => null,
+                                };
+                                ClearMessage();
+                                if (kind == null) { Render(); break; }
+                                RunTestSuspended(kind);
                             }
                             break;
 
