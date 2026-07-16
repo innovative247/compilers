@@ -140,9 +140,11 @@ namespace ibsCompiler
 
         /// <summary>
         /// Edits <paramref name="profile"/> in place (caller passes a working copy).
-        /// Returns true when the user saved, false when cancelled.
+        /// Returns true when the user saved, false when cancelled, null when the
+        /// terminal is too small to host the widget (caller must fall back to the
+        /// sequential prompt flow).
         /// </summary>
-        public static bool Edit(string profileName, ProfileData profile, bool isCreate, Func<ProfileData, bool>? onTest)
+        public static bool? Edit(string profileName, ProfileData profile, bool isCreate, Func<ProfileData, bool>? onTest)
         {
             // Belt-and-suspenders: never drive a ReadKey loop on a redirected console.
             // The caller already routes those to the sequential/headless paths.
@@ -150,6 +152,15 @@ namespace ibsCompiler
                 return false;
 
             var fields = BuildFields();
+
+            // Layout needs: 1 blank + title + 1 blank + N field rows + 1 blank +
+            // footer + message row = fields.Length + 5 rows, minimum.
+            if (Console.WindowHeight < fields.Length + 5)
+            {
+                Console.WriteLine();
+                Console.WriteLine("  Terminal too small for the profile editor — using sequential prompts.");
+                return null;
+            }
             var snapshot = JsonSerializer.Deserialize<ProfileData>(JsonSerializer.Serialize(profile))!;
 
             var title = (isCreate ? "Create Profile: " : "Edit Profile: ") + profileName;
@@ -168,8 +179,12 @@ namespace ibsCompiler
                 for (int i = 0; i < fields.Length; i++) Console.WriteLine();
                 Console.WriteLine();
                 Console.Write(footer);
-                int footerEnd = Console.CursorTop;
-                startRow = footerEnd - 1 - fields.Length;
+                // Reserve the message row below the footer explicitly: WriteLine (unlike
+                // SetCursorPosition) auto-scrolls the buffer when it is written at the
+                // bottom of the window, so this row is guaranteed to exist afterward.
+                Console.WriteLine();
+                int messageRow = Console.CursorTop;
+                startRow = messageRow - fields.Length - 2;
             }
 
             List<int> Visible()
@@ -392,7 +407,11 @@ namespace ibsCompiler
                             if (onTest != null)
                             {
                                 Console.CursorVisible = true;
-                                Console.SetCursorPosition(0, startRow + fields.Length + 3);
+                                // Land on the message row (guaranteed to exist — see Scaffold),
+                                // then WriteLine from there so the buffer scrolls as needed
+                                // instead of SetCursorPosition-ing to a row that may not exist yet.
+                                Console.SetCursorPosition(0, startRow + fields.Length + 2);
+                                Console.WriteLine();
                                 Console.WriteLine();
                                 onTest(profile);
                                 Console.WriteLine();
@@ -426,8 +445,16 @@ namespace ibsCompiler
             {
                 Console.CursorVisible = true;
                 // Park the cursor below the whole widget so subsequent output is clean.
-                try { Console.SetCursorPosition(0, startRow + fields.Length + 4); } catch { }
-                Console.WriteLine();
+                // Land on the message row (guaranteed to exist), then WriteLine from
+                // there so the buffer scrolls as needed instead of risking a
+                // SetCursorPosition to a row that was never written.
+                try
+                {
+                    Console.SetCursorPosition(0, startRow + fields.Length + 2);
+                    Console.WriteLine();
+                    Console.WriteLine();
+                }
+                catch { }
             }
         }
     }

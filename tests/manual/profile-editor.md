@@ -35,3 +35,12 @@ Confirm each:
       `y` exits without saving (`--view` shows the pre-edit values), `n` returns.
 - [ ] **Fallback** — `echo "" | set_profile SCRATCH` (redirected stdin) takes the
       sequential prompt path, never the TUI, and does not hang.
+- [ ] **Bottom-of-buffer launch** — scroll the shell to the very bottom of the window
+      before running `set_profile PGTEST` (or any existing profile) so the editor's
+      footer lands on the terminal's last buffer row; `Edit` → `Enter` on any field
+      commits without a crash (regression for the `ArgumentOutOfRangeException:
+      Parameter 'top'` in `ClearMessage`/`Message`).
+- [ ] **Small-terminal fallback** — resize the terminal below the editor's minimum
+      height (fewer than `fields.Length + 5` rows) before running `set_profile`; a
+      "Terminal too small" notice prints and the sequential prompt flow runs instead
+      of the TUI.

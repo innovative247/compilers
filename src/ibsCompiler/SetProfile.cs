@@ -454,8 +454,13 @@ namespace ibsCompiler
         private static void CreateProfileInteractive(string name, ProfileData profile)
         {
             profile.DefaultLanguage = "1";
-            var saved = ProfileEditor.Edit(name, profile, isCreate: true, p => { TestConnection(p); return true; });
-            if (!saved)
+            var result = ProfileEditor.Edit(name, profile, isCreate: true, p => { TestConnection(p); return true; });
+            if (result == null)
+            {
+                CreateProfileSequential(name, profile);
+                return;
+            }
+            if (!result.Value)
             {
                 PrintDim("  Create cancelled — no profile saved.");
                 return;
@@ -754,8 +759,13 @@ namespace ibsCompiler
 
             // Work on a JSON clone so a cancel leaves the stored profile untouched.
             var working = JsonSerializer.Deserialize<ProfileData>(JsonSerializer.Serialize(profile))!;
-            var saved = ProfileEditor.Edit(name, working, isCreate: false, p => { TestConnection(p); return true; });
-            if (!saved)
+            var result = ProfileEditor.Edit(name, working, isCreate: false, p => { TestConnection(p); return true; });
+            if (result == null)
+            {
+                EditProfileSequential(name, profile);
+                return;
+            }
+            if (!result.Value)
             {
                 PrintDim("  Edit cancelled — no changes saved.");
                 return;
