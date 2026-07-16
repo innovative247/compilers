@@ -470,19 +470,33 @@ namespace ibsCompiler
                         case ConsoleKey.T:
                             if (onTest != null)
                             {
-                                // Raw profiles skip SBN-specific preprocessing (options,
-                                // table locations, changelog, symlinks) — same rule as the
-                                // headless --test path — so only Connection + Path apply.
-                                // Full profiles get the whole legacy test set plus [A]ll.
-                                string prompt = profile.RawMode
-                                    ? "Test: [C]onnection [P]ath   [Esc] cancel"
-                                    : "Test: [C]onnection [P]ath [O]ptions [L]ocations [G]changelog [S]ymlinks [A]ll   [Esc] cancel";
-                                Message(prompt, ConsoleColor.Cyan);
+                                // Raw profiles skip SBN-specific preprocessing entirely —
+                                // same rule as the headless --test path — so only Connection
+                                // applies. Full profiles get the whole legacy test set plus
+                                // [A]ll. Rendered as a vertical list in the scroll region
+                                // (same pattern as RunTestSuspended's test output) since the
+                                // row list no longer fits a single message line.
+                                Console.CursorVisible = true;
+                                Console.SetCursorPosition(0, startRow + fields.Length + 2);
+                                Console.WriteLine();
+                                Console.WriteLine("  Test:");
+                                Console.WriteLine("    [C] Connection");
+                                if (!profile.RawMode)
+                                {
+                                    Console.WriteLine("    [P] SQL Source path");
+                                    Console.WriteLine("    [O] Options");
+                                    Console.WriteLine("    [L] Table Locations");
+                                    Console.WriteLine("    [G] Changelog");
+                                    Console.WriteLine("    [S] Symlinks");
+                                    Console.WriteLine("    [A] All");
+                                }
+                                Console.WriteLine("    [Esc] cancel");
                                 var choice = Console.ReadKey(intercept: true);
+                                Console.CursorVisible = false;
                                 string? kind = char.ToUpperInvariant(choice.KeyChar) switch
                                 {
                                     'C' => "connection",
-                                    'P' => "sql-source",
+                                    'P' => profile.RawMode ? null : "sql-source",
                                     'O' => profile.RawMode ? null : "options",
                                     'L' => profile.RawMode ? null : "table-locations",
                                     'G' => profile.RawMode ? null : "changelog",
@@ -490,8 +504,7 @@ namespace ibsCompiler
                                     'A' => profile.RawMode ? null : "all",
                                     _ => null,
                                 };
-                                ClearMessage();
-                                if (kind == null) { Render(); break; }
+                                if (kind == null) { Scaffold(); Render(); break; }
                                 RunTestSuspended(kind);
                             }
                             break;

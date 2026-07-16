@@ -37,14 +37,26 @@ Confirm each:
       Platform is POSTGRES".
 - [ ] **Password** — `Enter` on Password prompts masked (`*`); empty keeps the existing
       value; a new value shows as `****`.
-- [ ] **Test chooser** — `T` shows a one-line chooser on the message row:
-      `[C]onnection [P]ath [O]ptions [L]ocations [G]changelog [S]ymlinks [A]ll` (full
-      profile) or just `[C]onnection [P]ath` (raw profile — matches the legacy
-      TestProfileMenu raw behavior: only SQL Source path and Connection are available,
-      the other four are hidden). The chosen test runs against the WORKING COPY (unsaved
-      edits included), output scrolls, waits for a key, then the editor redraws intact.
-      `[A]ll` (full profile only) runs the same sequence as `--test --what all` for that
-      profile. `Esc` (or any other key) at the chooser cancels back to the editor.
+- [ ] **Test chooser** — `T` shows a vertical chooser in the scroll region below the
+      footer (same area test output prints in):
+      ```
+        Test:
+          [C] Connection
+          [P] SQL Source path
+          [O] Options
+          [L] Table Locations
+          [G] Changelog
+          [S] Symlinks
+          [A] All
+          [Esc] cancel
+      ```
+      Raw profile shows only `[C] Connection` and `[Esc] cancel` — matches the legacy
+      TestProfileMenu raw behavior: only Connection is available, everything else
+      (including SQL Source path) is hidden. The chosen test runs against the WORKING
+      COPY (unsaved edits included), output scrolls, waits for a key, then the editor
+      redraws intact. `[A]ll` (full profile only) runs the same sequence as
+      `--test --what all` for that profile. `Esc` (or any other key) at the chooser
+      cancels back to the editor.
 - [ ] **Test unsaved-values note** — right before a `[T]` test's output scrolls, a dim
       (dark gray) line prints: `(testing current editor values — not yet saved)`. It
       appears once per test run, above the test output, and is not repeated on the
