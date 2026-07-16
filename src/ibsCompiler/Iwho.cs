@@ -76,45 +76,63 @@ namespace ibsCompiler
         private static void RunQuery(ResolvedProfile profile, string filter)
         {
             string sql;
-            if (profile.ServerType == SQLServerTypes.MSSQL)
+            if (profile.ServerType == SQLServerTypes.POSTGRES)
             {
-                sql = @"SELECT spid,
-                        RTRIM(substring(status, 1, 5)) AS status,
-                        RTRIM(loginame) AS login,
-                        RTRIM(substring(hostname, 1, 10)) AS hostname,
-                        blocked AS blk,
-                        RTRIM(substring(cmd, 1, 4)) AS comm,
-                        cpu, physical_io AS io,
-                        RTRIM(substring(hostprocess, 1, 5)) AS host,
-                        RTRIM(program_name) AS proce
-                        FROM master..sysprocesses";
+                sql = @"SELECT pid AS spid, LEFT(COALESCE(state,''),10) AS status, usename AS login, LEFT(COALESCE(client_hostname, client_addr::text, ''),10) AS hostname, COALESCE(wait_event,'') AS wait, LEFT(query,40) AS query, backend_start FROM pg_stat_activity WHERE backend_type='client backend'";
+
+                if (!string.IsNullOrEmpty(filter))
+                {
+                    if (int.TryParse(filter, out _))
+                        sql += $" AND pid = {filter}";
+                    else if (filter.Contains('%'))
+                        sql += $" AND usename LIKE '{filter}'";
+                    else
+                        sql += $" AND usename = '{filter}'";
+                }
             }
             else
             {
-                sql = @"SELECT spid,
-                        substring(status, 1, 5) AS status,
-                        suser_name(suid) AS login,
-                        substring(hostname, 1, 10) AS hostname,
-                        blocked AS blk,
-                        substring(cmd, 1, 4) AS comm,
-                        cpu, physical_io AS io,
-                        substring(hostprocess, 1, 5) AS host,
-                        object_name(id, dbid) AS proce
-                        FROM master..sysprocesses";
-            }
-
-            if (!string.IsNullOrEmpty(filter))
-            {
-                if (int.TryParse(filter, out _))
-                    sql += $" WHERE spid = {filter}";
-                else if (filter.Contains('%'))
-                    sql += $" WHERE {(profile.ServerType == SQLServerTypes.MSSQL ? "loginame" : "suser_name(suid)")} LIKE '{filter}'";
+                if (profile.ServerType == SQLServerTypes.MSSQL)
+                {
+                    sql = @"SELECT spid,
+                            RTRIM(substring(status, 1, 5)) AS status,
+                            RTRIM(loginame) AS login,
+                            RTRIM(substring(hostname, 1, 10)) AS hostname,
+                            blocked AS blk,
+                            RTRIM(substring(cmd, 1, 4)) AS comm,
+                            cpu, physical_io AS io,
+                            RTRIM(substring(hostprocess, 1, 5)) AS host,
+                            RTRIM(program_name) AS proce
+                            FROM master..sysprocesses";
+                }
                 else
-                    sql += $" WHERE {(profile.ServerType == SQLServerTypes.MSSQL ? "loginame" : "suser_name(suid)")} = '{filter}'";
+                {
+                    sql = @"SELECT spid,
+                            substring(status, 1, 5) AS status,
+                            suser_name(suid) AS login,
+                            substring(hostname, 1, 10) AS hostname,
+                            blocked AS blk,
+                            substring(cmd, 1, 4) AS comm,
+                            cpu, physical_io AS io,
+                            substring(hostprocess, 1, 5) AS host,
+                            object_name(id, dbid) AS proce
+                            FROM master..sysprocesses";
+                }
+
+                if (!string.IsNullOrEmpty(filter))
+                {
+                    if (int.TryParse(filter, out _))
+                        sql += $" WHERE spid = {filter}";
+                    else if (filter.Contains('%'))
+                        sql += $" WHERE {(profile.ServerType == SQLServerTypes.MSSQL ? "loginame" : "suser_name(suid)")} LIKE '{filter}'";
+                    else
+                        sql += $" WHERE {(profile.ServerType == SQLServerTypes.MSSQL ? "loginame" : "suser_name(suid)")} = '{filter}'";
+                }
             }
 
             using var executor = SqlExecutorFactory.Create(profile);
-            var result = executor.ExecuteSql(sql, "master", captureOutput: false);
+            var adminDb = profile.ServerType == SQLServerTypes.POSTGRES ? profile.AdminDatabase : "master";
+            var result = executor.ExecuteSql(sql, adminDb, captureOutput: false);
             if (!result.Returncode)
                 Console.Error.WriteLine("Error executing query.");
         }
@@ -133,7 +151,7 @@ namespace ibsCompiler
                 Port = portOverride > 0 ? portOverride : p.Port,
                 User = userOverride ?? p.Username,
                 Pass = passOverride ?? p.Password,
-                ServerType = (platformOverride ?? p.Platform)?.ToUpper() == "MSSQL" ? SQLServerTypes.MSSQL : SQLServerTypes.SYBASE,
+                ServerType = ibs_compiler_common.ParsePlatform(platformOverride ?? p.Platform),
                 Company = p.Company ?? "101",
                 Language = p.DefaultLanguage ?? "1",
                 IRPath = p.SqlSource ?? "",

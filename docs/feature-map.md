@@ -34,7 +34,9 @@ in `$env:EDITOR`).
 
 - **Test target:** `SRM_LOCAL` (127.0.0.1:1433 MSSQL). Mutating tests create
   a throwaway `TEST_LOCAL` profile that mirrors `SRM_LOCAL`'s connection;
-  read-only tests run against the real profile.
+  read-only tests run against the real profile. PG-platform tests are
+  flag/arg-level only (no live PG server in the suite); a live PG target
+  runs on port 5432.
 - **Out of scope — never agent-accessible:** `transfer_data`. Excluded from the
   test suite entirely. If a future change adds CLI flags here, push back.
 - **TTY-only — intentionally not headless:** `set_profile` main-menu options
@@ -64,7 +66,7 @@ they still work end-to-end.
 | Execute one statement, print results | `isqlline "SQL" <db> <profile>` | `isqlline.basic` | COVERED |
 | Echo input with line numbers | `-E` | `isqlline.echo` | COVERED |
 | Capture to outfile | `-O <file>` | `isqlline.outfile` | COVERED |
-| Force MSSQL/Sybase mode | `-MSSQL` / `-SYBASE` | `isqlline.platform` | COVERED |
+| Force MSSQL/Sybase/PG mode | `-MSSQL` / `-SYBASE` / `-PG` | `isqlline.platform` / `isqlline.platform_pg` | COVERED |
 
 ### `iwho` — process list
 
@@ -296,13 +298,13 @@ Interactive main menu:
 
 | Menu path | Outcome | Headless flag | Test ID | Status |
 |---|---|---|---|---|
-| `1` New → wizard → save | Add profile to `settings.json` + create SQL-source symlinks | `--create NAME --platform mssql\|sybase --host H --user U --password PW [--port N] [--company C] [--language L] [--sql-source PATH \| --raw] [--alias A,B]` | `set_profile.create_mssql` / `set_profile.create_raw` | COVERED |
+| `1` New → wizard → save | Add profile to `settings.json` + create SQL-source symlinks | `--create NAME --platform mssql\|sybase\|postgres --host H --user U --password PW [--port N] [--company C] [--language L] [--sql-source PATH \| --raw] [--alias A,B] [--database DB]` | `set_profile.create_mssql` / `set_profile.create_raw` / `set_profile.create_pg` | COVERED |
 | `2` → Edit → save | Replace any of the fields above | `--edit NAME [any --create flag] [--no-aliases]` | `set_profile.edit_port` / `set_profile.edit_clear_aliases` | COVERED |
 | `2` → View | Print profile details | `--view NAME` | `set_profile.view` | COVERED |
 | `2` → Copy → save | Clone profile (aliases cleared) | `--copy SRC --to DST` | `set_profile.copy` | COVERED |
 | `2` → Delete → confirm | Remove from `settings.json` | `--delete NAME --yes` (mandatory `--yes`) | `set_profile.delete_yes` / `set_profile.delete_without_yes_errors` | COVERED |
 | `2` → Test → `1` SQL Source | Verify `IRPath` + `css/setup/` exists | `--test NAME --what sql-source` | `set_profile.test_sql_source` | COVERED |
-| `2` → Test → `2` Connection | Attempt connection (3 query fallback for Sybase) | `--test NAME --what connection` (no credential-retry prompt headless) | `set_profile.test_connection` | COVERED |
+| `2` → Test → `2` Connection | Attempt connection (3 query fallback for Sybase; PG probes `SELECT version()` falling back to `SELECT 1`) | `--test NAME --what connection` (no credential-retry prompt headless) | `set_profile.test_connection` | COVERED |
 | `2` → Test → `3` Options | Resolve a placeholder against the full merged set — `options.<ServerType>` + `options.<company>` + `options.<company>.<server>` + `table_locations` (mirrors `Options.GenerateOptionFiles`). A bare token (e.g. `users`) is normalized to `&users&` so table names resolve; the file list shows each merge input incl. `table_locations`. | `--test NAME --what options [--resolve PLACEHOLDER]` | `set_profile.test_options` / `set_profile.test_options_bare_token` | COVERED |
 | `2` → Test → `4` Table locations | Verify `table_locations` file exists | `--test NAME --what table-locations` | `set_profile.test_table_locations` | COVERED |
 | `2` → Test → `5` Changelog | Verify `gclog12` on, `ba_gen_chg_log_new` exists, insert test row | `--test NAME --what changelog` | `set_profile.test_changelog` | COVERED |
@@ -314,8 +316,10 @@ Interactive main menu:
 
 **Validation surfaces (still enforced in headless):**
 - Names: `[A-Z0-9_]+`, not reserved (`VERSION`/`UPDATE`/`INSTALL`/`CONFIGURE`/`V`).
-- `--create` requires `--platform`, `--host`, `--user`, `--password`, plus
-  `--sql-source` unless `--raw`.
+- `--create` requires `--platform` (`mssql`/`sybase`/`postgres`, `pg` accepted
+  as a `postgres` alias), `--host`, `--user`, `--password`, plus
+  `--sql-source` unless `--raw`. `--database` is optional (PG schema-as-database
+  target); omitted defaults to `postgres`.
 - `--delete` without `--yes` errors out.
 - Aliases must not collide with existing profile names or other aliases.
 
@@ -352,15 +356,18 @@ no useful headless equivalent — an agent that needs VSCode tasks should write
 
 **No outstanding gaps.** Every menu path on every in-scope command is either
 COVERED by the test suite or SKIP-by-design with a documented rationale.
-Suite tally at `set_messages` ship time: **135 PASS / 4 SKIP / 0 FAIL / 0 GAP**.
+Suite tally after PG-support wave 4: **139 PASS / 5 SKIP / 0 FAIL / 0 GAP**.
 
-The four skips:
+The five skips:
 - `iwho.timer` — polling blocks indefinitely.
 - `version.update_dryrun` — would trigger real GitHub self-update.
 - `runcreate.bg` — `-bg` is a wrapper concept, not a source-level flag.
 - `set_messages.gonzo_export` — would mutate canonical GONZO message files
   on disk (CLI behavior is proven equivalent to non-GONZO export via the
   `gonzo_import_blocked` test; export round-trip itself is manual only).
+- `runcreate.platform_lines_pg` — `#NT`/`#UNIX` create-file prefixes are OS
+  dispatch lines, not DB-platform lines; there is no PG-specific create-file
+  directive to mirror.
 
 The five SKIP-AGENT rows (`--edit-*` flags across the three setup-compile
 commands plus set_options menu items 2 and 4..N) are not gaps either — they

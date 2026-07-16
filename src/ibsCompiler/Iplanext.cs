@@ -56,7 +56,9 @@ namespace ibsCompiler
                 return 1;
             }
 
-            var database = dbOverride ?? "master";
+            bool isPostgres = resolved.ServerType == SQLServerTypes.POSTGRES;
+            var adminDb = isPostgres ? resolved.AdminDatabase : "master";
+            var database = dbOverride ?? adminDb;
             var outputFile = $"PLANTRACE.{resolved.ProfileName}.{spid}.{Environment.ProcessId}";
 
             using var executor = SqlExecutorFactory.Create(resolved);
@@ -67,7 +69,13 @@ namespace ibsCompiler
 
             // Query 1: Process Info
             string sqlProcessInfo;
-            if (resolved.ServerType == SQLServerTypes.MSSQL)
+            if (isPostgres)
+            {
+                sqlProcessInfo = $@"SELECT pid AS spid, state AS status, usename AS login, COALESCE(client_hostname, client_addr::text,'') AS hostname, backend_start, xact_start, query_start
+                    FROM pg_stat_activity
+                    WHERE pid = {spid}";
+            }
+            else if (resolved.ServerType == SQLServerTypes.MSSQL)
             {
                 sqlProcessInfo = $@"SELECT spid, status, loginame AS login, hostname, blocked AS blk,
                     cmd AS comm, cpu, physical_io AS io, hostprocess AS host,
@@ -85,13 +93,17 @@ namespace ibsCompiler
             }
 
             writer.WriteLine("--- Process Info ---");
-            var result1 = executor.ExecuteSql(sqlProcessInfo, "master", captureOutput: true);
+            var result1 = executor.ExecuteSql(sqlProcessInfo, adminDb, captureOutput: true);
             writer.WriteLine(result1.Output);
             writer.WriteLine();
 
             // Query 2: SQL Text
             string sqlText;
-            if (resolved.ServerType == SQLServerTypes.MSSQL)
+            if (isPostgres)
+            {
+                sqlText = $"SELECT query FROM pg_stat_activity WHERE pid = {spid}";
+            }
+            else if (resolved.ServerType == SQLServerTypes.MSSQL)
             {
                 sqlText = $@"SELECT SUBSTRING(st.text, (r.statement_start_offset/2)+1,
                     ((CASE r.statement_end_offset WHEN -1 THEN DATALENGTH(st.text)
@@ -112,25 +124,32 @@ namespace ibsCompiler
             writer.WriteLine();
 
             // Query 3: Execution Plan
-            string sqlPlan;
-            if (resolved.ServerType == SQLServerTypes.MSSQL)
+            writer.WriteLine("--- Execution Plan ---");
+            if (isPostgres)
             {
-                sqlPlan = $@"SELECT r.session_id AS spid, r.status, r.command,
-                    DB_NAME(r.database_id) AS database_name,
-                    r.cpu_time, r.total_elapsed_time,
-                    CAST(qp.query_plan AS nvarchar(max)) AS query_plan
-                    FROM sys.dm_exec_requests r
-                    CROSS APPLY sys.dm_exec_query_plan(r.plan_handle) qp
-                    WHERE r.session_id = {spid}";
+                writer.WriteLine("Note: live-backend plan capture is not available on PostgreSQL — run EXPLAIN on the captured query.");
             }
             else
             {
-                sqlPlan = $"sp_showplan {spid}, NULL, NULL, NULL";
-            }
+                string sqlPlan;
+                if (resolved.ServerType == SQLServerTypes.MSSQL)
+                {
+                    sqlPlan = $@"SELECT r.session_id AS spid, r.status, r.command,
+                        DB_NAME(r.database_id) AS database_name,
+                        r.cpu_time, r.total_elapsed_time,
+                        CAST(qp.query_plan AS nvarchar(max)) AS query_plan
+                        FROM sys.dm_exec_requests r
+                        CROSS APPLY sys.dm_exec_query_plan(r.plan_handle) qp
+                        WHERE r.session_id = {spid}";
+                }
+                else
+                {
+                    sqlPlan = $"sp_showplan {spid}, NULL, NULL, NULL";
+                }
 
-            writer.WriteLine("--- Execution Plan ---");
-            var result3 = executor.ExecuteSql(sqlPlan, database, captureOutput: true);
-            writer.WriteLine(result3.Output);
+                var result3 = executor.ExecuteSql(sqlPlan, database, captureOutput: true);
+                writer.WriteLine(result3.Output);
+            }
 
             writer.Close();
 
@@ -156,7 +175,7 @@ namespace ibsCompiler
                 Port = portOverride > 0 ? portOverride : p.Port,
                 User = userOverride ?? p.Username,
                 Pass = passOverride ?? p.Password,
-                ServerType = (platformOverride ?? p.Platform)?.ToUpper() == "MSSQL" ? SQLServerTypes.MSSQL : SQLServerTypes.SYBASE,
+                ServerType = ibs_compiler_common.ParsePlatform(platformOverride ?? p.Platform),
                 Company = p.Company ?? "101",
                 Language = p.DefaultLanguage ?? "1",
                 IRPath = p.SqlSource ?? "",

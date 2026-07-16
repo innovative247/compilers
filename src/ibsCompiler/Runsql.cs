@@ -163,8 +163,8 @@ namespace ibsCompiler
                             userLines.Add("go");
                             break;
                         }
-                        // Convert Sybase-style // line comments to MSSQL-compatible --
-                        if (profile.ServerType == SQLServerTypes.MSSQL)
+                        // Convert Sybase-style // line comments to MSSQL/PostgreSQL-compatible --
+                        if (profile.ServerType == SQLServerTypes.MSSQL || profile.ServerType == SQLServerTypes.POSTGRES)
                         {
                             int cs = line.Length - line.TrimStart().Length;
                             if (cs < line.Length - 1 && line[cs] == '/' && line[cs + 1] == '/')

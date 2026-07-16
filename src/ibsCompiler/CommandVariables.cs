@@ -3,7 +3,8 @@ namespace ibsCompiler
     public enum SQLServerTypes
     {
         SYBASE = 1,
-        MSSQL = 2
+        MSSQL = 2,
+        POSTGRES = 3
     }
 
     public enum BcpDirection

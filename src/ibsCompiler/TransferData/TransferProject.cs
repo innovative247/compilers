@@ -18,7 +18,7 @@ namespace ibsCompiler.TransferData
         public string Host { get; set; } = "";
         public int Port
         {
-            get => _port > 0 ? _port : (Platform.ToUpperInvariant() == "MSSQL" ? 1433 : 5000);
+            get => _port > 0 ? _port : ibs_compiler_common.DefaultPort(ibs_compiler_common.ParsePlatform(Platform));
             set => _port = value;
         }
         private int _port;

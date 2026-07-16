@@ -68,11 +68,20 @@ namespace ibsCompiler
                 var descr = $"User {WhoAmI}: {cmdName}".Replace("'", "''");
                 var refno = cmdvars.Upgrade_no;
 
-                yield return "if exists (select * from &options& where id = 'gclog12' and act_flg = '+') ";
-                yield return "if exists (select * from &dbpro&..sysobjects where name = 'ba_gen_chg_log_new') ";
-                yield return $"exec &dbpro&..ba_gen_chg_log_new '', '{descr}', '{prgno}', '', '{fullPath}', '{refno}','X'";
-                yield return "go";
-                yield return "";
+                if (profile.ServerType == SQLServerTypes.POSTGRES)
+                {
+                    yield return $"DO $$ BEGIN IF to_regproc('&dbpro&.ba_gen_chg_log_new') IS NOT NULL THEN PERFORM &dbpro&.ba_gen_chg_log_new('', '{descr}', '{prgno}', '', '{fullPath}', '{refno}', 'X'); ELSE RAISE NOTICE 'changelog proc not installed - skipping'; END IF; END $$;";
+                    yield return "go";
+                    yield return "";
+                }
+                else
+                {
+                    yield return "if exists (select * from &options& where id = 'gclog12' and act_flg = '+') ";
+                    yield return "if exists (select * from &dbpro&..sysobjects where name = 'ba_gen_chg_log_new') ";
+                    yield return $"exec &dbpro&..ba_gen_chg_log_new '', '{descr}', '{prgno}', '', '{fullPath}', '{refno}','X'";
+                    yield return "go";
+                    yield return "";
+                }
             }
         }
 
@@ -81,15 +90,24 @@ namespace ibsCompiler
         /// Called directly by the compile methods — does not check cmdvars.ChangeLog since these
         /// always log when gclog12 is active.
         /// </summary>
-        public static IEnumerable<string> compileLines(string prgno, string description)
+        public static IEnumerable<string> compileLines(string prgno, string description, SQLServerTypes serverType)
         {
             var descr = $"User {WhoAmI}: {description}".Replace("'", "''");
 
-            yield return "if exists (select * from &options& where id = 'gclog12' and act_flg = '+') ";
-            yield return "if exists (select * from &dbpro&..sysobjects where name = 'ba_gen_chg_log_new') ";
-            yield return $"exec &dbpro&..ba_gen_chg_log_new '', '{descr}', '{prgno}', '', '', '','X'";
-            yield return "go";
-            yield return "";
+            if (serverType == SQLServerTypes.POSTGRES)
+            {
+                yield return $"DO $$ BEGIN IF to_regproc('&dbpro&.ba_gen_chg_log_new') IS NOT NULL THEN PERFORM &dbpro&.ba_gen_chg_log_new('', '{descr}', '{prgno}', '', '', '', 'X'); ELSE RAISE NOTICE 'changelog proc not installed - skipping'; END IF; END $$;";
+                yield return "go";
+                yield return "";
+            }
+            else
+            {
+                yield return "if exists (select * from &options& where id = 'gclog12' and act_flg = '+') ";
+                yield return "if exists (select * from &dbpro&..sysobjects where name = 'ba_gen_chg_log_new') ";
+                yield return $"exec &dbpro&..ba_gen_chg_log_new '', '{descr}', '{prgno}', '', '', '','X'";
+                yield return "go";
+                yield return "";
+            }
         }
     }
 }

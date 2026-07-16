@@ -14,6 +14,79 @@ namespace ibsCompiler
         public static string DefaultOutFile { get; set; } = "";
         public static string DefaultErrFile { get; set; } = "";
 
+        #region Platform parsing
+        /// <summary>
+        /// Canonicalizes a platform string to a SQLServerTypes value.
+        /// "MSSQL" -> MSSQL, "POSTGRES"/"PG" -> POSTGRES, anything else
+        /// (including null) -> SYBASE (preserves the legacy unknown->SYBASE default).
+        /// </summary>
+        public static SQLServerTypes ParsePlatform(string? platform)
+        {
+            switch (platform?.Trim().ToUpperInvariant())
+            {
+                case "MSSQL": return SQLServerTypes.MSSQL;
+                case "POSTGRES":
+                case "PG": return SQLServerTypes.POSTGRES;
+                default: return SQLServerTypes.SYBASE;
+            }
+        }
+
+        /// <summary>
+        /// Default TCP port for a database platform: MSSQL=1433, POSTGRES=5432, else 5000.
+        /// </summary>
+        public static int DefaultPort(SQLServerTypes t)
+        {
+            switch (t)
+            {
+                case SQLServerTypes.MSSQL: return 1433;
+                case SQLServerTypes.POSTGRES: return 5432;
+                default: return 5000;
+            }
+        }
+
+        /// <summary>
+        /// The ONLY place the persisted/filename string form of a platform may be
+        /// produced. Returns the enum name ("SYBASE"/"MSSQL"/"POSTGRES"). All code
+        /// that writes a platform to a profile/settings file or builds a platform
+        /// filename must route through here — never call ServerType.ToString() or
+        /// concatenate a raw "POSTGRES" literal.
+        /// </summary>
+        public static string CanonicalName(SQLServerTypes t) => t.ToString();
+
+        /// <summary>
+        /// The ONLY place a human-readable platform label may be produced.
+        /// SYBASE -> "Sybase ASE", MSSQL -> "Microsoft SQL Server",
+        /// POSTGRES -> "PostgreSQL".
+        /// </summary>
+        public static string DisplayName(SQLServerTypes t)
+        {
+            switch (t)
+            {
+                case SQLServerTypes.MSSQL: return "Microsoft SQL Server";
+                case SQLServerTypes.POSTGRES: return "PostgreSQL";
+                default: return "Sybase ASE";
+            }
+        }
+
+        /// <summary>
+        /// The ONLY ordered source of platform (numeric-value, display-label) pairs.
+        /// Numeric wizard menus and CLI flag-name lists must be built from this.
+        /// </summary>
+        public static readonly (SQLServerTypes Type, string Display)[] PlatformMenu =
+        {
+            (SQLServerTypes.SYBASE, "Sybase ASE"),
+            (SQLServerTypes.MSSQL, "Microsoft SQL Server"),
+            (SQLServerTypes.POSTGRES, "PostgreSQL")
+        };
+
+        /// <summary>
+        /// Joins the canonical names over PlatformMenu, e.g. "SYBASE|MSSQL|POSTGRES".
+        /// The ONLY place a joined list of platform tokens may be produced.
+        /// </summary>
+        public static string CanonicalNamesJoined(string sep = "|")
+            => string.Join(sep, PlatformMenu.Select(e => CanonicalName(e.Type)));
+        #endregion
+
         #region Console output
         public static void WriteLine(string text, string outputFile = "")
         {
@@ -511,7 +584,7 @@ namespace ibsCompiler
 
         public static string GetPath_OptionsSQL(CommandVariables cmdvars, ResolvedProfile profile)
         {
-            return Path.Combine(profile.IRPath, "css", "setup", "options." + profile.ServerType);
+            return Path.Combine(profile.IRPath, "css", "setup", "options." + CanonicalName(profile.ServerType));
         }
 
         public static string GetPath_OptionsCompany(ResolvedProfile profile)
@@ -770,15 +843,13 @@ namespace ibsCompiler
         {
             for (int i = 0; i < arguments.Count; i++)
             {
-                if (arguments[i].ToUpper() == "-MSSQL")
+                if (!arguments[i].StartsWith("-"))
+                    continue;
+                var tok = arguments[i].TrimStart('-').ToUpperInvariant();
+                if (tok is "MSSQL" or "SYBASE" or "POSTGRES" or "PG")
                 {
                     arguments.RemoveAt(i);
-                    return SQLServerTypes.MSSQL;
-                }
-                else if (arguments[i].ToUpper() == "-SYBASE")
-                {
-                    arguments.RemoveAt(i);
-                    return SQLServerTypes.SYBASE;
+                    return ParsePlatform(tok);
                 }
             }
             return default;

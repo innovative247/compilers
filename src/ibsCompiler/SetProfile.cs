@@ -457,15 +457,25 @@ namespace ibsCompiler
             PrintStep(4, "Database Platform");
             PrintDim("  Select the type of database server you are connecting to.");
             Console.WriteLine();
-            PrintMenu(1, "Sybase ASE");
-            PrintMenu(2, "Microsoft SQL Server");
+            var platformMenu = ibs_compiler_common.PlatformMenu;
+            for (int mi = 0; mi < platformMenu.Length; mi++)
+                PrintMenu(mi + 1, platformMenu[mi].Display);
             while (true)
             {
-                Console.Write("\n  Choose [1-2]: ");
+                Console.Write($"\n  Choose [1-{platformMenu.Length}]: ");
                 var platform = Console.ReadLine()?.Trim();
-                if (platform == "1") { profile.Platform = "SYBASE"; break; }
-                if (platform == "2") { profile.Platform = "MSSQL"; break; }
-                Console.WriteLine("  Invalid choice. Please enter 1 or 2.");
+                if (int.TryParse(platform, out var psel) && psel >= 1 && psel <= platformMenu.Length)
+                {
+                    profile.Platform = ibs_compiler_common.CanonicalName(platformMenu[psel - 1].Type);
+                    break;
+                }
+                Console.WriteLine($"  Invalid choice. Please enter 1 through {platformMenu.Length}.");
+            }
+            if (profile.Platform == ibs_compiler_common.CanonicalName(SQLServerTypes.POSTGRES))
+            {
+                Console.Write("  Database name [postgres]: ");
+                var db = Console.ReadLine()?.Trim();
+                profile.Database = string.IsNullOrEmpty(db) ? "postgres" : db;
             }
 
             // 5. Host + Port
@@ -482,7 +492,7 @@ namespace ibsCompiler
             }
             profile.Host = host;
 
-            var defaultPort = profile.Platform == "MSSQL" ? "1433" : "5000";
+            var defaultPort = ibs_compiler_common.DefaultPort(ibs_compiler_common.ParsePlatform(profile.Platform)).ToString();
             while (true)
             {
                 Console.Write($"  Port [{defaultPort}]: ");
@@ -712,10 +722,13 @@ namespace ibsCompiler
             if (val == "y") profile.RawMode = true;
             else if (val == "n") profile.RawMode = false;
 
-            Console.Write($"  Platform [{profile.Platform}] (1=Sybase, 2=MSSQL): ");
+            var editPlatformMenu = ibs_compiler_common.PlatformMenu;
+            var editPlatformHint = string.Join(", ",
+                editPlatformMenu.Select((e, idx) => $"{idx + 1}={e.Display}"));
+            Console.Write($"  Platform [{profile.Platform}] ({editPlatformHint}): ");
             val = Console.ReadLine()?.Trim();
-            if (val == "1") profile.Platform = "SYBASE";
-            else if (val == "2") profile.Platform = "MSSQL";
+            if (int.TryParse(val, out var esel) && esel >= 1 && esel <= editPlatformMenu.Length)
+                profile.Platform = ibs_compiler_common.CanonicalName(editPlatformMenu[esel - 1].Type);
 
             Console.Write($"  Host [{profile.Host}] (do not include port): ");
             val = Console.ReadLine()?.Trim();
@@ -906,7 +919,7 @@ namespace ibsCompiler
                 Port = profile.Port,
                 User = profile.Username,
                 Pass = profile.Password,
-                ServerType = profile.Platform?.ToUpper() == "MSSQL" ? SQLServerTypes.MSSQL : SQLServerTypes.SYBASE,
+                ServerType = ibs_compiler_common.ParsePlatform(profile.Platform),
                 Company = profile.Company ?? "101",
                 Language = profile.DefaultLanguage ?? "1",
                 IRPath = profile.SqlSource ?? ""
@@ -915,17 +928,31 @@ namespace ibsCompiler
             // Try queries in order — Sybase Replication Servers reject SELECT entirely
             // but still connect via TDS and accept admin commands. Use master as the
             // database for all attempts; RS ignores the database name in the login packet.
-            (string query, string db)[] attempts = resolved.ServerType == SQLServerTypes.SYBASE
-                ? new[]
+            (string query, string db)[] attempts;
+            if (resolved.ServerType == SQLServerTypes.POSTGRES)
+            {
+                attempts = new[]
+                {
+                    ("SELECT version()", resolved.AdminDatabase),
+                    ("SELECT 1", resolved.AdminDatabase),
+                };
+            }
+            else if (resolved.ServerType == SQLServerTypes.SYBASE)
+            {
+                attempts = new[]
                 {
                     ("SELECT @@servername", "master"),                    // ASE: all versions
                     ("admin version",       "master"),                    // Replication Server
                     ("SELECT 1 FROM sysusers WHERE suid = 1", "master"), // ancient ASE fallback
-                }
-                : new[]
+                };
+            }
+            else
+            {
+                attempts = new[]
                 {
                     ("SELECT 1", "master"),
                 };
+            }
 
             string lastOutput = "";
             foreach (var (query, db) in attempts)
@@ -989,7 +1016,7 @@ namespace ibsCompiler
             }
 
             var company = profile.Company ?? "101";
-            var serverType = profile.Platform?.ToUpper() == "MSSQL" ? "MSSQL" : "SYBASE";
+            var serverType = ibs_compiler_common.ParsePlatform(profile.Platform).ToString();
 
             // Mirror exactly what Options.GenerateOptionFiles merges into the
             // fully-resolved set, in order, so the test reflects the real compile
@@ -1055,7 +1082,7 @@ namespace ibsCompiler
                 Port = profile.Port,
                 User = profile.Username,
                 Pass = profile.Password,
-                ServerType = profile.Platform?.ToUpper() == "MSSQL" ? SQLServerTypes.MSSQL : SQLServerTypes.SYBASE,
+                ServerType = ibs_compiler_common.ParsePlatform(profile.Platform),
                 Company = company,
                 Language = profile.DefaultLanguage ?? "1",
                 IRPath = profile.SqlSource,
@@ -1066,7 +1093,7 @@ namespace ibsCompiler
             {
                 User = profile.Username,
                 Pass = profile.Password,
-                ServerType = profile.Platform?.ToUpper() == "MSSQL" ? SQLServerTypes.MSSQL : SQLServerTypes.SYBASE,
+                ServerType = ibs_compiler_common.ParsePlatform(profile.Platform),
                 Database = $"{company}pr",
                 Command = "TEST"
             };
@@ -1112,7 +1139,7 @@ namespace ibsCompiler
                 Port = profile.Port,
                 User = profile.Username,
                 Pass = profile.Password,
-                ServerType = profile.Platform?.ToUpper() == "MSSQL" ? SQLServerTypes.MSSQL : SQLServerTypes.SYBASE,
+                ServerType = ibs_compiler_common.ParsePlatform(profile.Platform),
                 Company = profile.Company ?? "101",
                 Language = profile.DefaultLanguage ?? "1",
                 IRPath = profile.SqlSource ?? "",
@@ -1124,7 +1151,7 @@ namespace ibsCompiler
             {
                 User = profile.Username,
                 Pass = profile.Password,
-                ServerType = profile.Platform?.ToUpper() == "MSSQL" ? SQLServerTypes.MSSQL : SQLServerTypes.SYBASE,
+                ServerType = ibs_compiler_common.ParsePlatform(profile.Platform),
                 Database = $"{profile.Company}pr",
                 Command = "TEST"
             };
@@ -1149,11 +1176,16 @@ namespace ibsCompiler
             {
                 using var executor = SqlExecutorFactory.Create(resolved);
 
+                // POSTGRES: dbpro is a schema in the single database; run admin queries
+                // against AdminDatabase and schema-qualify objects.
+                bool isPostgres = resolved.ServerType == SQLServerTypes.POSTGRES;
+                var chgDbArg = isPostgres ? resolved.AdminDatabase : dbpro;
+
                 // Step 1: Check if gclog12 is enabled
                 Console.Write("  Checking gclog12 option... ");
                 var optionsTable = myOptions.ReplaceOptions("&options&");
                 var query = $"SELECT act_flg FROM {optionsTable} WHERE id = 'gclog12'";
-                var result = executor.ExecuteSql(query, dbpro, captureOutput: true);
+                var result = executor.ExecuteSql(query, chgDbArg, captureOutput: true);
 
                 if (!result.Returncode || string.IsNullOrEmpty(result.Output) ||
                     !result.Output.Contains("+"))
@@ -1166,14 +1198,16 @@ namespace ibsCompiler
 
                 // Step 2: Check ba_gen_chg_log_new exists
                 Console.Write("  Checking ba_gen_chg_log_new... ");
-                var spCheck = executor.ExecuteSql(
-                    "SELECT 1 FROM sysobjects WHERE name = 'ba_gen_chg_log_new' AND type = 'P'",
-                    dbpro, captureOutput: true);
+                var spCheckSql = isPostgres
+                    ? $"SELECT 1 WHERE to_regproc('{dbpro}.ba_gen_chg_log_new') IS NOT NULL"
+                    : "SELECT 1 FROM sysobjects WHERE name = 'ba_gen_chg_log_new' AND type = 'P'";
+                var spCheck = executor.ExecuteSql(spCheckSql, chgDbArg, captureOutput: true);
 
                 if (!spCheck.Returncode || string.IsNullOrEmpty(spCheck.Output) ||
                     !spCheck.Output.Contains("1"))
                 {
-                    PrintError($"ba_gen_chg_log_new stored procedure not found in {dbpro}.");
+                    // D6: absent changelog proc is non-fatal — report and stop the test cleanly.
+                    PrintError($"ba_gen_chg_log_new changelog proc not installed in {dbpro} - skipping (non-fatal).");
                     return;
                 }
 
@@ -1186,8 +1220,10 @@ namespace ibsCompiler
                 var cmdStr = $"{exePath}".Replace("'", "''");
 
                 Console.Write("  Inserting test entry... ");
-                var insertSql = $"EXEC ba_gen_chg_log_new '', '{description}', 'TEST', '', '{cmdStr}', '', 'X'";
-                var insertResult = executor.ExecuteSql(insertSql, dbpro, captureOutput: true);
+                var insertSql = isPostgres
+                    ? $"SELECT {dbpro}.ba_gen_chg_log_new('', '{description}', 'TEST', '', '{cmdStr}', '', 'X')"
+                    : $"EXEC ba_gen_chg_log_new '', '{description}', 'TEST', '', '{cmdStr}', '', 'X'";
+                var insertResult = executor.ExecuteSql(insertSql, chgDbArg, captureOutput: true);
 
                 if (!insertResult.Returncode)
                 {
@@ -1204,8 +1240,10 @@ namespace ibsCompiler
                     Console.WriteLine();
                     PrintDim("  Recent changelog entries:");
                     PrintDim("  " + new string('-', 66));
-                    var recentQuery = $"SELECT TOP 5 dateadd(ss, tm, '800101') AS 'server time', descr FROM {chgLogTable} ORDER BY tm DESC";
-                    var recentResult = executor.ExecuteSql(recentQuery, dbpro, captureOutput: true);
+                    var recentQuery = isPostgres
+                        ? $"SELECT to_char(TIMESTAMP '1980-01-01' + (tm || ' seconds')::interval, 'YYYY-MM-DD HH24:MI:SS') AS server_time, descr FROM {chgLogTable} ORDER BY tm DESC LIMIT 5"
+                        : $"SELECT TOP 5 dateadd(ss, tm, '800101') AS 'server time', descr FROM {chgLogTable} ORDER BY tm DESC";
+                    var recentResult = executor.ExecuteSql(recentQuery, chgDbArg, captureOutput: true);
                     if (recentResult.Returncode && !string.IsNullOrEmpty(recentResult.Output))
                     {
                         foreach (var line in recentResult.Output.Split('\n'))
@@ -2086,18 +2124,22 @@ namespace ibsCompiler
             if (platform != null)
             {
                 var p = platform.Trim().ToUpperInvariant();
-                if (p == "MSSQL" || p == "SYBASE") profile.Platform = p;
+                if (p is "MSSQL" or "SYBASE" or "POSTGRES" or "PG")
+                    profile.Platform = ibs_compiler_common.CanonicalName(ibs_compiler_common.ParsePlatform(p));
                 else
                 {
-                    Console.Error.WriteLine("ERROR: --platform must be 'mssql' or 'sybase'.");
+                    Console.Error.WriteLine("ERROR: --platform must be one of mssql|sybase|postgres (pg accepted as alias).");
                     return false;
                 }
             }
             else if (isCreate)
             {
-                Console.Error.WriteLine("ERROR: --create requires --platform mssql|sybase.");
+                Console.Error.WriteLine("ERROR: --create requires --platform mssql|sybase|postgres.");
                 return false;
             }
+
+            var database = CliArgs.GetOption(args, "--database");
+            if (database != null) profile.Database = database.Trim();
 
             var host = CliArgs.GetOption(args, "--host");
             if (host != null)
@@ -2127,7 +2169,7 @@ namespace ibsCompiler
             }
             else if (isCreate)
             {
-                profile.Port = profile.Platform == "MSSQL" ? 1433 : 5000;
+                profile.Port = ibs_compiler_common.DefaultPort(ibs_compiler_common.ParsePlatform(profile.Platform));
             }
 
             var user = CliArgs.GetOption(args, "--user");

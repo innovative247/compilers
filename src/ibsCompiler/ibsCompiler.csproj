@@ -11,6 +11,7 @@
       <HintPath>..\AdoNetCore.AseClient.dll</HintPath>
     </Reference>
     <PackageReference Include="Microsoft.Data.SqlClient" Version="6.1.4" />
+    <PackageReference Include="Npgsql" Version="8.0.5" />
   </ItemGroup>
 
 </Project>

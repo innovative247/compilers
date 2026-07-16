@@ -296,6 +296,19 @@ function Test-AdHocQueries {
         Assert-ExitCode $r
         if ($r.StdOut -notmatch '\b2\b') { throw "expected '2' in output" }
     }
+    Test-Case 'isqlline.platform_pg' {
+        # -PG is parsed identically to -MSSQL/-SYBASE (Common.cs FindAndRemove_SQLServerType),
+        # but unlike -MSSQL against SRM_LOCAL (already MSSQL, so the override is a no-op),
+        # ProfileManager.Resolve honors a non-default cmdvars.ServerType unconditionally
+        # (ProfileManager.cs:148) — so -PG genuinely forces a PostgresExecutor against
+        # SRM_LOCAL's real MSSQL server. There's no live PG target in this suite, so the
+        # only thing provable offline is that the flag is parsed/dispatched (a real connection
+        # attempt that fails on protocol mismatch), not rejected as a usage/parse error.
+        $r = Invoke-Cli isqlline 'SELECT(1+1)' 'master' $script:SourceProfile '-PG'
+        if ($r.ExitCode -eq 0) { throw '-PG against a non-PG server should not succeed' }
+        if ($r.StdOut -match 'Usage:') { throw "-PG should be consumed as a valid flag, not rejected as bad usage. stdout: $($r.StdOut)" }
+        if ($r.StdOut -notmatch 'ERROR! Failed to Run\.') { throw "expected a dispatched-but-failed connection attempt, not a parse error. stdout: $($r.StdOut)" }
+    }
     Test-Case 'isqlline.error_bad_profile' {
         $r = Invoke-Cli isqlline 'SELECT(1+1)' 'master' 'NO_SUCH_PROFILE_XYZ'
         if ($r.ExitCode -eq 0) { throw 'unknown profile should exit non-zero' }
@@ -466,6 +479,7 @@ function Test-ScriptExecution {
         if ($runs -ne 1) { throw "expected exactly 1 #NT dispatch (got $runs). stdout: $($r.StdOut)" }
         if ($r.StdOut -notmatch 'return status = 0') { throw "the #NT dispatch should produce a successful run" }
     }
+    Skip-Case 'runcreate.platform_lines_pg' 'the #NT/#UNIX prefixes here are OS dispatch lines, not DB platform (-MSSQL/-PG); no PG-specific create-file directive exists to mirror'
     Test-Case 'runcreate.dispatch_unknown_verb' {
         $unkCreate = Join-Path $script:Scratch 'unknown.create'
         @(
@@ -1113,7 +1127,7 @@ function Test-ProfileManagement {
 
     $scratchProfile = 'TEST_PROFILE_SUITE'
     # Defensive: in case a prior run left these behind
-    foreach ($n in @($scratchProfile, "${scratchProfile}_2", "${scratchProfile}_RAW")) {
+    foreach ($n in @($scratchProfile, "${scratchProfile}_2", "${scratchProfile}_RAW", "${scratchProfile}_PG", "${scratchProfile}_PG2")) {
         Invoke-Cli set_profile '--delete' $n '--yes' | Out-Null
     }
 
@@ -1136,6 +1150,58 @@ function Test-ProfileManagement {
         if ($p.ALIASES.Count -ne 2 -or $p.ALIASES -notcontains 'TPS' -or $p.ALIASES -notcontains 'TPSUITE') {
             throw "aliases not persisted correctly: $($p.ALIASES -join ',')"
         }
+    }
+
+    Test-Case 'set_profile.create_pg' {
+        $r = Invoke-Cli set_profile '--create' "${scratchProfile}_PG" `
+            '--platform' 'pg' '--host' '127.0.0.1' `
+            '--user' 'postgres' '--password' 'placeholder' `
+            '--company' '101' '--sql-source' $script:Scratch
+        Assert-ExitCode $r
+        Assert-ProfileExists "${scratchProfile}_PG"
+        $p = Get-Profile "${scratchProfile}_PG"
+        # '--platform pg' must canonicalize to PLATFORM=POSTGRES and default PORT=5432
+        Assert-Field $p 'PLATFORM' 'POSTGRES'
+        Assert-Field $p 'PORT'     5432
+        $viewOut = Invoke-Cli set_profile '--view' "${scratchProfile}_PG"
+        Assert-ExitCode $viewOut
+        if ($viewOut.StdOut -notmatch '5432') { throw "view output missing default PG port. stdout: $($viewOut.StdOut)" }
+        Invoke-Cli set_profile '--delete' "${scratchProfile}_PG" '--yes' | Out-Null
+    }
+    Test-Case 'set_profile.create_pg_platform_alias' {
+        # '--platform postgres' (the long form) must also be accepted
+        $r = Invoke-Cli set_profile '--create' "${scratchProfile}_PG2" `
+            '--platform' 'postgres' '--host' '127.0.0.1' `
+            '--user' 'postgres' '--password' 'placeholder' `
+            '--company' '101' '--sql-source' $script:Scratch
+        Assert-ExitCode $r
+        Assert-Field (Get-Profile "${scratchProfile}_PG2") 'PLATFORM' 'POSTGRES'
+        Invoke-Cli set_profile '--delete' "${scratchProfile}_PG2" '--yes' | Out-Null
+    }
+
+    Test-Case 'set_profile.cleanup_migrates_legacy_pg' {
+        # Simulate a legacy/unmigrated settings.json where PLATFORM was persisted as
+        # the "PG" alias. Any command that loads the profile store runs CleanupSettings,
+        # which must canonicalize "PG" -> "POSTGRES" in place.
+        $legacy = "${scratchProfile}_LEGACYPG"
+        $r = Invoke-Cli set_profile '--create' $legacy `
+            '--platform' 'pg' '--host' '127.0.0.1' `
+            '--user' 'postgres' '--password' 'placeholder' `
+            '--company' '101' '--sql-source' $script:Scratch
+        Assert-ExitCode $r
+        # Hand-edit the persisted file back to the legacy "PG" token.
+        $path = Join-Path $script:Bin 'settings.json'
+        $obj = Get-Content $path -Raw | ConvertFrom-Json
+        $obj.Profiles.$legacy.PLATFORM = 'PG'
+        $obj | ConvertTo-Json -Depth 20 | Set-Content $path
+        Assert-Field (Get-Profile $legacy) 'PLATFORM' 'PG'   # sanity: legacy value is in place
+        # Any command that constructs a ProfileManager runs CleanupSettings on load
+        # (set_profile has its own loader that bypasses it; iwho uses ProfileManager).
+        # The connection attempt itself may fail against a placeholder host — we only
+        # care that CleanupSettings migrated the persisted PLATFORM before that.
+        Invoke-Cli iwho $legacy | Out-Null
+        Assert-Field (Get-Profile $legacy) 'PLATFORM' 'POSTGRES'
+        Invoke-Cli set_profile '--delete' $legacy '--yes' | Out-Null
     }
 
     Test-Case 'set_profile.view' {
@@ -1204,7 +1270,7 @@ function Test-ProfileManagement {
     Test-Case 'set_profile.error_create_bad_platform' {
         $r = Invoke-Cli set_profile '--create' 'X2' '--platform' 'oracle' '--host' 'h' '--user' 'u' '--password' 'p' '--raw'
         if ($r.ExitCode -eq 0) { throw 'create with bad platform should fail' }
-        if ($r.StdErr -notmatch 'mssql.*sybase') { throw "stderr should list valid platforms: $($r.StdErr)" }
+        if ($r.StdErr -notmatch 'mssql.*sybase.*postgres') { throw "stderr should list valid platforms incl. postgres: $($r.StdErr)" }
     }
     Test-Case 'set_profile.error_create_reserved_name' {
         $r = Invoke-Cli set_profile '--create' 'VERSION' '--platform' 'mssql' '--host' 'h' '--user' 'u' '--password' 'p' '--raw'
