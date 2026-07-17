@@ -399,18 +399,32 @@ namespace ibsCompiler
                 Console.ForegroundColor = prev;
             }
 
+            // Clears any transient message/error and returns the prompt line to its
+            // idle state — which, per the always-visible Choice prompt, is the bare
+            // `Choice: ` label rather than a blank row. Every call site invokes this
+            // only once menuBuf has already been cleared, so the buffer is always "".
             void ClearMessage()
             {
-                Console.SetCursorPosition(0, messageRow);
-                Console.Write(new string(' ', Console.WindowWidth - 1));
+                ConsoleMenu.DrawChoiceBuffer(messageRow, "Choice", "");
+                // DrawChoiceBuffer parks a visible caret for the "actively typing a
+                // choice" case; back at idle (field navigation) the caret belongs on
+                // the focused field row instead, so the following Render() call — every
+                // ClearMessage() call site is immediately followed by one — repositions
+                // it. Hide it here so there is no visible flash on the message row.
+                Console.CursorVisible = false;
             }
 
-            // Draws the in-progress menu-choice buffer on the prompt line as `Choice: 9`
-            // with the hardware cursor parked right after it (the blinking caret is the
-            // trailing underscore). Shares the render primitive with the standalone
-            // set_profile menus so the `Choice:` entry looks identical everywhere.
+            // Draws the menu-choice row on the prompt line — `Choice: ` renders
+            // immediately (always visible, even with an empty buffer) and fills in as
+            // `Choice: 9` while typing, with the hardware cursor parked right after it
+            // (the blinking caret is the trailing underscore). No single numbered item
+            // is an obvious default here — plain Enter on an empty buffer already has
+            // its own well-defined meaning (edit the focused field), so this never
+            // passes a defaultChoice. Shares the render primitive with the standalone
+            // set_profile / set_messages menus so the `Choice:` entry looks identical
+            // everywhere.
             void ShowMenuBuffer(string buf)
-                => ConsoleMenu.DrawChoiceBuffer(messageRow, "Choice: ", buf);
+                => ConsoleMenu.DrawChoiceBuffer(messageRow, "Choice", buf);
 
             // In-place single-line editor seeded with the current value.
             string? InlineEdit(int fieldIdx, string seed)
@@ -490,6 +504,7 @@ namespace ibsCompiler
                 Console.ReadKey(intercept: true);
                 Console.CursorVisible = false;
                 Scaffold();
+                ClearMessage(); // idle Choice: label
                 Render();
             }
 
@@ -541,6 +556,7 @@ namespace ibsCompiler
             {
                 Console.CursorVisible = false;
                 Scaffold();
+                ClearMessage(); // idle Choice: label — visible before the first keystroke
                 Render();
 
                 var menuBuf = new StringBuilder();

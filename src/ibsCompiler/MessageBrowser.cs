@@ -120,13 +120,15 @@ namespace ibsCompiler
                     types = MessageFileEditor.ListLiveTypes(profile);
                     Console.WriteLine();
                     Cyan($"  Messages — {profileName}");
+                    Dim($"  Source: {setupDir}");
                     Console.WriteLine();
                     for (int i = 0; i < types.Count; i++)
                         Console.WriteLine($"   {i + 1}. {types[i].Label} Messages (css.{types[i].Type}_msgrp)");
                     Console.WriteLine("  99. Exit");
                     Console.WriteLine();
 
-                    var choice = ConsoleMenu.ReadDeferredChoice();
+                    // Exit is the obvious default — preserves the old blank-Enter-exits shortcut.
+                    var choice = ConsoleMenu.ReadDeferredChoice(defaultChoice: "99");
                     if (string.IsNullOrEmpty(choice) || choice == "99") return 0;
                     if (!int.TryParse(choice, out var n) || n < 1 || n > types.Count)
                     {
@@ -134,7 +136,7 @@ namespace ibsCompiler
                         continue;
                     }
 
-                    var nav = GroupScreen(cmdvars, profile, executor, types[n - 1], profileName, isGonzo);
+                    var nav = GroupScreen(cmdvars, profile, executor, types[n - 1], profileName, isGonzo, setupDir);
                     if (nav == Nav.Exit) return 0;
                     // Nav.Back → re-loop to the type screen.
                 }
@@ -147,7 +149,7 @@ namespace ibsCompiler
         // ================================================================
         private static Nav GroupScreen(
             CommandVariables cmdvars, ResolvedProfile profile, ISqlExecutor executor,
-            MessageFileEditor.LiveType lt, string profileName, bool isGonzo)
+            MessageFileEditor.LiveType lt, string profileName, bool isGonzo, string setupDir)
         {
             while (true)
             {
@@ -159,9 +161,9 @@ namespace ibsCompiler
                 int selected;
                 string extra;
                 if (tooSmall)
-                    (selected, extra) = GroupPickFallback(lt, groups);
+                    (selected, extra) = GroupPickFallback(lt, groups, setupDir);
                 else
-                    (selected, extra) = GroupPickScrolling(lt, groups);
+                    (selected, extra) = GroupPickScrolling(lt, groups, setupDir);
 
                 if (extra == "exit") return Nav.Exit;
                 if (extra == "back") return Nav.Back;
@@ -177,7 +179,7 @@ namespace ibsCompiler
                 }
                 if (selected >= 0 && selected < groups.Count)
                 {
-                    var nav = GroupActions(profile, lt, groups[selected]);
+                    var nav = GroupActions(profile, lt, groups[selected], setupDir);
                     if (nav == Nav.Exit) return Nav.Exit;
                     // Nav.Back → refresh the group list.
                 }
@@ -190,7 +192,7 @@ namespace ibsCompiler
         /// (row number, 98 Back, 99 Exit); C creates a group, I installs to the profile.
         /// Returns (groupIndex, "") on a row select, else (-1, action-token).
         /// </summary>
-        private static (int, string) GroupPickScrolling(MessageFileEditor.LiveType lt, List<MessageFileEditor.MsgGroup> groups)
+        private static (int, string) GroupPickScrolling(MessageFileEditor.LiveType lt, List<MessageFileEditor.MsgGroup> groups, string setupDir)
         {
             int cursor = 0, scroll = 0;
             var buf = new StringBuilder();
@@ -201,6 +203,7 @@ namespace ibsCompiler
 
             Console.WriteLine();
             Cyan($"  {lt.Label} message groups  ({groups.Count})");
+            Dim($"  Source: {setupDir}");
             Console.WriteLine();
             Console.WriteLine("  " + Fit($"{"",4}{"GROUP",-8}{"START#",-8}{"ROWS",-7}DESCRIPTION", w - 2));
             int headerRow = Console.CursorTop; // first data row lands here
@@ -234,10 +237,14 @@ namespace ibsCompiler
                 Console.SetCursorPosition(0, startRow + (cursor - scroll));
             }
 
+            // Always-visible idle state: the bare `Choice: ` label rather than a blank
+            // row. No single group number is an obvious default (plain Enter without a
+            // typed digit already opens the highlighted cursor row), so this never
+            // passes a defaultChoice.
             void ClearPrompt()
             {
-                Console.SetCursorPosition(0, promptRow);
-                Console.Write(new string(' ', w));
+                ConsoleMenu.DrawChoiceBuffer(promptRow, "Choice", "");
+                Console.CursorVisible = false;
             }
 
             if (groups.Count == 0)
@@ -250,6 +257,7 @@ namespace ibsCompiler
             try
             {
                 Console.CursorVisible = false;
+                ClearPrompt(); // render the idle Choice: label before the first keystroke
                 while (true)
                 {
                     var key = Console.ReadKey(intercept: true);
@@ -258,7 +266,7 @@ namespace ibsCompiler
                     if (char.IsDigit(key.KeyChar))
                     {
                         buf.Append(key.KeyChar);
-                        ConsoleMenu.DrawChoiceBuffer(promptRow, "Choice: ", buf.ToString());
+                        ConsoleMenu.DrawChoiceBuffer(promptRow, "Choice", buf.ToString());
                         continue;
                     }
                     if (buf.Length > 0 && key.Key != ConsoleKey.Enter
@@ -287,7 +295,7 @@ namespace ibsCompiler
                             {
                                 buf.Length--;
                                 if (buf.Length == 0) { Console.CursorVisible = false; ClearPrompt(); }
-                                else ConsoleMenu.DrawChoiceBuffer(promptRow, "Choice: ", buf.ToString());
+                                else ConsoleMenu.DrawChoiceBuffer(promptRow, "Choice", buf.ToString());
                             }
                             break;
                         case ConsoleKey.Enter:
@@ -326,10 +334,11 @@ namespace ibsCompiler
         }
 
         /// <summary>Plain fallback for a terminal too small to host the scrolling table.</summary>
-        private static (int, string) GroupPickFallback(MessageFileEditor.LiveType lt, List<MessageFileEditor.MsgGroup> groups)
+        private static (int, string) GroupPickFallback(MessageFileEditor.LiveType lt, List<MessageFileEditor.MsgGroup> groups, string setupDir)
         {
             Console.WriteLine();
             Cyan($"  {lt.Label} message groups  ({groups.Count})");
+            Dim($"  Source: {setupDir}");
             Console.WriteLine($"  {"",4}{"GROUP",-8}{"START#",-8}{"ROWS",-7}DESCRIPTION");
             for (int i = 0; i < groups.Count; i++)
             {
@@ -338,7 +347,8 @@ namespace ibsCompiler
             }
             Console.WriteLine("   C. new group   I. install to profile   98. Back   99. Exit");
             Console.WriteLine();
-            var choice = ConsoleMenu.ReadDeferredChoice(allowText: true);
+            // Back is the safe, non-destructive default.
+            var choice = ConsoleMenu.ReadDeferredChoice(allowText: true, defaultChoice: "98");
             if (string.IsNullOrEmpty(choice)) return (-1, "back");
             var up = choice.Trim().ToUpperInvariant();
             if (up == "C") return (-1, "create");
@@ -353,12 +363,13 @@ namespace ibsCompiler
         // ================================================================
         // Group actions menu
         // ================================================================
-        private static Nav GroupActions(ResolvedProfile profile, MessageFileEditor.LiveType lt, MessageFileEditor.MsgGroup group)
+        private static Nav GroupActions(ResolvedProfile profile, MessageFileEditor.LiveType lt, MessageFileEditor.MsgGroup group, string setupDir)
         {
             while (true)
             {
                 Console.WriteLine();
                 Cyan($"  {lt.Label} / {group.Group} — {group.Description}");
+                Dim($"  Source: {setupDir}");
                 Console.WriteLine($"  start #{group.MinMsg}   {group.RowCount} message(s)");
                 Console.WriteLine();
                 Console.WriteLine("   1. Add new message");
@@ -368,7 +379,8 @@ namespace ibsCompiler
                 Console.WriteLine("  99. Exit");
                 Console.WriteLine();
 
-                var choice = ConsoleMenu.ReadDeferredChoice();
+                // Back is the safe, non-destructive default.
+                var choice = ConsoleMenu.ReadDeferredChoice(defaultChoice: "98");
                 if (string.IsNullOrEmpty(choice) || choice == "98") return Nav.Back;
                 switch (choice)
                 {
@@ -706,7 +718,8 @@ namespace ibsCompiler
                 Console.WriteLine("  98. Back");
                 Console.WriteLine();
 
-                var choice = ConsoleMenu.ReadDeferredChoice();
+                // Back is the safe default — Delete (a destructive action) is never defaulted.
+                var choice = ConsoleMenu.ReadDeferredChoice(defaultChoice: "98");
                 if (string.IsNullOrEmpty(choice) || choice == "98") return changed;
                 if (choice == "1")
                 {

@@ -25,17 +25,25 @@ compile_msg  MYPROFILE        # no flags -> legacy Import/Export/Add menu (regre
 ## Type screen
 
 - [ ] Numbered vertical list, one row per live type: `1. GUI Messages (css.gui_msgrp)` etc.
-- [ ] `99` (or Esc / blank Enter) exits with code 0.
+- [ ] A dim `Source: <path>` line prints under the screen title, showing the resolved
+      `GetPath_Setup` directory for the profile (e.g. `Source: C:\_innovative\_source\
+      current.sql\css\setup`).
+- [ ] The prompt line shows `Choice [99]: ` from the start (before any key is pressed) —
+      Exit is the default, so plain Enter exits with code 0, same as `99`.
 - [ ] An out-of-range number reprints the list with a red "No type N".
 
 ## Group screen (SBN-GUI-style table)
 
+- [ ] The dim `Source: <path>` line prints under the screen title, same as the type screen
+      (both the scrolling table and the small-terminal fallback list).
 - [ ] Columns line up: `GROUP  START#  ROWS  DESCRIPTION`; row count matches the SBN GUI's
       group view for the same type.
 - [ ] Up/Down move the `>` highlight; the window scrolls when the group list is taller than
       the terminal (no flicker, no wrap past the right edge).
-- [ ] Typing a row number then Enter opens that group (deferred `Choice:` buffer);
-      `98` Back to the type screen; `99` Exit.
+- [ ] The prompt line shows the bare `Choice: ` label from the start (no default — plain
+      Enter with no digits typed opens the currently highlighted `>` row instead, which is
+      its own well-defined behavior, not a numbered default). Typing a row number then
+      Enter opens that group by number; `98` Back to the type screen; `99` Exit.
 - [ ] `C` -> create-group prompts (group <=6 / start default 0 / description); a green
       confirmation appears and the new group shows in the refreshed table.
 - [ ] `I` -> Install to profile: on a **non-GONZO** profile it confirms then runs the compile;
@@ -43,7 +51,10 @@ compile_msg  MYPROFILE        # no flags -> legacy Import/Export/Add menu (regre
 
 ## Group actions menu
 
+- [ ] The dim `Source: <path>` line prints under the screen title.
 - [ ] `1` Add / `2` Find / `3` Open in editor / `98` Back / `99` Exit render and dispatch.
+- [ ] The prompt line shows `Choice [98]: ` from the start — Back is the default (plain
+      Enter backs out to the group screen).
 - [ ] `3` opens `css.<type>_msg` in `$EDITOR`/vim; after the editor closes the file is
       reloaded (edit a row in vim, save, confirm the change is visible in Find).
 
@@ -68,6 +79,8 @@ compile_msg  MYPROFILE        # no flags -> legacy Import/Export/Add menu (regre
 ## Detail / Edit / Delete (use a SCRATCH fixture, not the real tree)
 
 - [ ] All row fields shown (msgno/cmpy/lang/group/flag/text).
+- [ ] The prompt line shows `Choice [98]: ` from the start — Back is the default; Delete
+      (item `2`, a destructive action) is never defaulted and always requires explicit entry.
 - [ ] `1` Edit: Enter keeps current text/flag; a real change prints green `EDITED <msgno>`
       and bounces back to the refreshed Find list (the edited row reflects the new text).
 - [ ] `2` Delete: requires typing `delete` to confirm; prints green `DELETED <msgno>`; the

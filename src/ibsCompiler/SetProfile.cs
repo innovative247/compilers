@@ -281,8 +281,9 @@ namespace ibsCompiler
                 else
                 {
                     Console.WriteLine();
+                    // No obvious default action at the top level — force explicit entry.
                     input = ConsoleMenu.ReadDeferredChoice();
-                    if (string.IsNullOrEmpty(input)) continue; // blank Enter / Esc → re-show menu
+                    if (string.IsNullOrEmpty(input)) continue; // Esc → re-show menu
                 }
 
                 switch (input)
@@ -735,7 +736,8 @@ namespace ibsCompiler
                 // (alphanumerics/underscore); Enter on an empty buffer or Esc cancels.
                 // This path is TTY-only (redirected consoles use the sequential submenu).
                 Console.WriteLine();
-                var sel = ConsoleMenu.ReadDeferredChoice(allowText: true, label: "Select: ");
+                // No safe "current" profile to default to — force explicit entry.
+                var sel = ConsoleMenu.ReadDeferredChoice(allowText: true, label: "Select");
                 if (string.IsNullOrEmpty(sel)) return;
 
                 (string Name, ProfileData Profile)? pick = null;
@@ -1629,8 +1631,9 @@ namespace ibsCompiler
             else
             {
                 Console.WriteLine();
-                choice = ConsoleMenu.ReadDeferredChoice();
-                if (string.IsNullOrEmpty(choice)) return; // Esc / blank Enter → Back
+                // VSCode is the only real action on this menu — obvious default.
+                choice = ConsoleMenu.ReadDeferredChoice(defaultChoice: "1");
+                if (string.IsNullOrEmpty(choice)) return; // Esc → Back
             }
 
             switch (choice)
@@ -1699,7 +1702,8 @@ namespace ibsCompiler
                     else
                     {
                         Console.WriteLine();
-                        choice = ConsoleMenu.ReadDeferredChoice();
+                        // First profile in the list is the obvious default.
+                        choice = ConsoleMenu.ReadDeferredChoice(defaultChoice: "1");
                     }
                     if (int.TryParse(choice, out var idx) && idx >= 1 && idx <= profileNames.Count)
                     {
@@ -1708,7 +1712,7 @@ namespace ibsCompiler
                     }
                     if (string.IsNullOrEmpty(choice) &&
                         !Console.IsInputRedirected && !Console.IsOutputRedirected)
-                        continue; // Esc / blank Enter on a TTY → silently re-prompt
+                        continue; // Esc on a TTY → silently re-prompt
                     Console.WriteLine($"  Please enter 1-{profileNames.Count}.");
                 }
             }
@@ -1740,7 +1744,8 @@ namespace ibsCompiler
                     else
                     {
                         Console.WriteLine();
-                        choice = ConsoleMenu.ReadDeferredChoice();
+                        // First database in the list is the obvious default.
+                        choice = ConsoleMenu.ReadDeferredChoice(defaultChoice: "1");
                     }
                     if (int.TryParse(choice, out var idx) && idx >= 1 && idx <= databases.Count)
                     {
@@ -1749,7 +1754,7 @@ namespace ibsCompiler
                     }
                     if (string.IsNullOrEmpty(choice) &&
                         !Console.IsInputRedirected && !Console.IsOutputRedirected)
-                        continue; // Esc / blank Enter on a TTY → silently re-prompt
+                        continue; // Esc on a TTY → silently re-prompt
                     Console.WriteLine($"  Please enter 1-{databases.Count}.");
                 }
             }
