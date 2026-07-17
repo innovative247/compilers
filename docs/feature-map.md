@@ -67,6 +67,7 @@ they still work end-to-end.
 | Echo input with line numbers | `-E` | `isqlline.echo` | COVERED |
 | Capture to outfile | `-O <file>` | `isqlline.outfile` | COVERED |
 | Force MSSQL/Sybase/Postgres mode | `-MSSQL` / `-SYBASE` / `-POSTGRES` | `isqlline.platform` / `isqlline.platform_postgres` | COVERED |
+| Postgres refcursor auto-dereference — a `returns setof refcursor` result (cursor names) is FETCHed and streamed as N result sets in order, not printed as portal names (SR 52910) | (automatic, POSTGRES platform only; applies to `runsql` too) | manual — live PG target (no live Postgres in the suite; suite PG tests are flag-level) | COVERED |
 
 ### `iwho` — process list
 

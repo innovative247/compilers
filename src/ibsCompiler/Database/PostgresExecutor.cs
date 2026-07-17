@@ -263,8 +263,7 @@ namespace ibsCompiler.Database
                 var sql = ApplyDiagPrefix(stmt);
                 try
                 {
-                    using var cmd = new NpgsqlCommand(sql, conn) { CommandTimeout = 0 };
-                    StreamCommandAsync(cmd, emit).GetAwaiter().GetResult();
+                    StreamCommandAsync(conn, sql, emit).GetAwaiter().GetResult();
                 }
                 catch (PostgresException ex)
                 {
@@ -636,9 +635,51 @@ namespace ibsCompiler.Database
             return null;
         }
 
-        private static async System.Threading.Tasks.Task StreamCommandAsync(NpgsqlCommand cmd, Action<string> emit)
+        // Execute one statement and stream its output (D6: refcursor auto-dereference).
+        //
+        // SBN procs ported to PG are authored as `returns setof refcursor` — one cursor per
+        // Sybase result set. `select * from proc(...)` then yields a result set of cursor
+        // *names* (`<unnamed portal 1>`…), and the cursors themselves die at end of the
+        // producing statement's transaction. To reproduce Sybase isql's multi-resultset output,
+        // when the result set is refcursor-typed we collect the names and `FETCH ALL FROM` each,
+        // in order, streaming those sets through the normal formatter — the name result is not
+        // printed.
+        //
+        // Both the producing statement and the FETCHes must run in the SAME transaction (a
+        // non-holdable cursor only lives to the end of the transaction that opened it), so the
+        // statement is wrapped in an explicit BEGIN/COMMIT. A single statement inside BEGIN/COMMIT
+        // is autocommit-equivalent, so this is invisible for the non-refcursor path — same result,
+        // same durability, locks released at commit exactly as before. We can't know a statement
+        // is refcursor-typed until after it executes, hence the wrapper is unconditional.
+        private static async System.Threading.Tasks.Task StreamCommandAsync(NpgsqlConnection conn, string sql, Action<string> emit)
         {
-            using var reader = await cmd.ExecuteReaderAsync();
+            await using var tx = await conn.BeginTransactionAsync();
+
+            List<string>? cursorNames = null;
+            using (var cmd = new NpgsqlCommand(sql, conn) { CommandTimeout = 0, Transaction = tx })
+            using (var reader = await cmd.ExecuteReaderAsync())
+            {
+                if (ResultIsAllRefcursor(reader))
+                    cursorNames = CollectCursorNames(reader);   // no output for the name result
+                else
+                    await StreamReaderAsync(reader, emit);       // untouched non-refcursor path
+            } // producing reader closed; tx still open → its refcursors stay alive to FETCH
+
+            if (cursorNames != null)
+                foreach (var name in cursorNames)
+                {
+                    using var fcmd = new NpgsqlCommand($"FETCH ALL FROM {QuoteIdent(name)}", conn)
+                        { CommandTimeout = 0, Transaction = tx };
+                    using var freader = await fcmd.ExecuteReaderAsync();
+                    await StreamReaderAsync(freader, emit);
+                }
+
+            await tx.CommitAsync();
+        }
+
+        // Stream every result set an open reader carries, mirroring Sybase/MSSQL multi-set output.
+        private static async System.Threading.Tasks.Task StreamReaderAsync(NpgsqlDataReader reader, Action<string> emit)
+        {
             bool hadResultSet = false;
             do
             {
@@ -657,6 +698,40 @@ namespace ibsCompiler.Database
                 emit($"({n} {rowWord} affected)");
                 emit("");
             }
+        }
+
+        // True only when the reader's current result set has ≥1 column and EVERY column is the
+        // PG `refcursor` type. Mixed columns (refcursor + other) return false — we print the raw
+        // result then, rather than guess (matches the SR 52910 contract).
+        private static bool ResultIsAllRefcursor(NpgsqlDataReader reader)
+        {
+            if (reader.FieldCount == 0) return false;
+            System.Collections.ObjectModel.ReadOnlyCollection<NpgsqlDbColumn> schema;
+            try { schema = reader.GetColumnSchema(); }
+            catch { return false; }
+            for (int i = 0; i < reader.FieldCount; i++)
+            {
+                var pt = i < schema.Count ? schema[i].PostgresType : null;
+                if (pt == null || !string.Equals(pt.Name, "refcursor", StringComparison.OrdinalIgnoreCase))
+                    return false;
+            }
+            return true;
+        }
+
+        // Read the cursor names out of a refcursor-typed reader (all rows, all refcursor-only
+        // result sets), preserving order — that's the FETCH order, matching Sybase result-set order.
+        private static List<string> CollectCursorNames(NpgsqlDataReader reader)
+        {
+            var names = new List<string>();
+            do
+            {
+                if (!ResultIsAllRefcursor(reader)) continue;
+                while (reader.Read())
+                    for (int i = 0; i < reader.FieldCount; i++)
+                        if (!reader.IsDBNull(i))
+                            names.Add(reader.GetString(i));
+            } while (reader.NextResult());
+            return names;
         }
 
         private static async System.Threading.Tasks.Task StreamOneResultSetAsync(NpgsqlDataReader reader, Action<string> emit)

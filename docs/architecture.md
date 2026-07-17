@@ -256,6 +256,12 @@ Diagnostic toggles (`set showplan on`, `set statistics io on`, `set noexec on`) 
 
 Each `GO`-delimited chunk is split into individual statements (a PG-aware splitter that respects quotes, comments, and dollar-quoted function bodies) and executed one at a time, matching Sybase/MSSQL's per-statement autocommit — a chunk is not one implicit multi-statement transaction.
 
+### refcursor auto-dereference (D6)
+
+SBN procs ported to PG are authored as `returns setof refcursor` — one cursor per Sybase result set — so `select * from ibs.proc(...)` yields a result set of cursor *names* (`<unnamed portal 1>`…), and the non-holdable cursors die at end of the producing statement's transaction. Left as-is, `runsql`/`isqlline` would print the portal names and the caller would never see the data. Instead, when a streamed result set's columns are **all** the PG `refcursor` type (detected via the reader's column schema, `PostgresType.Name == "refcursor"`), `PostgresExecutor` collects the cursor names, then runs `FETCH ALL FROM "<name>"` for each **in order**, streaming those result sets through the normal formatter (header / rows / `(N rows affected)`) — mirroring Sybase isql's multi-resultset output. The cursor-name result itself is not printed. **Mixed columns** (refcursor + other) print the raw result unchanged; non-refcursor results are untouched.
+
+Because a non-holdable cursor only lives to the end of the transaction that opened it, the producing statement and its FETCHes must share one transaction, so each statement is executed inside an explicit `BEGIN`/`COMMIT`. A single statement wrapped in `BEGIN`/`COMMIT` is autocommit-equivalent (same result, same durability, locks released at commit), so this is invisible to the non-refcursor path and preserves the per-statement autocommit parity above. The wrapper is unconditional only because a statement can't be known to be refcursor-typed until after it executes.
+
 ---
 
 ## Command Architecture
