@@ -711,7 +711,9 @@ namespace ibsCompiler
 
             // Interactive TTY: selecting a profile drops STRAIGHT into the editor hub —
             // no intermediate Open/Copy/Delete submenu. Copy/Delete/Back/Exit are menu
-            // actions inside the editor; the editor returns here and we re-list.
+            // actions inside the editor; the list was only a picker, so on any of those
+            // outcomes the editor returns here and we unwind straight to the main menu
+            // (no re-list).
             if (preselected != null)
             {
                 var m = FindProfile(preselected);
@@ -748,8 +750,10 @@ namespace ibsCompiler
                     continue;
                 }
 
-                // Editor is the hub; on return (Back/Save/Copy/Delete) re-list for another pick.
+                // Editor is the hub; on return (Back/Save/Copy/Delete) unwind to the main
+                // menu — the list was just a picker, not a hub to come back to.
                 EditProfile(pick.Value.Name, pick.Value.Profile);
+                return;
             }
         }
 

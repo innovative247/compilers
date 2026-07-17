@@ -94,7 +94,8 @@ Back + Exit only).
       default), SQL Source (unless Raw). On failure the cursor jumps to the first offending
       row and the specific error prints red on the prompt line; nothing is saved. On success
       the editor exits, the green `Profile 'NAME' updated/created!` line is in scrollback,
-      and control returns to the PROFILE LIST (not a submenu).
+      and control returns to the MAIN MENU (the profile list was just a picker, not a hub —
+      it is not re-shown).
 - [ ] **2–8. Test \*** — same per-test dispatch and the same validate-all gate as Save
       (invalid ⇒ jump to offender + error, no test runs). The chosen test runs against the
       WORKING COPY (unsaved edits included); a dim `(testing current editor values — not yet
@@ -104,12 +105,13 @@ Back + Exit only).
 - [ ] **9. Copy** — opens the copy-into-editor flow for THIS profile (params prefilled,
       Profile Name + Aliases blank, title `Copy Profile (from SOURCE)`). On save the new
       profile is created (same validation as New); on save or cancel you return to the
-      profile list. The source is untouched.
+      MAIN MENU. The source is untouched.
 - [ ] **10. Delete** — the legacy `Type 'delete' to confirm:` prompt; on confirmation the
-      profile is removed and you return to the profile list; anything else cancels.
+      profile is removed and you return to the MAIN MENU; anything else cancels.
 - [ ] **98. Back** — leaves the editor (discard-confirm `Discard changes? (y/N)` when
-      dirty) back to wherever the profile was selected from (profile list / main menu, or
-      straight out for `set_profile NAME`).
+      dirty) and returns to the MAIN MENU, not the profile list (the list was just a picker).
+      For `set_profile NAME` direct invocation there is no main menu on the stack, so Back
+      exits the program (same as picking it via Main Menu → 2 with nothing further behind it).
 - [ ] **99. Exit** — leaves the app entirely (discard-confirm when dirty).
 
 ## Field behaviors (unchanged)
@@ -163,7 +165,9 @@ input) keeps the plain `Choose [..]:` / `Select [..]:` ReadLine prompts unchange
 - [ ] **Profile list** — `Existing profile` (or `set_profile` → 2) shows the numbered profile
       list with no `Select […]:` line. `Select: <buf>` accepts a **list number OR a profile
       name** (letters/digits/underscore, e.g. `S254_SBNB`); Enter commits, blank Enter / Esc
-      cancels back out of the list.
+      cancels back out of the list. The list is a picker, not a hub — after the editor opens,
+      any exit from it (Back/Save/Copy/Delete) unwinds straight to the Main Menu, not back to
+      this list.
 - [ ] **Add to IDE** — Main Menu → 3 shows `1 VSCode / 98 Back / 99 Exit` with deferred
       `Choice:` entry; Esc / blank Enter = Back. The "default profile" and "default database"
       sub-menus (multi-profile / multi-database) use the same deferred numeric entry.
