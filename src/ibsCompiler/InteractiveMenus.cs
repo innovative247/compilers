@@ -1781,6 +1781,13 @@ namespace ibsCompiler
         public static readonly string[] SetMessagesBoolFlagNames = new[]
         {
             "--import", "--export", "--yes", "--add", "--dry-run",
+            // Wave-1 file-first action markers. These take NO operand of their own
+            // (their data comes from --type/--group/--msgno/etc.), so they are bool
+            // flags — StripLongFlags must not swallow the token that follows them.
+            "--new-group", "--edit-msg", "--delete-msg",
+            // NB: --find is deliberately NOT here. It carries a value term
+            // (--find <term>), so it must strip like --type/--group so the term is
+            // consumed and never falls through to the positional server fallback.
         };
 
         /// <summary>
@@ -1794,16 +1801,38 @@ namespace ibsCompiler
         /// unattended. Without flags the menu UX is unchanged byte-for-byte.
         /// </summary>
         public static int RunSetMessages(CommandVariables cmdvars, ResolvedProfile profile, ISqlExecutor executor,
-                                         List<string>? args = null)
+                                         List<string>? args = null, bool legacyInteractive = false)
         {
             if (CheckRawMode(profile)) return 1;
 
             // Headless CLI dispatch when ANY long flag is present. Including
             // --on-saved / --yes here means a misuse like "--on-saved keep" without
             // --import gets a clean error, not a stdin hang in the interactive menu.
-            if (args != null && CliArgs.AnyPresent(args, "--import", "--export", "--on-saved", "--yes", "--add", "--dry-run"))
+            // This runs first for BOTH entry points (set_messages and compile_msg),
+            // so every scripted/suite case routes here regardless of the split below.
+            if (args != null && CliArgs.AnyPresent(args, "--import", "--export", "--on-saved", "--yes", "--add", "--dry-run",
+                                                          "--new-group", "--find", "--edit-msg", "--delete-msg"))
                 return RunSetMessagesHeadless(args, cmdvars, profile, executor);
 
+            // Entry-point split for the interactive (TTY) path:
+            //   compile_msg  -> the legacy Import/Export/Add numbered menu (unchanged).
+            //   set_messages -> the file-first MessageBrowser (type/group/search/edit).
+            // The browser owns its own TTY guard; the legacy menu is ReadLine-based and
+            // works on a redirected console too.
+            if (legacyInteractive)
+                return RunLegacyImportExportMenu(cmdvars, profile, executor);
+
+            return MessageBrowser.Run(cmdvars, profile, executor);
+        }
+
+        /// <summary>
+        /// The legacy compile_msg interactive menu: GONZO export-only branch plus the
+        /// non-GONZO Import / Export / Add numbered menu. Extracted verbatim from the old
+        /// <see cref="RunSetMessages"/> body so <c>compile_msg</c>'s behavior is unchanged
+        /// while <c>set_messages</c> moves to the file-first browser.
+        /// </summary>
+        private static int RunLegacyImportExportMenu(CommandVariables cmdvars, ResolvedProfile profile, ISqlExecutor executor)
+        {
             var profileName = profile.IsProfile ? profile.ProfileName : cmdvars.ServerNameOnly;
             var isGonzo = IsGonzoProfile(profileName);
 
@@ -1936,10 +1965,19 @@ namespace ibsCompiler
             List<string> args,
             CommandVariables cmdvars, ResolvedProfile profile, ISqlExecutor executor)
         {
-            // --add is a pure file operation (no DB, no import/export mutex, no
-            // GONZO guard). Dispatch it before any of that machinery.
+            // The file-first actions (--add, --new-group, --find, --edit-msg,
+            // --delete-msg) are pure file operations (no DB, no import/export
+            // mutex, no GONZO guard). Dispatch them before any of that machinery.
             if (CliArgs.HasFlag(args, "--add"))
                 return RunAddMessageHeadless(args, profile);
+            if (CliArgs.HasFlag(args, "--new-group"))
+                return RunNewGroupHeadless(args, profile);
+            if (CliArgs.AnyPresent(args, "--find"))
+                return RunFindHeadless(args, profile);
+            if (CliArgs.HasFlag(args, "--edit-msg"))
+                return RunEditMessageHeadless(args, profile);
+            if (CliArgs.HasFlag(args, "--delete-msg"))
+                return RunDeleteMessageHeadless(args, profile);
 
             var doImport = CliArgs.HasFlag(args, "--import");
             var doExport = CliArgs.HasFlag(args, "--export");
@@ -2097,6 +2135,216 @@ namespace ibsCompiler
                 Console.WriteLine($"MSGNO {result.Msgno}");
             }
             return 0;
+        }
+
+        /// <summary>
+        /// Headless "create a new message group":
+        ///   set_messages PROFILE --new-group --type T --group G --desc D [--start 0] [--dry-run]
+        /// Output contract:
+        ///   success -> "GROUP &lt;G&gt; &lt;start&gt;", exit 0
+        ///   dry-run -> "DRYRUN GROUP &lt;G&gt; &lt;start&gt;", exit 0, file untouched
+        ///   failure -> "ERROR: &lt;reason&gt;" on stderr, exit 1
+        /// </summary>
+        private static int RunNewGroupHeadless(List<string> args, ResolvedProfile profile)
+        {
+            var type = CliArgs.GetOption(args, "--type");
+            var group = CliArgs.GetOption(args, "--group");
+            var desc = CliArgs.GetOption(args, "--desc");
+            var startStr = CliArgs.GetOption(args, "--start");
+            var dryRun = CliArgs.HasFlag(args, "--dry-run");
+
+            if (string.IsNullOrEmpty(type))
+            {
+                Console.Error.WriteLine("ERROR: --new-group requires --type (ibs|gui|sql|sqr|jam).");
+                return 1;
+            }
+            if (string.IsNullOrEmpty(group))
+            {
+                Console.Error.WriteLine("ERROR: --new-group requires --group.");
+                return 1;
+            }
+            if (string.IsNullOrEmpty(desc))
+            {
+                Console.Error.WriteLine("ERROR: --new-group requires --desc.");
+                return 1;
+            }
+            int start = 0;
+            if (!string.IsNullOrEmpty(startStr) && !int.TryParse(startStr, out start))
+            {
+                Console.Error.WriteLine("ERROR: --start must be an integer.");
+                return 1;
+            }
+
+            var result = MessageFileEditor.AddGroup(profile, type, group, start, desc, dryRun);
+            if (!result.Success)
+            {
+                Console.Error.WriteLine($"ERROR: {result.Error}");
+                return 1;
+            }
+            Console.WriteLine($"{(dryRun ? "DRYRUN GROUP" : "GROUP")} {result.Group} {result.Start}");
+            return 0;
+        }
+
+        /// <summary>
+        /// Headless message search:
+        ///   set_messages PROFILE --find &lt;term&gt; --type T [--group G] [--cmpy N] [--lang N]
+        /// An empty term matches every row. Prints one "MATCH msgno\tcmpy\tlang\tgrp\ttext"
+        /// line per hit followed by "FOUND &lt;count&gt;". Zero matches still exit 0 with "FOUND 0".
+        /// The optional --group filter narrows by (trimmed, upper) group after the term match.
+        /// </summary>
+        private static int RunFindHeadless(List<string> args, ResolvedProfile profile)
+        {
+            // --find carries its value term. GetOption returns "" for a bare/absent
+            // value, which correctly means "match everything".
+            var term = CliArgs.GetOption(args, "--find") ?? "";
+            var type = CliArgs.GetOption(args, "--type");
+            var group = CliArgs.GetOption(args, "--group");
+            var cmpyStr = CliArgs.GetOption(args, "--cmpy");
+            var langStr = CliArgs.GetOption(args, "--lang");
+
+            if (string.IsNullOrEmpty(type))
+            {
+                Console.Error.WriteLine("ERROR: --find requires --type (ibs|gui|sql|sqr|jam).");
+                return 1;
+            }
+            int? cmpy = null;
+            if (!string.IsNullOrEmpty(cmpyStr))
+            {
+                if (!int.TryParse(cmpyStr, out var c)) { Console.Error.WriteLine("ERROR: --cmpy must be an integer."); return 1; }
+                cmpy = c;
+            }
+            int? lang = null;
+            if (!string.IsNullOrEmpty(langStr))
+            {
+                if (!int.TryParse(langStr, out var l)) { Console.Error.WriteLine("ERROR: --lang must be an integer."); return 1; }
+                lang = l;
+            }
+
+            var matches = MessageFileEditor.FindMessages(profile, type, term, cmpy, lang);
+            if (!string.IsNullOrEmpty(group))
+            {
+                var g = group.Trim().ToUpperInvariant();
+                matches = matches.Where(m => m.Group == g).ToList();
+            }
+            foreach (var m in matches)
+                Console.WriteLine($"MATCH {m.Msgno}\t{m.Cmpy}\t{m.Lang}\t{m.Group}\t{m.Text}");
+            Console.WriteLine($"FOUND {matches.Count}");
+            return 0;
+        }
+
+        /// <summary>
+        /// Headless message edit:
+        ///   set_messages PROFILE --edit-msg --type T --msgno N --cmpy C --lang L (--text X | --upd-flg F | both) [--dry-run]
+        /// Output contract:
+        ///   success -> "EDITED &lt;msgno&gt;", exit 0 (dry-run also echoes the rebuilt row)
+        ///   failure -> "ERROR: &lt;reason&gt;" on stderr, exit 1
+        /// </summary>
+        private static int RunEditMessageHeadless(List<string> args, ResolvedProfile profile)
+        {
+            var type = CliArgs.GetOption(args, "--type");
+            var msgnoStr = CliArgs.GetOption(args, "--msgno");
+            var cmpyStr = CliArgs.GetOption(args, "--cmpy");
+            var langStr = CliArgs.GetOption(args, "--lang");
+            var newText = CliArgs.GetOption(args, "--text");
+            var updFlgStr = CliArgs.GetOption(args, "--upd-flg");
+            var dryRun = CliArgs.HasFlag(args, "--dry-run");
+
+            if (!TryParseEditKey(type, msgnoStr, cmpyStr, langStr, "--edit-msg", out var msgno, out var cmpy, out var lang))
+                return 1;
+
+            char? updFlg = null;
+            if (updFlgStr != null)
+            {
+                if (updFlgStr.Length != 1)
+                {
+                    Console.Error.WriteLine("ERROR: --upd-flg must be exactly one character.");
+                    return 1;
+                }
+                updFlg = updFlgStr[0];
+            }
+            // GetOption returns "" for a valueless --text; treat that as "no text supplied"
+            // so "--edit-msg ... " with neither field trips the requires-a-field guard.
+            var textArg = string.IsNullOrEmpty(newText) ? null : newText;
+            if (textArg == null && updFlg == null)
+            {
+                Console.Error.WriteLine("ERROR: --edit-msg requires --text and/or --upd-flg.");
+                return 1;
+            }
+
+            var result = MessageFileEditor.UpdateMessage(profile, type!, msgno, cmpy, lang, textArg, updFlg, dryRun);
+            if (!result.Success)
+            {
+                Console.Error.WriteLine($"ERROR: {result.Error}");
+                return 1;
+            }
+            Console.WriteLine($"EDITED {result.Msgno}");
+            if (dryRun) Console.WriteLine(result.Row);
+            return 0;
+        }
+
+        /// <summary>
+        /// Headless message delete:
+        ///   set_messages PROFILE --delete-msg --type T --msgno N --cmpy C --lang L (--yes | --dry-run)
+        /// A real delete requires --yes; --dry-run previews without writing. Output "DELETED &lt;msgno&gt;".
+        /// </summary>
+        private static int RunDeleteMessageHeadless(List<string> args, ResolvedProfile profile)
+        {
+            var type = CliArgs.GetOption(args, "--type");
+            var msgnoStr = CliArgs.GetOption(args, "--msgno");
+            var cmpyStr = CliArgs.GetOption(args, "--cmpy");
+            var langStr = CliArgs.GetOption(args, "--lang");
+            var dryRun = CliArgs.HasFlag(args, "--dry-run");
+            var doYes = CliArgs.HasFlag(args, "--yes");
+
+            if (!TryParseEditKey(type, msgnoStr, cmpyStr, langStr, "--delete-msg", out var msgno, out var cmpy, out var lang))
+                return 1;
+
+            if (!dryRun && !doYes)
+            {
+                Console.Error.WriteLine("ERROR: --delete-msg permanently removes the row. Pass --yes to confirm (or --dry-run to preview).");
+                return 1;
+            }
+
+            var result = MessageFileEditor.DeleteMessage(profile, type!, msgno, cmpy, lang, dryRun);
+            if (!result.Success)
+            {
+                Console.Error.WriteLine($"ERROR: {result.Error}");
+                return 1;
+            }
+            Console.WriteLine($"DELETED {result.Msgno}");
+            return 0;
+        }
+
+        /// <summary>
+        /// Shared parse of the (type, msgno, cmpy, lang) key required by --edit-msg and
+        /// --delete-msg. Emits the ERROR: line and returns false on any missing/invalid field.
+        /// </summary>
+        private static bool TryParseEditKey(
+            string? type, string? msgnoStr, string? cmpyStr, string? langStr, string action,
+            out int msgno, out int cmpy, out int lang)
+        {
+            msgno = 0; cmpy = 0; lang = 0;
+            if (string.IsNullOrEmpty(type))
+            {
+                Console.Error.WriteLine($"ERROR: {action} requires --type (ibs|gui|sql|sqr|jam).");
+                return false;
+            }
+            if (string.IsNullOrEmpty(msgnoStr) || !int.TryParse(msgnoStr, out msgno))
+            {
+                Console.Error.WriteLine($"ERROR: {action} requires --msgno <integer>.");
+                return false;
+            }
+            if (string.IsNullOrEmpty(cmpyStr) || !int.TryParse(cmpyStr, out cmpy))
+            {
+                Console.Error.WriteLine($"ERROR: {action} requires --cmpy <integer>.");
+                return false;
+            }
+            if (string.IsNullOrEmpty(langStr) || !int.TryParse(langStr, out lang))
+            {
+                Console.Error.WriteLine($"ERROR: {action} requires --lang <integer>.");
+                return false;
+            }
+            return true;
         }
 
         /// <summary>

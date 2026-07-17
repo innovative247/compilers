@@ -3,7 +3,11 @@ using ibsCompiler.Configuration;
 using ibsCompiler.Database;
 
 const string Usage = "Usage: set_messages <server/profile> [-U user] [-P pass] [-O outfile] [-MSSQL|-SYBASE|-POSTGRES]\n"
-    + "       set_messages <server/profile> --add --type <ibs|gui|sql|sqr|jam> --group <grp> --text <msg> [--lang N] [--cmpy N] [--upd-flg C] [--dry-run]";
+    + "       set_messages <server/profile> --add --type <ibs|gui|sql|sqr|jam> --group <grp> --text <msg> [--lang N] [--cmpy N] [--upd-flg C] [--dry-run]\n"
+    + "       set_messages <server/profile> --new-group --type <t> --group <grp> --desc <text> [--start N] [--dry-run]\n"
+    + "       set_messages <server/profile> --find <term> --type <t> [--group <grp>] [--cmpy N] [--lang N]\n"
+    + "       set_messages <server/profile> --edit-msg --type <t> --msgno N --cmpy C --lang L (--text <msg> | --upd-flg F | both) [--dry-run]\n"
+    + "       set_messages <server/profile> --delete-msg --type <t> --msgno N --cmpy C --lang L (--yes | --dry-run)";
 if (!VersionCheck.CheckForUpdates("set_messages", args, Usage)) return 0;
 
 var arguments = args.ToList();

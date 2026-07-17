@@ -22,4 +22,6 @@ if (string.IsNullOrEmpty(cmdvars.Server))
 
 var profile = profileMgr.Resolve(cmdvars);
 using var executor = SqlExecutorFactory.Create(profile);
-return InteractiveMenus.RunSetMessages(cmdvars, profile, executor, headlessArgs);
+// compile_msg keeps the legacy Import/Export/Add interactive menu; only
+// set_messages routes the interactive path through the file-first MessageBrowser.
+return InteractiveMenus.RunSetMessages(cmdvars, profile, executor, headlessArgs, legacyInteractive: true);

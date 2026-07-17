@@ -1148,13 +1148,98 @@ function Test-Messages {
         $content = ($Rows -join "`n") + "`n"
         [System.IO.File]::WriteAllText($Path, $content, $utf8NoBom)
     }
+    # Like Write-LfFile but the literal token <E9> in any row is emitted as a single
+    # raw 0xE9 byte (invalid stand-alone UTF-8) so we can prove that non-UTF-8 bytes
+    # survive edit/delete rewrites byte-for-byte.
+    function Write-LfFileRaw {
+        param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string[]]$Rows)
+        $ms = New-Object System.IO.MemoryStream
+        foreach ($row in $Rows) {
+            $parts = $row -split '<E9>'
+            for ($i = 0; $i -lt $parts.Count; $i++) {
+                if ($i -gt 0) { $ms.WriteByte(0xE9) }
+                $b = $utf8NoBom.GetBytes($parts[$i])
+                $ms.Write($b, 0, $b.Length)
+            }
+            $ms.WriteByte(0x0A)
+        }
+        [System.IO.File]::WriteAllBytes($Path, $ms.ToArray())
+        $ms.Dispose()
+    }
+    # Split a file into byte-verbatim physical lines (LF stripped, trailing empty dropped).
+    function Get-RawLines {
+        param([Parameter(Mandatory)][string]$Path)
+        $bytes = [System.IO.File]::ReadAllBytes($Path)
+        $lines = New-Object System.Collections.ArrayList
+        $start = 0
+        for ($i = 0; $i -lt $bytes.Length; $i++) {
+            if ($bytes[$i] -eq 0x0A) {
+                $len = $i - $start
+                $seg = New-Object byte[] $len
+                if ($len -gt 0) { [Array]::Copy($bytes, $start, $seg, 0, $len) }
+                [void]$lines.Add($seg)
+                $start = $i + 1
+            }
+        }
+        if ($start -lt $bytes.Length) {
+            $len = $bytes.Length - $start
+            $seg = New-Object byte[] $len
+            [Array]::Copy($bytes, $start, $seg, 0, $len)
+            [void]$lines.Add($seg)
+        }
+        return ,$lines
+    }
+    function Get-BytesHash {
+        param([byte[]]$Bytes)
+        $sha = [System.Security.Cryptography.SHA256]::Create()
+        try { ($sha.ComputeHash($Bytes) | ForEach-Object { $_.ToString('x2') }) -join '' }
+        finally { $sha.Dispose() }
+    }
+    # Prove every physical line except the edited/deleted one is byte-for-byte identical.
+    function Assert-UntouchedLinesIdentical {
+        param(
+            [Parameter(Mandatory)]$Before,
+            [Parameter(Mandatory)]$After,
+            [Parameter(Mandatory)][int]$TargetIndex,
+            [switch]$Deleted
+        )
+        if ($Deleted) {
+            if ($After.Count -ne $Before.Count - 1) {
+                throw "delete: expected line count -1 (was $($Before.Count), now $($After.Count))"
+            }
+            for ($i = 0; $i -lt $After.Count; $i++) {
+                $src = if ($i -lt $TargetIndex) { $i } else { $i + 1 }
+                if ((Get-BytesHash $After[$i]) -ne (Get-BytesHash $Before[$src])) {
+                    throw "delete: untouched line $i (maps to before $src) was altered"
+                }
+            }
+        } else {
+            if ($After.Count -ne $Before.Count) {
+                throw "edit: line count changed (was $($Before.Count), now $($After.Count))"
+            }
+            for ($i = 0; $i -lt $Before.Count; $i++) {
+                if ($i -eq $TargetIndex) { continue }
+                if ((Get-BytesHash $After[$i]) -ne (Get-BytesHash $Before[$i])) {
+                    throw "edit: untouched line $i was altered"
+                }
+            }
+        }
+    }
     function Reset-MsgFixture {
-        Write-LfFile $guiMsg @(
+        # gui_msg physical-line layout (0-based) the message tests rely on:
+        #   0:100 MENU/1   1:101 MENU/1   2:101 MENU/2
+        #   3:250 DUP/1    4:250 DUP/1  (duplicate key -> ambiguity fixture)
+        #   5:300 AUDIT/1 (raw 0xE9 in text -> untouched invalid-UTF-8 anchor)
+        #   6:700 SPAN/1   7:750 SPAN/1  (global max stays 750)
+        Write-LfFileRaw $guiMsg @(
             "100`t1`t0`tMENU  `tX`t100000`tFirst menu message"
             "101`t1`t0`tMENU  `tX`t100001`tSecond menu message"
             "101`t2`t0`tMENU  `tX`t100002`tSecond menu message fr"
-            "700`t1`t0`tSPAN  `tX`t100003`tSpan low"
-            "750`t1`t0`tSPAN  `tX`t100004`tSpan high"
+            "250`t1`t0`tDUP   `tX`t100003`tDuplicate key one"
+            "250`t1`t0`tDUP   `tX`t100004`tDuplicate key two"
+            "300`t1`t0`tAUDIT `tX`t100005`tCaf<E9> latin1 raw"
+            "700`t1`t0`tSPAN  `tX`t100006`tSpan low"
+            "750`t1`t0`tSPAN  `tX`t100007`tSpan high"
         )
         Write-LfFile $guiMsgrp @(
             "MENU  `t100`tMenu messages"
@@ -1194,12 +1279,17 @@ function Test-Messages {
         Assert-ExitCode $r
         if ($r.StdOut.Trim() -ne 'MSGNO 500') { throw "expected 'MSGNO 500', got: '$($r.StdOut)'" }
     }
-    Test-Case 'set_messages.add_zero_minmsg_errors' {
-        # ZEROG: empty in _msg and s#minmsg=0 -> cannot seed a block.
+    Test-Case 'set_messages.add_zero_minmsg_global_maxplus1' {
+        # ZEROG: empty in _msg and s#minmsg=0. The file-first rule seeds an empty
+        # zero-floor group at the GLOBAL max+1 (fixture max is 750 -> 751) instead
+        # of erroring; the collision guard still runs afterward.
         Reset-MsgFixture
-        $r = Invoke-Cli set_messages '--add' '--type' 'gui' '--group' 'ZEROG' '--text' 'X' $script:TestProfile
-        if ($r.ExitCode -eq 0) { throw 's#minmsg=0 with empty group must fail' }
-        if ($r.StdErr -notmatch 'ERROR:') { throw "stderr should carry ERROR: prefix: $($r.StdErr)" }
+        $before = [System.IO.File]::ReadAllLines($guiMsg).Count
+        $r = Invoke-Cli set_messages '--add' '--type' 'gui' '--group' 'ZEROG' '--text' 'ZeroSeed' $script:TestProfile
+        Assert-ExitCode $r
+        if ($r.StdOut.Trim() -ne 'MSGNO 751') { throw "expected 'MSGNO 751', got: '$($r.StdOut)'" }
+        $after = [System.IO.File]::ReadAllLines($guiMsg)
+        if ($after.Count -ne $before + 1) { throw "expected exactly one new line (was $before, now $($after.Count))" }
     }
     Test-Case 'set_messages.add_crosses_seed_now_succeeds' {
         # SPAN's max+1 (751) sits above LOWSED's sparse seed (720). s#minmsg is a
@@ -1295,6 +1385,153 @@ function Test-Messages {
         if ($r.StdOut.Trim() -ne 'MSGNO 201') { throw "expected 'MSGNO 201', got: '$($r.StdOut)'" }
         $cols = (([System.IO.File]::ReadAllLines($ibsMsg))[-1]) -split "`t"
         if ($cols[4] -ne ' ') { throw "ibs upd_flg should default to a single space, got '$($cols[4])'" }
+    }
+
+    # ===== set_messages --new-group (append a css.<type>_msgrp definition) =====
+    Test-Case 'set_messages.new_group_headless' {
+        Reset-MsgFixture
+        $before = [System.IO.File]::ReadAllLines($guiMsgrp).Count
+        $r = Invoke-Cli set_messages '--new-group' '--type' 'gui' '--group' 'NEWGRP' '--desc' 'NewGroupDesc' $script:TestProfile
+        Assert-ExitCode $r
+        if ($r.StdOut.Trim() -ne 'GROUP NEWGRP 0') { throw "expected 'GROUP NEWGRP 0', got: '$($r.StdOut)'" }
+        $lines = [System.IO.File]::ReadAllLines($guiMsgrp)
+        if ($lines.Count -ne $before + 1) { throw "expected exactly one new _msgrp line (was $before, now $($lines.Count))" }
+        if ($lines[-1] -ne "NEWGRP`t0`tNewGroupDesc") { throw "unexpected appended row: '$($lines[-1])'" }
+        $raw = [System.IO.File]::ReadAllText($guiMsgrp)
+        if ($raw -match "`r") { throw 'file must not contain CR (LF-only)' }
+        if (-not $raw.EndsWith("`n")) { throw 'file must end with a trailing newline' }
+        $bytes = [System.IO.File]::ReadAllBytes($guiMsgrp)
+        if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) { throw 'file must not have a UTF-8 BOM' }
+        # A brand-new zero-floor group must then take a msgno at the global max+1 (751).
+        $add = Invoke-Cli set_messages '--add' '--type' 'gui' '--group' 'NEWGRP' '--text' 'FirstNewGrp' $script:TestProfile
+        Assert-ExitCode $add
+        if ($add.StdOut.Trim() -ne 'MSGNO 751') { throw "add into NEWGRP expected 'MSGNO 751', got: '$($add.StdOut)'" }
+    }
+    Test-Case 'set_messages.new_group_dryrun_no_write' {
+        Reset-MsgFixture
+        $hashBefore = (Get-FileHash $guiMsgrp -Algorithm SHA256).Hash
+        $r = Invoke-Cli set_messages '--new-group' '--dry-run' '--type' 'gui' '--group' 'NEWGRP' '--desc' 'NewGroupDesc' $script:TestProfile
+        Assert-ExitCode $r
+        if ($r.StdOut.Trim() -ne 'DRYRUN GROUP NEWGRP 0') { throw "expected 'DRYRUN GROUP NEWGRP 0', got: '$($r.StdOut)'" }
+        if ((Get-FileHash $guiMsgrp -Algorithm SHA256).Hash -ne $hashBefore) { throw '--dry-run must not modify css.gui_msgrp' }
+    }
+    Test-Case 'set_messages.new_group_dup_errors' {
+        Reset-MsgFixture
+        $r = Invoke-Cli set_messages '--new-group' '--type' 'gui' '--group' 'MENU' '--desc' 'DupGroup' $script:TestProfile
+        if ($r.ExitCode -eq 0) { throw 'a group already in _msgrp must be rejected' }
+        if ($r.StdErr -notmatch 'already exists') { throw "stderr should say the group already exists: $($r.StdErr)" }
+    }
+    Test-Case 'set_messages.new_group_grp_too_long_errors' {
+        Reset-MsgFixture
+        $r = Invoke-Cli set_messages '--new-group' '--type' 'gui' '--group' 'TOOLONG' '--desc' 'Overlong' $script:TestProfile
+        if ($r.ExitCode -eq 0) { throw 'a >6-char group must be rejected' }
+        if ($r.StdErr -notmatch '6 characters') { throw "stderr should mention the 6-char limit: $($r.StdErr)" }
+    }
+
+    # ===== set_messages --find (search rows) =====
+    Test-Case 'set_messages.find_headless' {
+        Reset-MsgFixture
+        # text term (case-insensitive) -> the three 'menu' rows.
+        $r = Invoke-Cli set_messages '--find' 'menu' '--type' 'gui' $script:TestProfile
+        Assert-ExitCode $r
+        if ($r.StdOut -notmatch '(?m)^FOUND 3\r?$') { throw "text term expected 'FOUND 3', got: $($r.StdOut)" }
+        if ($r.StdOut -notmatch '(?m)^MATCH 100\t0\t1\tMENU\t') { throw "expected a MATCH row for msgno 100: $($r.StdOut)" }
+        # numeric term -> msgno-substring hits (101 appears on two languages).
+        $r2 = Invoke-Cli set_messages '--find' '101' '--type' 'gui' $script:TestProfile
+        Assert-ExitCode $r2
+        if ($r2.StdOut -notmatch '(?m)^FOUND 2\r?$') { throw "numeric term expected 'FOUND 2', got: $($r2.StdOut)" }
+        # --lang filter with empty term (--find is the LAST token so it has no value
+        # -> GetOption returns "" = match all; the profile must sit before it).
+        $r3 = Invoke-Cli set_messages $script:TestProfile '--type' 'gui' '--lang' '2' '--find'
+        Assert-ExitCode $r3
+        if ($r3.StdOut -notmatch '(?m)^FOUND 1\r?$') { throw "--lang 2 empty term expected 'FOUND 1', got: $($r3.StdOut)" }
+        # empty term = every row (8 in the fixture).
+        $r4 = Invoke-Cli set_messages $script:TestProfile '--type' 'gui' '--find'
+        Assert-ExitCode $r4
+        if ($r4.StdOut -notmatch '(?m)^FOUND 8\r?$') { throw "empty term expected 'FOUND 8', got: $($r4.StdOut)" }
+        # zero matches still exits 0.
+        $r5 = Invoke-Cli set_messages '--find' 'zzznomatchzzz' '--type' 'gui' $script:TestProfile
+        Assert-ExitCode $r5
+        if ($r5.StdOut.Trim() -ne 'FOUND 0') { throw "no-match expected single line 'FOUND 0', got: '$($r5.StdOut)'" }
+    }
+
+    # ===== set_messages --edit-msg (rewrite one row, byte-fidelity) =====
+    Test-Case 'set_messages.edit_headless_text' {
+        Reset-MsgFixture
+        $before = Get-RawLines $guiMsg
+        $r = Invoke-Cli set_messages '--edit-msg' '--type' 'gui' '--msgno' '100' '--cmpy' '0' '--lang' '1' '--text' 'EditedText' $script:TestProfile
+        Assert-ExitCode $r
+        if ($r.StdOut.Trim() -ne 'EDITED 100') { throw "expected 'EDITED 100', got: '$($r.StdOut)'" }
+        $after = Get-RawLines $guiMsg
+        $line0 = $utf8NoBom.GetString($after[0])
+        $cols = $line0 -split "`t"
+        if ($cols[6] -ne 'EditedText') { throw "text not updated, row 0 = '$line0'" }
+        if ($cols[5] -eq '100000') { throw 'chg_tm should have been refreshed, still 100000' }
+        if ([int]$cols[5] -le 100000) { throw "chg_tm should be a fresh seconds-since-1980 value, got '$($cols[5])'" }
+        # Every other physical line (including the raw-0xE9 AUDIT anchor) is byte-identical.
+        Assert-UntouchedLinesIdentical -Before $before -After $after -TargetIndex 0
+        $raw = [System.IO.File]::ReadAllBytes($guiMsg)
+        if ($raw[-1] -ne 0x0A) { throw 'trailing newline must be preserved after an edit' }
+    }
+    Test-Case 'set_messages.edit_ambiguous_multilang_errors' {
+        # msgno 250/cmpy0/lang1 appears twice (DUP) -> ambiguous, no write.
+        Reset-MsgFixture
+        $hashBefore = (Get-FileHash $guiMsg -Algorithm SHA256).Hash
+        $r = Invoke-Cli set_messages '--edit-msg' '--type' 'gui' '--msgno' '250' '--cmpy' '0' '--lang' '1' '--text' 'NopeAmbiguous' $script:TestProfile
+        if ($r.ExitCode -eq 0) { throw 'ambiguous key must fail' }
+        if ($r.StdErr -notmatch 'ambiguous') { throw "stderr should say ambiguous: $($r.StdErr)" }
+        if ((Get-FileHash $guiMsg -Algorithm SHA256).Hash -ne $hashBefore) { throw 'an ambiguous edit must not modify the file' }
+    }
+    Test-Case 'set_messages.edit_dryrun_no_write' {
+        Reset-MsgFixture
+        $hashBefore = (Get-FileHash $guiMsg -Algorithm SHA256).Hash
+        $r = Invoke-Cli set_messages '--edit-msg' '--dry-run' '--type' 'gui' '--msgno' '100' '--cmpy' '0' '--lang' '1' '--text' 'DryEdit' $script:TestProfile
+        Assert-ExitCode $r
+        if ($r.StdOut -notmatch '(?m)^EDITED 100\r?$') { throw "expected 'EDITED 100', got: $($r.StdOut)" }
+        if ($r.StdOut -notmatch 'DryEdit') { throw "dry-run should echo the rebuilt row: $($r.StdOut)" }
+        if ((Get-FileHash $guiMsg -Algorithm SHA256).Hash -ne $hashBefore) { throw '--dry-run must not modify the file' }
+    }
+    Test-Case 'set_messages.edit_requires_field' {
+        Reset-MsgFixture
+        $r = Invoke-Cli set_messages '--edit-msg' '--type' 'gui' '--msgno' '100' '--cmpy' '0' '--lang' '1' $script:TestProfile
+        if ($r.ExitCode -eq 0) { throw 'edit with neither --text nor --upd-flg must fail' }
+        if ($r.StdErr -notmatch 'requires --text') { throw "stderr should require a field: $($r.StdErr)" }
+    }
+
+    # ===== set_messages --delete-msg (drop one line, byte-fidelity) =====
+    Test-Case 'set_messages.delete_headless' {
+        Reset-MsgFixture
+        $before = Get-RawLines $guiMsg
+        $r = Invoke-Cli set_messages '--delete-msg' '--type' 'gui' '--msgno' '700' '--cmpy' '0' '--lang' '1' '--yes' $script:TestProfile
+        Assert-ExitCode $r
+        if ($r.StdOut.Trim() -ne 'DELETED 700') { throw "expected 'DELETED 700', got: '$($r.StdOut)'" }
+        $after = Get-RawLines $guiMsg
+        # Line 6 (msgno 700) removed; all others (incl. the raw-0xE9 anchor) byte-identical.
+        Assert-UntouchedLinesIdentical -Before $before -After $after -TargetIndex 6 -Deleted
+        $raw = [System.IO.File]::ReadAllBytes($guiMsg)
+        if ($raw[-1] -ne 0x0A) { throw 'trailing newline must be preserved after a delete' }
+    }
+    Test-Case 'set_messages.delete_requires_yes' {
+        Reset-MsgFixture
+        $hashBefore = (Get-FileHash $guiMsg -Algorithm SHA256).Hash
+        $r = Invoke-Cli set_messages '--delete-msg' '--type' 'gui' '--msgno' '700' '--cmpy' '0' '--lang' '1' $script:TestProfile
+        if ($r.ExitCode -eq 0) { throw 'a real delete without --yes must fail' }
+        if ($r.StdErr -notmatch 'Pass --yes') { throw "stderr should demand --yes: $($r.StdErr)" }
+        if ((Get-FileHash $guiMsg -Algorithm SHA256).Hash -ne $hashBefore) { throw 'a refused delete must not modify the file' }
+    }
+    Test-Case 'set_messages.delete_dryrun_no_write' {
+        Reset-MsgFixture
+        $hashBefore = (Get-FileHash $guiMsg -Algorithm SHA256).Hash
+        $r = Invoke-Cli set_messages '--delete-msg' '--dry-run' '--type' 'gui' '--msgno' '700' '--cmpy' '0' '--lang' '1' $script:TestProfile
+        Assert-ExitCode $r
+        if ($r.StdOut.Trim() -ne 'DELETED 700') { throw "expected 'DELETED 700', got: '$($r.StdOut)'" }
+        if ((Get-FileHash $guiMsg -Algorithm SHA256).Hash -ne $hashBefore) { throw '--dry-run must not modify the file' }
+    }
+    Test-Case 'set_messages.delete_not_found_errors' {
+        Reset-MsgFixture
+        $r = Invoke-Cli set_messages '--delete-msg' '--type' 'gui' '--msgno' '999' '--cmpy' '0' '--lang' '1' '--yes' $script:TestProfile
+        if ($r.ExitCode -eq 0) { throw 'deleting a nonexistent row must fail' }
+        if ($r.StdErr -notmatch 'no message matches') { throw "stderr should say no match: $($r.StdErr)" }
     }
 }
 

@@ -72,15 +72,22 @@ Back + Exit only).
 - [ ] **Enter edits the focused field** — with no choice in progress, `Enter` edits the
       row the `>` points at (inline seeded edit / password prompt / bool + platform cycle),
       exactly as before.
-- [ ] **Digit starts a menu choice** — typing a digit shows `Choice: 9` on the prompt line
-      below the menu, caret parked after it. Keep typing to build multi-digit numbers
-      (`10`, `98`, `99`).
+- [ ] **`Choice: ` is visible from the moment the editor opens** — the prompt line below
+      the menu shows `Choice: ` immediately, before any key is pressed (no longer hidden
+      until typing starts). Typing a digit fills in after the label — `Choice: 9` — caret
+      parked after it. Keep typing to build multi-digit numbers (`10`, `98`, `99`).
 - [ ] **Enter commits the choice** — with a non-empty buffer, `Enter` runs that menu item
       (NOT a field edit). An unknown number prints `No menu item N.` and waits for a key.
-- [ ] **Backspace edits the buffer** — removes the last digit; emptying it clears the
-      prompt line and returns to field-edit meaning for `Enter`.
-- [ ] **Esc clears the buffer** — `Esc` with digits typed just clears the choice. `Esc`
-      with an empty buffer is Back (discard-confirm when dirty — see below).
+- [ ] **Backspace edits the buffer** — removes the last digit; emptying it returns the
+      prompt line to the bare `Choice: ` label (never blank) and returns to field-edit
+      meaning for `Enter`.
+- [ ] **Esc clears the buffer** — `Esc` with digits typed just clears the choice back to
+      the bare `Choice: ` label. `Esc` with an empty buffer is Back (discard-confirm when
+      dirty — see below).
+- [ ] **Enter on an empty buffer edits the focused field, never a numbered default** — the
+      editor hub has no single "obvious" menu default (Save vs. a Test vs. Back are all
+      equally plausible), so an empty-buffer `Enter` keeps its existing meaning (edit the
+      `>` field) rather than picking a menu item.
 - [ ] **Any other key abandons the buffer** — pressing an arrow / `S` mid-choice discards
       the in-progress number and processes that key normally.
 - [ ] **Accelerators** — `S` still saves and `Esc` still backs out; the numbered menu is
@@ -149,31 +156,39 @@ with a clone of the source's parameters, Profile Name + Aliases blank, title
 `Copy Profile (from SOURCE)`. Same Save validation as New. Redirected-console Copy takes the
 legacy prompt-based flow; headless `set_profile --copy NAME --to NEW` is unchanged.
 
-## Deferred 'Choice:' entry — main menu, profile list, Add-to-IDE (interactive TTY)
+## Always-visible 'Choice:' entry — main menu, profile list, Add-to-IDE (interactive TTY)
 
-The same deferred-entry pattern as the editor's action menu now drives every interactive
-`set_profile` menu. The menu renders with **no visible prompt line**; the first keystroke
-reveals `Choice: <buf>` (or `Select: <buf>` where a name is accepted) with the caret parked
-after it. Enter commits, Backspace edits, Esc clears the buffer (empty-buffer Esc backs out
-where the menu has a Back/cancel semantic). Redirected stdin (the headless suite / piped
-input) keeps the plain `Choose [..]:` / `Select [..]:` ReadLine prompts unchanged.
+The same always-visible prompt pattern as the editor's action menu now drives every
+interactive `set_profile` menu. The prompt line renders `Choice: ` (or `Select: ` where a
+name is accepted) — with `[default]` appended when the menu has one, e.g. `Choice [1]: ` —
+**immediately when the menu is entered, before any key is pressed.** Typed characters fill
+in after the label; Enter with a non-empty buffer commits it; Backspace edits; Esc clears
+the buffer back to the bare/defaulted label (empty-buffer Esc backs out where the menu has
+a Back/cancel semantic). Redirected stdin (the headless suite / piped input) keeps the
+plain `Choose [..]:` / `Select [..]:` ReadLine prompts unchanged.
 
 - [ ] **Main Menu** — `set_profile` (no args) in a TTY shows `1 New / 2 Existing / 3 Add to
-      IDE / 4 Open settings.json / 99 Exit` with no `Choose [1-4]:` line. Typing a digit
-      reveals `Choice: 9`; Enter runs it; multi-digit (`99`) builds then commits. Blank
-      Enter / Esc just re-shows the menu.
+      IDE / 4 Open settings.json / 99 Exit` with `Choice: ` visible on the prompt line from
+      the start (no default — the top-level action is never obvious enough to guess).
+      Typing a digit fills in `Choice: 9`; Enter runs it; multi-digit (`99`) builds then
+      commits. Enter on an empty buffer is a no-op (re-prompts); Esc backs out / re-shows
+      the menu.
 - [ ] **Profile list** — `Existing profile` (or `set_profile` → 2) shows the numbered profile
-      list with no `Select […]:` line. `Select: <buf>` accepts a **list number OR a profile
-      name** (letters/digits/underscore, e.g. `S254_SBNB`); Enter commits, blank Enter / Esc
-      cancels back out of the list. The list is a picker, not a hub — after the editor opens,
-      any exit from it (Back/Save/Copy/Delete) unwinds straight to the Main Menu, not back to
-      this list.
-- [ ] **Add to IDE** — Main Menu → 3 shows `1 VSCode / 98 Back / 99 Exit` with deferred
-      `Choice:` entry; Esc / blank Enter = Back. The "default profile" and "default database"
-      sub-menus (multi-profile / multi-database) use the same deferred numeric entry.
+      list with `Select: ` visible on the prompt line from the start (no default — picking
+      the wrong profile by an accidental blank Enter is worse than requiring explicit
+      entry). `Select: <buf>` accepts a **list number OR a profile name**
+      (letters/digits/underscore, e.g. `S254_SBNB`); Enter commits, Esc cancels back out of
+      the list. The list is a picker, not a hub — after the editor opens, any exit from it
+      (Back/Save/Copy/Delete) unwinds straight to the Main Menu, not back to this list.
+- [ ] **Add to IDE** — Main Menu → 3 shows `1 VSCode / 98 Back / 99 Exit` with the prompt
+      line reading `Choice [1]: ` from the start (VSCode is the only real action, so it is
+      the default — plain Enter opens it); Esc = Back. The "default profile" and "default
+      database" sub-menus (multi-profile / multi-database, when more than one exists) show
+      `Choice [1]: ` from the start — plain Enter picks the first profile/database in the
+      list.
 - [ ] **Redirected fallback** — `echo "2" | set_profile` (piped stdin) prints the classic
-      `Choose [1-4]:` / `Select […]:` prompts and does not hang — the deferred `ReadKey`
-      path is never taken on a redirected console.
+      `Choose [1-4]:` / `Select […]:` prompts and does not hang — the always-visible
+      `ReadKey` path is never taken on a redirected console.
 
 ## Robustness
 
