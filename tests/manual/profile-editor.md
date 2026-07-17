@@ -147,6 +147,30 @@ with a clone of the source's parameters, Profile Name + Aliases blank, title
 `Copy Profile (from SOURCE)`. Same Save validation as New. Redirected-console Copy takes the
 legacy prompt-based flow; headless `set_profile --copy NAME --to NEW` is unchanged.
 
+## Deferred 'Choice:' entry — main menu, profile list, Add-to-IDE (interactive TTY)
+
+The same deferred-entry pattern as the editor's action menu now drives every interactive
+`set_profile` menu. The menu renders with **no visible prompt line**; the first keystroke
+reveals `Choice: <buf>` (or `Select: <buf>` where a name is accepted) with the caret parked
+after it. Enter commits, Backspace edits, Esc clears the buffer (empty-buffer Esc backs out
+where the menu has a Back/cancel semantic). Redirected stdin (the headless suite / piped
+input) keeps the plain `Choose [..]:` / `Select [..]:` ReadLine prompts unchanged.
+
+- [ ] **Main Menu** — `set_profile` (no args) in a TTY shows `1 New / 2 Existing / 3 Add to
+      IDE / 4 Open settings.json / 99 Exit` with no `Choose [1-4]:` line. Typing a digit
+      reveals `Choice: 9`; Enter runs it; multi-digit (`99`) builds then commits. Blank
+      Enter / Esc just re-shows the menu.
+- [ ] **Profile list** — `Existing profile` (or `set_profile` → 2) shows the numbered profile
+      list with no `Select […]:` line. `Select: <buf>` accepts a **list number OR a profile
+      name** (letters/digits/underscore, e.g. `S254_SBNB`); Enter commits, blank Enter / Esc
+      cancels back out of the list.
+- [ ] **Add to IDE** — Main Menu → 3 shows `1 VSCode / 98 Back / 99 Exit` with deferred
+      `Choice:` entry; Esc / blank Enter = Back. The "default profile" and "default database"
+      sub-menus (multi-profile / multi-database) use the same deferred numeric entry.
+- [ ] **Redirected fallback** — `echo "2" | set_profile` (piped stdin) prints the classic
+      `Choose [1-4]:` / `Select […]:` prompts and does not hang — the deferred `ReadKey`
+      path is never taken on a redirected console.
+
 ## Robustness
 
 - [ ] **Save confirmation in scrollback** — after Save exits, the green

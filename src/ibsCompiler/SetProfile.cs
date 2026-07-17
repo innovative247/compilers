@@ -270,8 +270,20 @@ namespace ibsCompiler
                 PrintMenu(4, "Open settings.json");
                 PrintMenu(99, "Exit");
 
-                Console.Write("\nChoose [1-4]: ");
-                var input = Console.ReadLine()?.Trim();
+                // Interactive TTY → deferred 'Choice:' entry (no visible prompt line).
+                // Redirected console (suite / piped stdin) → plain ReadLine prompt.
+                string? input;
+                if (Console.IsInputRedirected || Console.IsOutputRedirected)
+                {
+                    Console.Write("\nChoose [1-4]: ");
+                    input = Console.ReadLine()?.Trim();
+                }
+                else
+                {
+                    Console.WriteLine();
+                    input = ConsoleMenu.ReadDeferredChoice();
+                    if (string.IsNullOrEmpty(input)) continue; // blank Enter / Esc → re-show menu
+                }
 
                 switch (input)
                 {
@@ -717,8 +729,11 @@ namespace ibsCompiler
                 var names = ListProfiles();
                 if (names.Count == 0) return;
 
-                Console.Write($"Select [1-{names.Count}, name, or blank to cancel]: ");
-                var sel = Console.ReadLine()?.Trim();
+                // Deferred 'Select:' entry — accepts a list number OR a profile name
+                // (alphanumerics/underscore); Enter on an empty buffer or Esc cancels.
+                // This path is TTY-only (redirected consoles use the sequential submenu).
+                Console.WriteLine();
+                var sel = ConsoleMenu.ReadDeferredChoice(allowText: true, label: "Select: ");
                 if (string.IsNullOrEmpty(sel)) return;
 
                 (string Name, ProfileData Profile)? pick = null;
@@ -1600,8 +1615,19 @@ namespace ibsCompiler
             PrintMenu(98, "Back");
             PrintMenu(99, "Exit");
 
-            Console.Write("\nChoose [1]: ");
-            var choice = Console.ReadLine()?.Trim();
+            // Interactive TTY → deferred 'Choice:' entry; redirected → plain ReadLine.
+            string? choice;
+            if (Console.IsInputRedirected || Console.IsOutputRedirected)
+            {
+                Console.Write("\nChoose [1]: ");
+                choice = Console.ReadLine()?.Trim();
+            }
+            else
+            {
+                Console.WriteLine();
+                choice = ConsoleMenu.ReadDeferredChoice();
+                if (string.IsNullOrEmpty(choice)) return; // Esc / blank Enter → Back
+            }
 
             switch (choice)
             {
@@ -1660,13 +1686,25 @@ namespace ibsCompiler
                 Console.WriteLine();
                 while (true)
                 {
-                    Console.Write($"  Choose [1-{profileNames.Count}]: ");
-                    var choice = Console.ReadLine()?.Trim();
+                    string? choice;
+                    if (Console.IsInputRedirected || Console.IsOutputRedirected)
+                    {
+                        Console.Write($"  Choose [1-{profileNames.Count}]: ");
+                        choice = Console.ReadLine()?.Trim();
+                    }
+                    else
+                    {
+                        Console.WriteLine();
+                        choice = ConsoleMenu.ReadDeferredChoice();
+                    }
                     if (int.TryParse(choice, out var idx) && idx >= 1 && idx <= profileNames.Count)
                     {
                         defaultProfile = profileNames[idx - 1];
                         break;
                     }
+                    if (string.IsNullOrEmpty(choice) &&
+                        !Console.IsInputRedirected && !Console.IsOutputRedirected)
+                        continue; // Esc / blank Enter on a TTY → silently re-prompt
                     Console.WriteLine($"  Please enter 1-{profileNames.Count}.");
                 }
             }
@@ -1689,13 +1727,25 @@ namespace ibsCompiler
                 Console.WriteLine();
                 while (true)
                 {
-                    Console.Write($"  Choose [1-{databases.Count}]: ");
-                    var choice = Console.ReadLine()?.Trim();
+                    string? choice;
+                    if (Console.IsInputRedirected || Console.IsOutputRedirected)
+                    {
+                        Console.Write($"  Choose [1-{databases.Count}]: ");
+                        choice = Console.ReadLine()?.Trim();
+                    }
+                    else
+                    {
+                        Console.WriteLine();
+                        choice = ConsoleMenu.ReadDeferredChoice();
+                    }
                     if (int.TryParse(choice, out var idx) && idx >= 1 && idx <= databases.Count)
                     {
                         defaultDb = databases[idx - 1];
                         break;
                     }
+                    if (string.IsNullOrEmpty(choice) &&
+                        !Console.IsInputRedirected && !Console.IsOutputRedirected)
+                        continue; // Esc / blank Enter on a TTY → silently re-prompt
                     Console.WriteLine($"  Please enter 1-{databases.Count}.");
                 }
             }

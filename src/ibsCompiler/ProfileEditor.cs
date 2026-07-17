@@ -407,14 +407,10 @@ namespace ibsCompiler
 
             // Draws the in-progress menu-choice buffer on the prompt line as `Choice: 9`
             // with the hardware cursor parked right after it (the blinking caret is the
-            // trailing underscore).
+            // trailing underscore). Shares the render primitive with the standalone
+            // set_profile menus so the `Choice:` entry looks identical everywhere.
             void ShowMenuBuffer(string buf)
-            {
-                Message("Choice: " + buf, ConsoleColor.Cyan);
-                Console.CursorVisible = true;
-                int col = 2 + "Choice: ".Length + buf.Length;
-                Console.SetCursorPosition(Math.Min(col, Console.WindowWidth - 1), messageRow);
-            }
+                => ConsoleMenu.DrawChoiceBuffer(messageRow, "Choice: ", buf);
 
             // In-place single-line editor seeded with the current value.
             string? InlineEdit(int fieldIdx, string seed)
