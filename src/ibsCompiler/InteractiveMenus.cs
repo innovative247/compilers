@@ -1801,17 +1801,38 @@ namespace ibsCompiler
         /// unattended. Without flags the menu UX is unchanged byte-for-byte.
         /// </summary>
         public static int RunSetMessages(CommandVariables cmdvars, ResolvedProfile profile, ISqlExecutor executor,
-                                         List<string>? args = null)
+                                         List<string>? args = null, bool legacyInteractive = false)
         {
             if (CheckRawMode(profile)) return 1;
 
             // Headless CLI dispatch when ANY long flag is present. Including
             // --on-saved / --yes here means a misuse like "--on-saved keep" without
             // --import gets a clean error, not a stdin hang in the interactive menu.
+            // This runs first for BOTH entry points (set_messages and compile_msg),
+            // so every scripted/suite case routes here regardless of the split below.
             if (args != null && CliArgs.AnyPresent(args, "--import", "--export", "--on-saved", "--yes", "--add", "--dry-run",
                                                           "--new-group", "--find", "--edit-msg", "--delete-msg"))
                 return RunSetMessagesHeadless(args, cmdvars, profile, executor);
 
+            // Entry-point split for the interactive (TTY) path:
+            //   compile_msg  -> the legacy Import/Export/Add numbered menu (unchanged).
+            //   set_messages -> the file-first MessageBrowser (type/group/search/edit).
+            // The browser owns its own TTY guard; the legacy menu is ReadLine-based and
+            // works on a redirected console too.
+            if (legacyInteractive)
+                return RunLegacyImportExportMenu(cmdvars, profile, executor);
+
+            return MessageBrowser.Run(cmdvars, profile, executor);
+        }
+
+        /// <summary>
+        /// The legacy compile_msg interactive menu: GONZO export-only branch plus the
+        /// non-GONZO Import / Export / Add numbered menu. Extracted verbatim from the old
+        /// <see cref="RunSetMessages"/> body so <c>compile_msg</c>'s behavior is unchanged
+        /// while <c>set_messages</c> moves to the file-first browser.
+        /// </summary>
+        private static int RunLegacyImportExportMenu(CommandVariables cmdvars, ResolvedProfile profile, ISqlExecutor executor)
+        {
             var profileName = profile.IsProfile ? profile.ProfileName : cmdvars.ServerNameOnly;
             var isGonzo = IsGonzoProfile(profileName);
 
