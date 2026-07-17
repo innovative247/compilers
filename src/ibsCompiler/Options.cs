@@ -134,10 +134,8 @@ namespace ibsCompiler
                         var optValue = line.Substring(i, j - i + 1);
                         var dbLocation = ReplaceWord(optValue);
                         if (_profile.ServerType == SQLServerTypes.POSTGRES)
-                        {
-                            var pgName = dbName.Contains('#') ? "\"" + dbName + "\"" : dbName;
-                            _arrOptions.Add(("&" + dbName + "&").PadRight(40) + dbLocation + "." + pgName);
-                        }
+                            _arrOptions.Add(("&" + dbName + "&").PadRight(40)
+                                + ibs_compiler_common.PgQualifiedName(dbLocation, dbName));
                         else
                             _arrOptions.Add(("&" + dbName + "&").PadRight(40) + dbLocation + ".." + dbName);
                         _arrOptions.Add(("&db-" + dbName + "&").PadRight(40) + dbLocation);

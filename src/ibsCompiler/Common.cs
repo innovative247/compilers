@@ -71,6 +71,45 @@ namespace ibsCompiler
         /// </summary>
         public static string CanonicalNamesJoined(string sep = "|")
             => string.Join(sep, PlatformMenu.Select(t => CanonicalName(t)));
+
+        /// <summary>
+        /// The ONLY place a PostgreSQL identifier is double-quoted. Returns the
+        /// identifier double-quoted iff it contains a character PostgreSQL will not
+        /// accept in a bare identifier — notably the SBN work-table '#' marker
+        /// (`w#ma_ins_services`, `s#olog`), which otherwise emits as a bare `#` and
+        /// trips `syntax error at or near "#"`. A bare PG identifier may hold only
+        /// letters, digits, '_' and '$' and must not start with a digit; uppercase
+        /// is left bare (PG folds it, no error) so plain names stay byte-identical.
+        /// Already-quoted input is returned unchanged; embedded quotes are doubled.
+        /// Only ever used on the POSTGRES emission path — never on SYBASE/MSSQL.
+        /// </summary>
+        public static string PgQuoteIdentifierIfNeeded(string identifier)
+        {
+            if (string.IsNullOrEmpty(identifier)) return identifier;
+            if (identifier.Length >= 2 && identifier[0] == '"' && identifier[^1] == '"')
+                return identifier; // caller already hand-quoted it
+            bool needsQuote = false;
+            for (int i = 0; i < identifier.Length; i++)
+            {
+                char c = identifier[i];
+                bool bare = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+                            || (c >= '0' && c <= '9') || c == '_' || c == '$';
+                if (i == 0 && c >= '0' && c <= '9') bare = false; // no leading digit
+                if (!bare) { needsQuote = true; break; }
+            }
+            if (!needsQuote) return identifier;
+            return "\"" + identifier.Replace("\"", "\"\"") + "\"";
+        }
+
+        /// <summary>
+        /// Builds a schema-qualified PostgreSQL object reference
+        /// (`schema.object`), double-quoting the schema and/or object part only
+        /// when each needs it (see <see cref="PgQuoteIdentifierIfNeeded"/>). A
+        /// plain `sbnmaster.ma_ins_services` stays bare; a '#' work table becomes
+        /// `sbnmaster."w#ma_ins_services"`. POSTGRES emission only.
+        /// </summary>
+        public static string PgQualifiedName(string schema, string obj)
+            => PgQuoteIdentifierIfNeeded(schema) + "." + PgQuoteIdentifierIfNeeded(obj);
         #endregion
 
         #region Console output

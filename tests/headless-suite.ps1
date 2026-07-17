@@ -37,6 +37,7 @@ $script:Bin     = (Resolve-Path "$PSScriptRoot\..\bin\win-x64").Path
 $script:Scratch = Join-Path $env:TEMP "compilers-tests-$([Guid]::NewGuid().ToString('N').Substring(0,8))"
 $script:TestProfile  = 'TEST_LOCAL'
 $script:SourceProfile = 'SRM_LOCAL'
+$script:PgProfile    = 'TEST_PG_LOCAL'   # POSTGRES profile over the scratch source (SR 52910 # quoting)
 
 # ---------- test harness ----------
 
@@ -187,10 +188,12 @@ function Initialize-Suite {
         'c:testflag + Test onoff option'
     ) | Set-Content -Path (Join-Path $setup 'options.101') -Encoding UTF8
 
-    # table_locations — must exist
+    # table_locations — must exist. w#work_tbl carries a '#' so the POSTGRES
+    # emission path must double-quote the object part (SR 52910).
     @(
         '-> ba_basic_users     &users&   Users table'
         '-> ba_options         &options& Options table'
+        '-> w#work_tbl         &users&   Work table (# marker, SR 52910)'
     ) | Set-Content -Path (Join-Path $setup 'table_locations') -Encoding UTF8
 
     # actions / actions_dtl
@@ -245,6 +248,16 @@ function Initialize-Suite {
     $edit = Invoke-Cli set_profile '--edit' $script:TestProfile `
         '--no-raw' '--company' '101' '--sql-source' $script:Scratch
     if ($edit.ExitCode -ne 0) { throw "could not edit TEST_LOCAL: $($edit.StdErr)" }
+
+    # POSTGRES profile over the same scratch source. --test --what options resolves
+    # tokens from files only (no DB connect), so this needs no live Postgres server.
+    # Used to prove the SR 52910 '#' double-quoting on the POSTGRES emission path.
+    Write-Host "Creating $script:PgProfile (POSTGRES) ..." -ForegroundColor DarkGray
+    Invoke-Cli set_profile '--delete' $script:PgProfile '--yes' | Out-Null
+    $pg = Invoke-Cli set_profile '--create' $script:PgProfile `
+        '--platform' 'postgres' '--host' 'localhost' '--user' 'x' '--password' 'x' `
+        '--company' '101' '--sql-source' $script:Scratch
+    if ($pg.ExitCode -ne 0) { throw "could not create $script:PgProfile: $($pg.StdErr)" }
 }
 
 function Remove-Suite {
@@ -254,6 +267,7 @@ function Remove-Suite {
         return
     }
     try { Invoke-Cli set_profile '--delete' $script:TestProfile '--yes' | Out-Null } catch {}
+    try { Invoke-Cli set_profile '--delete' $script:PgProfile '--yes' | Out-Null } catch {}
     if (Test-Path $script:Scratch) {
         Remove-Item $script:Scratch -Recurse -Force -ErrorAction SilentlyContinue
     }
@@ -1833,6 +1847,41 @@ function Test-ProfileManagement {
         Assert-ExitCode $r
         if ($r.StdOut -notmatch '&ba_basic_users& =') {
             throw "bare token 'ba_basic_users' should normalize to &ba_basic_users& and resolve via table_locations. stdout: $($r.StdOut)"
+        }
+    }
+    # ----- SR 52910: POSTGRES '#' object-name quoting on the token-resolution path -----
+    Test-Case 'set_profile.test_options_pg_hash_quoted' {
+        # On POSTGRES, a table-location token whose object part contains '#'
+        # (w#work_tbl) must resolve to a double-quoted object part: schema."w#work_tbl".
+        # Bare '#' would produce `syntax error at or near "#"` in PG.
+        $r = Invoke-Cli set_profile '--test' $script:PgProfile '--what' 'options' '--resolve' '&w#work_tbl&'
+        Assert-ExitCode $r
+        if ($r.StdOut -notmatch '&w#work_tbl& =') {
+            throw "expected '&w#work_tbl& =' resolution line. stdout: $($r.StdOut)"
+        }
+        if ($r.StdOut -notmatch '"w#work_tbl"') {
+            throw "POSTGRES must double-quote the '#' object part (expected `"w#work_tbl`"). stdout: $($r.StdOut)"
+        }
+    }
+    Test-Case 'set_profile.test_options_pg_nonhash_unquoted' {
+        # A non-'#' object part must stay bare on POSTGRES — quoting only kicks in
+        # for identifiers PG can't take bare.
+        $r = Invoke-Cli set_profile '--test' $script:PgProfile '--what' 'options' '--resolve' '&ba_basic_users&'
+        Assert-ExitCode $r
+        if ($r.StdOut -match '"ba_basic_users"') {
+            throw "plain object 'ba_basic_users' must NOT be quoted on POSTGRES. stdout: $($r.StdOut)"
+        }
+    }
+    Test-Case 'set_profile.test_options_mssql_hash_unquoted' {
+        # SYBASE/MSSQL output must be byte-identical to pre-fix: '#' object parts
+        # stay bare (db..w#work_tbl), never double-quoted. TEST_LOCAL is MSSQL.
+        $r = Invoke-Cli set_profile '--test' $script:TestProfile '--what' 'options' '--resolve' '&w#work_tbl&'
+        Assert-ExitCode $r
+        if ($r.StdOut -notmatch '&w#work_tbl& =') {
+            throw "expected '&w#work_tbl& =' resolution line. stdout: $($r.StdOut)"
+        }
+        if ($r.StdOut -match '"w#work_tbl"') {
+            throw "MSSQL/SYBASE must NOT double-quote '#' object parts (byte-identical to pre-fix). stdout: $($r.StdOut)"
         }
     }
     Test-Case 'set_profile.test_table_locations' {

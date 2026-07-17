@@ -203,10 +203,7 @@ namespace ibsCompiler
             foreach (var tbl in statsTables)
             {
                 if (profile.ServerType == SQLServerTypes.POSTGRES)
-                {
-                    var pgTbl = tbl.Contains('#') ? $"\"{tbl}\"" : tbl;
-                    cmdvars.Command = $"ANALYZE {dbtbl}.{pgTbl}";
-                }
+                    cmdvars.Command = $"ANALYZE {dbtbl}.{ibs_compiler_common.PgQuoteIdentifierIfNeeded(tbl)}";
                 else
                     cmdvars.Command = $"update statistics {dbtbl}..{tbl}";
                 ibs_compiler_common.WriteLine($"Executing {cmdvars.Command}", cmdvars.OutFile);
