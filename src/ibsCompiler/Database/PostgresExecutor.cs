@@ -585,7 +585,7 @@ namespace ibsCompiler.Database
                 // dollar-quoted body ($$...$$ or $tag$...$tag$)
                 if (c == '$')
                 {
-                    var tag = MatchDollarTag(chunk, i);
+                    var tag = ibs_compiler_common.MatchDollarTag(chunk, i);
                     if (tag != null)
                     {
                         sb.Append(tag);
@@ -624,16 +624,8 @@ namespace ibsCompiler.Database
             return stmts;
         }
 
-        // At s[i] == '$', return the dollar-quote tag ("$$", "$fn$", ...) or null. A digit
-        // immediately after '$' means a positional parameter ($1), not a tag.
-        private static string? MatchDollarTag(string s, int i)
-        {
-            int j = i + 1;
-            if (j < s.Length && char.IsDigit(s[j])) return null;
-            while (j < s.Length && (char.IsLetterOrDigit(s[j]) || s[j] == '_')) j++;
-            if (j < s.Length && s[j] == '$') return s.Substring(i, j - i + 1);
-            return null;
-        }
+        // Dollar-tag recognition lives in ibs_compiler_common.MatchDollarTag (shared with the
+        // batch-level PgDollarQuoteTracker) so the splitter and tracker agree on body boundaries.
 
         // Execute one statement and stream its output (D6: refcursor auto-dereference).
         //

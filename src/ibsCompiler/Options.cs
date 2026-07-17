@@ -56,6 +56,15 @@ namespace ibsCompiler
                     forceRebuild = true;
             }
 
+            if (!forceRebuild)
+            {
+                _arrOptions = ibs_compiler_common.BuildArrayFromDisk(optFileFinal);
+                // An empty read means the shared cache was mid-rewrite by a parallel compile
+                // agent (or briefly unreadable). Rebuild from source rather than run with no
+                // options — running empty would leave &tokens& unresolved (SR 52910).
+                if (_arrOptions.Count == 0) forceRebuild = true;
+            }
+
             if (forceRebuild)
             {
                 if (!File.Exists(optFileCompany))
@@ -72,8 +81,6 @@ namespace ibsCompiler
                     ibs_compiler_common.WriteLine("Table Locations File Missing! " + tblFileServer, _cmdvars.OutFile);
                     return false;
                 }
-
-                try { File.Delete(optFileFinal); } catch { }
 
                 List<string> tmpOptFileSQL = new();
                 List<string> tmpOptFileCompany;
@@ -104,11 +111,8 @@ namespace ibsCompiler
 
                 MergeTableFileIntoOptionFile(tblFileServer);
 
-                ibs_compiler_common.SaveArrayToDisk(_arrOptions, optFileFinal);
-            }
-            else
-            {
-                _arrOptions = ibs_compiler_common.BuildArrayFromDisk(optFileFinal);
+                // Atomic replace: a parallel agent reading this cache never sees a partial file.
+                ibs_compiler_common.SaveArrayToDiskAtomic(_arrOptions, optFileFinal);
             }
             return true;
         }

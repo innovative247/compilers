@@ -17,17 +17,22 @@ namespace ibsCompiler
         private static readonly Regex GoRegex = new(@"^\s*go\s*$",
             RegexOptions.IgnoreCase | RegexOptions.Multiline);
 
-        private static string[] SplitBatches(string sqlText)
+        private static string[] SplitBatches(string sqlText, bool trackDollar)
         {
             var batches = new List<string>();
             var current = new System.Text.StringBuilder();
             bool inBlockComment = false;
+            // POSTGRES only: a `go`/`exit` line inside an open dollar-quoted body ($$…$$) is
+            // function content, not a batch terminator (SR 52910). null on SYBASE/MSSQL keeps
+            // their splitting byte-identical.
+            var dollar = trackDollar ? new ibs_compiler_common.PgDollarQuoteTracker() : null;
 
             using var reader = new StringReader(sqlText);
             string? line;
             while ((line = reader.ReadLine()) != null)
             {
                 bool lineStartedInBlockComment = inBlockComment;
+                bool inDollarBody = dollar?.InDollarBody ?? false;
                 char inString = '\0'; // reset per-line; tracks ' or " delimiter
 
                 // Scan line to track /* */ block comment state.
@@ -61,15 +66,16 @@ namespace ibsCompiler
                     }
                 }
 
-                // Treat as GO separator only when not inside a block comment
-                if (!lineStartedInBlockComment && GoRegex.IsMatch(line))
+                // Treat as GO/exit separator only when not inside a block comment AND not inside
+                // an open dollar-quoted body (the latter POSTGRES-only, via `dollar`).
+                if (!lineStartedInBlockComment && !inDollarBody && GoRegex.IsMatch(line))
                 {
                     var batch = current.ToString();
                     if (!string.IsNullOrWhiteSpace(batch))
                         batches.Add(batch);
                     current.Clear();
                 }
-                else if (!lineStartedInBlockComment && ExitRegex.IsMatch(line))
+                else if (!lineStartedInBlockComment && !inDollarBody && ExitRegex.IsMatch(line))
                 {
                     // exit/quit: flush current batch and stop — same effect as go + end of file
                     var batch = current.ToString();
@@ -81,6 +87,8 @@ namespace ibsCompiler
                 {
                     current.AppendLine(line);
                 }
+
+                dollar?.Consume(line);
             }
 
             var remaining = current.ToString();
@@ -150,14 +158,19 @@ namespace ibsCompiler
                         changelogLines.Add(myOptions!.ReplaceOptions(l, cmdvars.SeqFirst));
                 }
 
-                // Read source file and replace options (stop at exit/quit client commands)
+                // Read source file and replace options (stop at exit/quit client commands).
+                // POSTGRES only: a bare `exit`/`quit` line INSIDE an open dollar-quoted body is a
+                // plpgsql loop statement, not a client directive — honoring it there truncates the
+                // function body and surfaces as "unterminated dollar-quoted string" (SR 52910).
                 var userLines = new List<string>();
+                var readDollar = profile.ServerType == SQLServerTypes.POSTGRES
+                    ? new ibs_compiler_common.PgDollarQuoteTracker() : null;
                 using (var source = new StreamReader(cmdvars.Command))
                 {
                     string? line;
                     while ((line = source.ReadLine()) != null)
                     {
-                        if (ExitRegex.IsMatch(line))
+                        if (!(readDollar?.InDollarBody ?? false) && ExitRegex.IsMatch(line))
                         {
                             // Treat exit as an implicit go — flush accumulated content as a batch
                             userLines.Add("go");
@@ -171,6 +184,7 @@ namespace ibsCompiler
                                 line = line[..cs] + "--" + line[(cs + 2)..];
                         }
                         userLines.Add(profile.RawMode ? line : myOptions!.ReplaceOptions(line, cmdvars.SeqFirst));
+                        readDollar?.Consume(line);
                     }
                 }
                 userLines.Add("go");
@@ -194,7 +208,7 @@ namespace ibsCompiler
                     // Split the user's script into GO-delimited batches and execute each
                     // on a single persistent connection (preserves USE database, temp
                     // tables, session state, etc.)
-                    var batches = SplitBatches(userText);
+                    var batches = SplitBatches(userText, profile.ServerType == SQLServerTypes.POSTGRES);
                     bool anyFailed = false;
                     var errorOutput = new System.Text.StringBuilder();
 
@@ -206,7 +220,7 @@ namespace ibsCompiler
                         // session diagnostics (showplan / statistics io) never report on
                         // runsql's own overhead. Best-effort: a changelog failure does not
                         // fail the user's run (the `if exists` guards already make it safe).
-                        foreach (var clBatch in SplitBatches(changelogText))
+                        foreach (var clBatch in SplitBatches(changelogText, profile.ServerType == SQLServerTypes.POSTGRES))
                             executor.ExecuteBatch(clBatch, captureOutput: true, cmdvars.OutFile);
 
                         for (int batchIndex = 0; batchIndex < batches.Length; batchIndex++)

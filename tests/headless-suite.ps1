@@ -543,6 +543,91 @@ function Test-ScriptExecution {
         $r = Invoke-Cli i_run_upgrade 'bogus'
         if ($r.ExitCode -eq 0) { throw 'i_run_upgrade with insufficient args should fail' }
     }
+
+    # ===== SR 52910: PostgreSQL splitter / cache-concurrency regressions =====
+
+    # Bug 1 — a plpgsql `exit;` / `go` INSIDE an open dollar-quoted body ($$…$$) must NOT be
+    # treated as a client batch terminator during the file read; doing so truncated the function
+    # and surfaced as "unterminated dollar-quoted string". --preview exercises the (POSTGRES-gated)
+    # dollar-aware file read WITHOUT a live server: if the body were truncated at the inner `exit`,
+    # the trailing statement would be missing from the compiled output.
+    Test-Case 'runsql.pg_dollar_body_exit_not_truncated' {
+        $f = Join-Path $script:Scratch 'pg_dollar_exit.sql'
+        @('do $$','begin','  loop','    exit;','  end loop;','end','$$;','go',
+          'select 42 as after_exit','go') | Set-Content $f -Encoding ASCII
+        $r = Invoke-Cli runsql $f 'sbnmaster' $script:PgProfile '--preview' '--changelog:n'
+        Assert-ExitCode $r
+        if ($r.StdOut -notmatch 'after_exit') {
+            throw "dollar-body `exit` truncated the script (trailing statement missing). stdout: $($r.StdOut)"
+        }
+        if ($r.StdOut -notmatch 'end loop') { throw "dollar body not preserved intact. stdout: $($r.StdOut)" }
+    }
+
+    # Bug 2 — content-integrity through the compile: a lone apostrophe inside a -- comment and a
+    # bare `$` inside a single-quoted literal must survive intact (they must not desync quote /
+    # dollar-tag scanning). Live statement-splitting correctness is verified against a real PG
+    # target; --preview guards the compile path here offline.
+    Test-Case 'runsql.pg_comment_apostrophe_preview' {
+        $f = Join-Path $script:Scratch 'pg_comment_apos.sql'
+        @("select 1 as before -- don't desync here", ';', 'select 2 as after_comment', 'go') |
+            Set-Content $f -Encoding ASCII
+        $r = Invoke-Cli runsql $f 'sbnmaster' $script:PgProfile '--preview' '--changelog:n'
+        Assert-ExitCode $r
+        if ($r.StdOut -notmatch 'after_comment') { throw "apostrophe-in-comment mangled the script. stdout: $($r.StdOut)" }
+    }
+    Test-Case 'runsql.pg_dollar_in_string_preview' {
+        $f = Join-Path $script:Scratch 'pg_dollar_str.sql'
+        @("select 'x' ~ '^[0-9]`$' as re_match", ';', 'select 99 as after_regex', 'go') |
+            Set-Content $f -Encoding ASCII
+        $r = Invoke-Cli runsql $f 'sbnmaster' $script:PgProfile '--preview' '--changelog:n'
+        Assert-ExitCode $r
+        if ($r.StdOut -notmatch 'after_regex') { throw "bare `$` in string mangled the script. stdout: $($r.StdOut)" }
+    }
+
+    # Bug 3 — a long runcreate run must not degrade. Dispatch the same trivial script many times
+    # and assert every dispatch succeeds (no cumulative session/state drift).
+    Test-Case 'runcreate.long_manifest_stable' {
+        $manifest = Join-Path $script:Scratch 'long.create'
+        $lines = @('# long-manifest stability (SR 52910)')
+        1..60 | ForEach-Object { $lines += 'runsql $ir>select1.sql -Dmaster' }
+        $lines | Set-Content $manifest -Encoding ASCII
+        $r = Invoke-Cli runcreate $manifest $script:TestProfile '--changelog:n'
+        Assert-ExitCode $r
+        $ok = ([regex]::Matches($r.StdOut, 'return status = 0')).Count
+        if ($ok -lt 60) { throw "expected >=60 successful dispatches, saw $ok. stdout tail: $($r.StdOut.Substring([Math]::Max(0,$r.StdOut.Length-400)))" }
+    }
+
+    # Bug 3 root cause — the shared %TEMP% options cache is written atomically and read
+    # resiliently, so parallel compiler processes rebuilding it concurrently never crash on a
+    # sharing violation nor run with empty/partial options. Delete the cache, launch several
+    # runsql processes at once, and assert all exit 0 and produce a successful run.
+    Test-Case 'runsql.concurrent_options_cache' {
+        $exe = Join-Path $script:Bin 'runsql.exe'
+        $sql = Join-Path $script:Scratch 'select1.sql'
+        # Clear any existing options cache for TEST_LOCAL so all processes race a rebuild.
+        Get-ChildItem $env:TEMP -Filter "options.*$script:TestProfile*.tmp" -ErrorAction SilentlyContinue |
+            ForEach-Object { try { [IO.File]::Delete($_.FullName) } catch {} }
+        $procs = @()
+        1..8 | ForEach-Object {
+            $o = Join-Path $script:Scratch "conc_$_.out"; $e = Join-Path $script:Scratch "conc_$_.err"
+            $procs += Start-Process -FilePath $exe `
+                -ArgumentList @($sql,'master',$script:TestProfile,'--changelog:n') `
+                -NoNewWindow -PassThru -RedirectStandardOutput $o -RedirectStandardError $e
+        }
+        $procs | ForEach-Object { $_.WaitForExit() }
+        # Assert on captured OUTPUT, not $proc.ExitCode — the latter is unreliable via
+        # Start-Process -PassThru under a busy harness. A crash would leave an unhandled-exception /
+        # sharing-violation trace on stderr; a partial/empty options load would lose 'return status'.
+        $crash = 0; $noSucc = 0
+        1..8 | ForEach-Object {
+            $o = [string](Get-Content (Join-Path $script:Scratch "conc_$_.out") -Raw -EA SilentlyContinue)
+            $e = [string](Get-Content (Join-Path $script:Scratch "conc_$_.err") -Raw -EA SilentlyContinue)
+            if ($e -match 'Unhandled exception' -or $e -match 'being used by another process') { $crash++ }
+            if ($o -notmatch 'return status = 0') { $noSucc++ }
+        }
+        if ($crash -gt 0)  { throw "$crash of 8 concurrent runsql processes crashed (options-cache sharing violation)" }
+        if ($noSucc -gt 0) { throw "$noSucc of 8 concurrent processes lacked a successful run (empty/partial options)" }
+    }
 }
 
 function Test-SetupCompile {
@@ -1925,6 +2010,34 @@ function Test-ProfileManagement {
                 throw "section '-- $section --' missing from --what all output"
             }
         }
+    }
+
+    # SR 52910 — settings.json must not be rewritten on every startup (it now only writes when
+    # platform normalization actually changed something, and writes atomically). Parallel compiler
+    # startups previously raced on that per-startup truncating write and a peer could read an empty
+    # file, losing every profile (env fallback → "profile not found"). Launch several processes at
+    # once and assert none lose the profile.
+    Test-Case 'set_profile.concurrent_startup_no_profile_loss' {
+        $exe = Join-Path $script:Bin 'set_profile.exe'
+        $procs = @()
+        1..12 | ForEach-Object {
+            $o = Join-Path $script:Scratch "cstart_$_.out"; $e = Join-Path $script:Scratch "cstart_$_.err"
+            $procs += Start-Process -FilePath $exe -ArgumentList @('--view',$script:SourceProfile) `
+                -NoNewWindow -PassThru -RedirectStandardOutput $o -RedirectStandardError $e
+        }
+        $procs | ForEach-Object { $_.WaitForExit() }
+        # Assert on captured OUTPUT (reliable) rather than $proc.ExitCode. Every startup must have
+        # loaded the profile — its details print to stdout; a settings.json truncated under a peer
+        # would drop all profiles (env fallback → 'not found' / no profile block).
+        $bad = 0
+        1..12 | ForEach-Object {
+            $o = [string](Get-Content (Join-Path $script:Scratch "cstart_$_.out") -Raw -EA SilentlyContinue)
+            $e = [string](Get-Content (Join-Path $script:Scratch "cstart_$_.err") -Raw -EA SilentlyContinue)
+            if ($e -match 'Unhandled exception') { $bad++ }
+            elseif ($o -notmatch [regex]::Escape($script:SourceProfile)) { $bad++ }
+            elseif ($o -match 'not found|No profile') { $bad++ }
+        }
+        if ($bad -gt 0) { throw "$bad of 12 concurrent startups failed / lost the profile (settings.json race)" }
     }
 }
 

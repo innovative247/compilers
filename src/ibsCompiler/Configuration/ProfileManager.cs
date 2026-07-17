@@ -32,7 +32,10 @@ namespace ibsCompiler.Configuration
         {
             try
             {
-                var json = File.ReadAllText(path);
+                // Resilient read: under parallel compile agents a peer may be atomically
+                // replacing settings.json; never read it half-written (SR 52910).
+                var json = ibs_compiler_common.ReadAllTextResilient(path);
+                if (json == null) { _settings = new SettingsFile(); return; }
                 var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
                 _settings = JsonSerializer.Deserialize<SettingsFile>(json, options) ?? new SettingsFile();
                 CleanupSettings();
@@ -53,10 +56,17 @@ namespace ibsCompiler.Configuration
             if (_settingsPath == null || _settings.Profiles.Count == 0) return;
             try
             {
+                // Only rewrite settings.json when normalization ACTUALLY changed a platform token.
+                // The previous code rewrote on every startup; under parallel compile agents that
+                // truncating write let a peer read an empty file and lose every profile — the same
+                // shared-file race behind SR 52910. In steady state (already-canonical file) this
+                // now writes nothing, and any genuine change is written atomically.
+                bool changed = false;
                 foreach (var profile in _settings.Profiles.Values)
                 {
                     if (profile.Platform != null)
                     {
+                        var before = profile.Platform;
                         profile.Platform = profile.Platform.ToUpperInvariant();
                         // Canonicalize only recognized tokens;
                         // leave unrecognized strings untouched so a typo isn't silently
@@ -64,12 +74,17 @@ namespace ibsCompiler.Configuration
                         if (profile.Platform is "POSTGRES" or "MSSQL" or "SYBASE")
                             profile.Platform = ibs_compiler_common.CanonicalName(
                                 ibs_compiler_common.ParsePlatform(profile.Platform));
+                        if (!string.Equals(profile.Platform, before, StringComparison.Ordinal))
+                            changed = true;
                     }
                 }
 
-                var writeOptions = new JsonSerializerOptions { WriteIndented = true };
-                var json = JsonSerializer.Serialize(_settings, writeOptions);
-                File.WriteAllText(_settingsPath, json);
+                if (changed)
+                {
+                    var writeOptions = new JsonSerializerOptions { WriteIndented = true };
+                    var json = JsonSerializer.Serialize(_settings, writeOptions);
+                    ibs_compiler_common.WriteAllTextAtomic(_settingsPath, json);
+                }
             }
             catch { }
         }

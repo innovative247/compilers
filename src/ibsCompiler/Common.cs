@@ -110,6 +110,95 @@ namespace ibsCompiler
         /// </summary>
         public static string PgQualifiedName(string schema, string obj)
             => PgQuoteIdentifierIfNeeded(schema) + "." + PgQuoteIdentifierIfNeeded(obj);
+
+        /// <summary>
+        /// At <paramref name="s"/>[<paramref name="i"/>] == '$', return the PostgreSQL
+        /// dollar-quote tag ("$$", "$fn$", …) starting there, or null when it is not a tag
+        /// (a digit immediately after '$' is a positional parameter like $1, not a tag).
+        /// The single home for dollar-tag recognition — used by both the PG statement
+        /// splitter (<c>PostgresExecutor.SplitStatements</c>) and the batch-level dollar-body
+        /// tracker below, so both agree on what opens/closes a body.
+        /// </summary>
+        public static string? MatchDollarTag(string s, int i)
+        {
+            int j = i + 1;
+            if (j < s.Length && char.IsDigit(s[j])) return null;
+            while (j < s.Length && (char.IsLetterOrDigit(s[j]) || s[j] == '_')) j++;
+            if (j < s.Length && s[j] == '$') return s.Substring(i, j - i + 1);
+            return null;
+        }
+
+        /// <summary>
+        /// Stateful, line-at-a-time tracker for whether reading is currently inside an open
+        /// PostgreSQL dollar-quoted body (<c>$$…$$</c> or <c>$tag$…$tag$</c>) that spans lines.
+        /// SBN client directives (<c>go</c>, <c>exit</c>, <c>quit</c>) on their own line INSIDE
+        /// such a body — e.g. a plpgsql <c>exit;</c> loop statement — must NOT be treated as
+        /// batch terminators; doing so truncates the function and surfaces as
+        /// "unterminated dollar-quoted string" (SR 52910). Dollar tags inside <c>'…'</c>/<c>"…"</c>
+        /// string literals and <c>--</c> / <c>/* */</c> comments are ignored.
+        /// POSTGRES-only by construction: callers gate on platform so SYBASE/MSSQL batch
+        /// splitting stays byte-identical (those platforms never build dollar bodies).
+        /// </summary>
+        public sealed class PgDollarQuoteTracker
+        {
+            private string? _openTag;      // non-null: inside a dollar body closed by this tag
+            private bool _inBlockComment;  // inside /* */ spanning lines
+            private char _inString;        // '\0', '\'' or '"' — inside a string literal spanning lines
+
+            /// <summary>True when currently inside an open dollar-quoted body.</summary>
+            public bool InDollarBody => _openTag != null;
+
+            /// <summary>Consume one source line, updating state; returns <see cref="InDollarBody"/> after it.</summary>
+            public bool Consume(string line)
+            {
+                int i = 0, n = line.Length;
+                while (i < n)
+                {
+                    char c = line[i];
+                    char next = i + 1 < n ? line[i + 1] : '\0';
+
+                    if (_openTag != null)
+                    {
+                        // Inside a body: only the matching close tag ends it; all else is literal.
+                        if (c == '$' && line.AsSpan(i).StartsWith(_openTag.AsSpan()))
+                        {
+                            i += _openTag.Length;
+                            _openTag = null;
+                            continue;
+                        }
+                        i++;
+                        continue;
+                    }
+                    if (_inBlockComment)
+                    {
+                        if (c == '*' && next == '/') { _inBlockComment = false; i += 2; continue; }
+                        i++;
+                        continue;
+                    }
+                    if (_inString != '\0')
+                    {
+                        if (c == _inString)
+                        {
+                            if (next == _inString) { i += 2; continue; } // '' or "" escape
+                            _inString = '\0';
+                        }
+                        i++;
+                        continue;
+                    }
+                    // Default state.
+                    if (c == '-' && next == '-') break;                       // -- comment: rest of line
+                    if (c == '/' && next == '*') { _inBlockComment = true; i += 2; continue; }
+                    if (c == '\'' || c == '"') { _inString = c; i++; continue; }
+                    if (c == '$')
+                    {
+                        var tag = MatchDollarTag(line, i);
+                        if (tag != null) { _openTag = tag; i += tag.Length; continue; }
+                    }
+                    i++;
+                }
+                return InDollarBody;
+            }
+        }
         #endregion
 
         #region Console output
@@ -557,14 +646,122 @@ namespace ibsCompiler
             return true;
         }
 
+        /// <summary>
+        /// Crash-safe, concurrency-safe write of an options/cache array to
+        /// <paramref name="destinationFile"/>. Writes to a process-unique temp file first, then
+        /// atomically replaces the destination (<c>File.Move(..., overwrite:true)</c> → MoveFileEx
+        /// REPLACE_EXISTING on Windows, rename() on Unix). A concurrent reader therefore always
+        /// sees either the old complete file or the new complete file — never a half-written one —
+        /// and two writers never collide on the same target (each owns its own temp). This is the
+        /// fix for SR 52910's parallel-compile-agent failure: the previous in-place truncating
+        /// write let one agent read an empty/partial shared cache (unresolved <c>&amp;token&amp;</c>
+        /// → raw <c>use …</c> → "syntax error at or near use") or crash with a sharing violation.
+        /// The write is best-effort: any I/O failure is swallowed because the caller already holds
+        /// the fully-built array in memory — the on-disk file is only a cache.
+        /// </summary>
+        public static bool SaveArrayToDiskAtomic(List<string> sourceFile, string destinationFile)
+        {
+            var dir = Path.GetDirectoryName(destinationFile);
+            if (string.IsNullOrEmpty(dir)) dir = ".";
+            var tmp = Path.Combine(dir,
+                Path.GetFileName(destinationFile) + "." +
+                Environment.ProcessId + "." + Guid.NewGuid().ToString("N") + ".tmp");
+            try
+            {
+                using (var dest = OpenSourceWriter(tmp))
+                    foreach (var line in sourceFile)
+                        dest.WriteLine(line);
+                File.Move(tmp, destinationFile, overwrite: true);
+                return true;
+            }
+            catch (IOException)
+            {
+                try { if (File.Exists(tmp)) File.Delete(tmp); } catch { }
+                return false;
+            }
+            catch (UnauthorizedAccessException)
+            {
+                try { if (File.Exists(tmp)) File.Delete(tmp); } catch { }
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Atomic, best-effort replacement of a text file (temp write + <c>File.Move</c> overwrite).
+        /// Same rationale as <see cref="SaveArrayToDiskAtomic"/> — a concurrent reader never sees a
+        /// half-written file. Used for settings.json normalization so parallel compiler startups
+        /// can't truncate the shared config out from under a peer (SR 52910). Returns false on any
+        /// I/O failure; the caller treats the write as advisory.
+        /// </summary>
+        public static bool WriteAllTextAtomic(string path, string content)
+        {
+            var dir = Path.GetDirectoryName(path);
+            if (string.IsNullOrEmpty(dir)) dir = ".";
+            var tmp = Path.Combine(dir,
+                Path.GetFileName(path) + "." +
+                Environment.ProcessId + "." + Guid.NewGuid().ToString("N") + ".tmp");
+            try
+            {
+                File.WriteAllText(tmp, content);
+                File.Move(tmp, path, overwrite: true);
+                return true;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                try { if (File.Exists(tmp)) File.Delete(tmp); } catch { }
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Resilient read of a shared text file: FileShare.ReadWrite|Delete plus a short retry so a
+        /// concurrent atomic replace never trips a sharing violation, and a momentarily
+        /// empty/whitespace read (peer mid-swap) is retried rather than parsed. Returns null on
+        /// persistent failure (SR 52910).
+        /// </summary>
+        public static string? ReadAllTextResilient(string path)
+        {
+            for (int attempt = 0; attempt < 5; attempt++)
+            {
+                try
+                {
+                    using var fs = new FileStream(path, FileMode.Open, FileAccess.Read,
+                        FileShare.ReadWrite | FileShare.Delete);
+                    using var sr = new StreamReader(fs);
+                    var text = sr.ReadToEnd();
+                    if (!string.IsNullOrWhiteSpace(text) || attempt == 4) return text;
+                }
+                catch (IOException) { }
+                System.Threading.Thread.Sleep(25);
+            }
+            return null;
+        }
+
         public static List<string> BuildArrayFromDisk(string sourceFile)
         {
-            var arr = new List<string>();
-            using var source = new StreamReader(sourceFile);
-            string? line;
-            while ((line = source.ReadLine()) != null)
-                arr.Add(line);
-            return arr;
+            // FileShare.ReadWrite|Delete so a concurrent atomic replace (SaveArrayToDiskAtomic)
+            // never blocks this read and never trips a sharing violation; retry briefly to ride
+            // out the instant a peer is swapping the file in. Returns an empty list on persistent
+            // failure so callers can rebuild rather than crash (SR 52910).
+            for (int attempt = 0; ; attempt++)
+            {
+                var arr = new List<string>();
+                try
+                {
+                    using var fs = new FileStream(sourceFile, FileMode.Open, FileAccess.Read,
+                        FileShare.ReadWrite | FileShare.Delete);
+                    using var source = new StreamReader(fs);
+                    string? line;
+                    while ((line = source.ReadLine()) != null)
+                        arr.Add(line);
+                    return arr;
+                }
+                catch (IOException)
+                {
+                    if (attempt >= 4) return new List<string>();
+                    System.Threading.Thread.Sleep(25);
+                }
+            }
         }
         #endregion
 
