@@ -1,15 +1,19 @@
+using System.Text;
+
 namespace ibsCompiler
 {
     /// <summary>
-    /// A small vertical field form for the message browser: every field of an add /
-    /// edit / translate is on screen at once, Up/Down moves between them, Enter edits
-    /// the focused one. It is the TUI counterpart of the SBN GUI's message detail
-    /// panel, where s#msgno, company, language and the text are all visible together
-    /// instead of arriving as a chain of one-shot prompts.
+    /// The message add / edit / translate editor: a vertical field form driven exactly
+    /// like <see cref="ProfileEditor"/> — every field on screen at once, Up/Down to move,
+    /// Enter to edit the focused row **in place** (seeded with its current value), a
+    /// numbered action menu with the always-visible <c>Choice:</c> prompt, <c>S</c> to
+    /// save and Esc to back out with a discard guard. It is the TUI counterpart of the
+    /// SBN GUI's message detail panel, where s#msgno, company, language and the text are
+    /// visible together instead of arriving as a chain of one-shot prompts.
     ///
-    /// Deliberately simpler than <see cref="ProfileEditor"/>: no dirty markers, no
-    /// action menu, no live applicability. Read-only rows (the reserved s#msgno, an
-    /// edit's key columns) render dim and are skipped by the cursor.
+    /// Simpler than the profile editor only in what it does not need: no Test items, no
+    /// live applicability, no enum/bool cycling. Read-only rows (a reserved s#msgno, an
+    /// edit's key columns) render dim and refuse the edit.
     /// </summary>
     internal static class MessageForm
     {
@@ -18,18 +22,20 @@ namespace ibsCompiler
         {
             public string Label { get; set; } = "";
             public string Value { get; set; } = "";
-            /// <summary>Displayed but not editable — the cursor skips it.</summary>
+            /// <summary>Displayed dim and not editable.</summary>
             public bool ReadOnly { get; set; }
             /// <summary>Reject anything that is not an integer.</summary>
             public bool Numeric { get; set; }
-            /// <summary>Dim trailing note, e.g. "(reserved)" or "(base message)".</summary>
+            /// <summary>Dim trailing note, e.g. "(reserved)" or "(key)".</summary>
             public string? Note { get; set; }
+            /// <summary>Pre-edit value, captured at entry, for the dirty marker and discard guard.</summary>
+            internal string Original { get; set; } = "";
         }
 
         /// <summary>
-        /// Render <paramref name="fields"/> and drive the edit loop until the user saves or
-        /// cancels. <paramref name="validate"/> runs on save and returns an error string to
-        /// keep the form open, or null to accept. Returns false when the user cancelled.
+        /// Render <paramref name="fields"/> and drive the key loop until the user saves or
+        /// backs out. <paramref name="validate"/> runs on save and returns an error string
+        /// to keep the form open, or null to accept. Returns false when the user cancelled.
         /// </summary>
         public static bool Run(string title, IList<Field> fields, Func<IList<Field>, string?>? validate = null)
         {
@@ -37,43 +43,59 @@ namespace ibsCompiler
             // sequential prompts. The browser already guards this, so this is belt-and-braces.
             if (Console.IsInputRedirected || Console.IsOutputRedirected) return false;
 
-            // Layout: blank + title + blank + N rows + blank + footer + blank + prompt row,
-            // plus one spare row below it so the Enter that ends an inline ReadLine never
-            // scrolls the buffer out from under the cached row numbers.
-            if (Console.WindowHeight < fields.Count + 8 || Console.WindowWidth < 40)
+            foreach (var f in fields) f.Original = f.Value;
+
+            const int MenuRows = 3;  // Save + Back, plus one blank row before the prompt
+            const string Footer = "  [Up/Down] move  [Enter] edit";
+
+            // Layout (top→bottom): blank + title + blank + N field rows + blank + footer +
+            // blank + menu rows + prompt row + one spare row so the final newline never
+            // scrolls the cached row numbers out from under us.
+            if (Console.WindowHeight < fields.Count + MenuRows + 8 || Console.WindowWidth < 40)
                 return RunSequential(title, fields, validate);
 
-            const string footer = "  [Up/Down] move  [Enter] edit  [S] save  [Esc] cancel";
+            int startRow = 0, menuRow0 = 0, promptRow = 0;
 
-            Console.WriteLine();
-            var prev = Console.ForegroundColor;
-            Console.ForegroundColor = ConsoleColor.Cyan;
-            Console.WriteLine("  " + title);
-            Console.ForegroundColor = prev;
-            Console.WriteLine();
-            for (int i = 0; i < fields.Count; i++) Console.WriteLine();
-            Console.WriteLine();
-            Console.WriteLine(footer);
-            Console.WriteLine();
-            // Reserve the prompt row AND the spare row under it via WriteLine (which scrolls
-            // the buffer if needed, unlike SetCursorPosition), then work back from where the
-            // cursor landed so every cached row number is guaranteed to exist.
-            Console.WriteLine();
-            Console.WriteLine();
-            int promptRow = Console.CursorTop - 2;
-            int startRow = promptRow - 2 - fields.Count - 1;
+            void Scaffold()
+            {
+                Console.WriteLine();
+                var prev = Console.ForegroundColor;
+                Console.ForegroundColor = ConsoleColor.Cyan;
+                Console.WriteLine("  " + title);
+                Console.ForegroundColor = prev;
+                Console.WriteLine();
+                for (int i = 0; i < fields.Count; i++) Console.WriteLine();
+                Console.WriteLine();
+                Console.WriteLine(Footer);
+                Console.WriteLine();
+                // Reserve the menu block, the prompt row and one spare row with WriteLine
+                // (which scrolls the buffer when written at the bottom, unlike
+                // SetCursorPosition), then derive every cached row from where we landed.
+                for (int j = 0; j < MenuRows; j++) Console.WriteLine();
+                Console.WriteLine();
+                Console.WriteLine();
+                promptRow = Console.CursorTop - 2;
+                menuRow0 = promptRow - MenuRows;
+                startRow = menuRow0 - 3 - fields.Count;
+            }
 
             int cursor = FirstEditable(fields);
             if (cursor < 0) cursor = 0;
+
+            string Fit(string s)
+            {
+                int w = Math.Max(1, Console.WindowWidth - 1);
+                return s.Length < w ? s.PadRight(w) : s.Substring(0, w);
+            }
 
             void DrawRow(int idx, bool isCursor)
             {
                 var f = fields[idx];
                 Console.SetCursorPosition(0, startRow + idx);
-                var pointer = isCursor && !f.ReadOnly ? ">" : " ";
+                var pointer = isCursor ? ">" : " ";
+                var dirty = !f.ReadOnly && f.Value != f.Original ? " *" : "";
                 var note = string.IsNullOrEmpty(f.Note) ? "" : $"   {f.Note}";
-                var line = $"  {pointer} {f.Label,-16}: {f.Value}{note}";
-                line = Fit(line);
+                var line = Fit($"  {pointer} {f.Label,-16}: {f.Value}{dirty}{note}");
                 if (f.ReadOnly)
                 {
                     var p = Console.ForegroundColor;
@@ -84,9 +106,27 @@ namespace ibsCompiler
                 else Console.Write(line);
             }
 
+            // Numbered actions, matching the browser's 98/99 convention.
+            List<(int Num, string Label, string Action)> BuildMenu() => new()
+            {
+                (1,  "Save", "save"),
+                (98, "Back", "back"),
+            };
+
+            void RenderMenu()
+            {
+                var items = BuildMenu();
+                for (int j = 0; j < MenuRows; j++)
+                {
+                    Console.SetCursorPosition(0, menuRow0 + j);
+                    Console.Write(Fit(j < items.Count ? $"  {items[j].Num,2}. {items[j].Label}" : ""));
+                }
+            }
+
             void Render()
             {
                 for (int i = 0; i < fields.Count; i++) DrawRow(i, i == cursor);
+                RenderMenu();
                 Console.SetCursorPosition(0, startRow + cursor);
             }
 
@@ -99,79 +139,211 @@ namespace ibsCompiler
                 Console.ForegroundColor = p;
             }
 
-            void ClearPrompt()
+            // Idle state of the prompt line is the bare `Choice: ` label, as everywhere else.
+            void ClearMessage()
             {
-                Console.SetCursorPosition(0, promptRow);
-                Console.Write(Fit(""));
+                ConsoleMenu.DrawChoiceBuffer(promptRow, "Choice", "");
+                Console.CursorVisible = false; // the caret belongs on the focused field row
+            }
+
+            void ShowMenuBuffer(string buf) => ConsoleMenu.DrawChoiceBuffer(promptRow, "Choice", buf);
+
+            // In-place single-line editor seeded with the current value (ProfileEditor's).
+            string? InlineEdit(int fieldIdx, string seed)
+            {
+                var f = fields[fieldIdx];
+                var buf = new StringBuilder(seed);
+                int row = startRow + fieldIdx;
+                int labelCol = 2 + 2 + 16 + 2; // "  " + pointer+space + label(-16) + ": "
+
+                void Draw()
+                {
+                    Console.SetCursorPosition(0, row);
+                    Console.Write(Fit($"  > {f.Label,-16}: {buf}"));
+                    Console.SetCursorPosition(Math.Min(labelCol + buf.Length, Console.WindowWidth - 1), row);
+                }
+
+                Console.CursorVisible = true;
+                Draw();
+                while (true)
+                {
+                    var key = Console.ReadKey(intercept: true);
+                    if (key.Key == ConsoleKey.Enter) { Console.CursorVisible = false; return buf.ToString(); }
+                    if (key.Key == ConsoleKey.Escape) { Console.CursorVisible = false; return null; }
+                    if (key.Key == ConsoleKey.Backspace)
+                    {
+                        if (buf.Length > 0) buf.Remove(buf.Length - 1, 1);
+                    }
+                    else if (!char.IsControl(key.KeyChar))
+                    {
+                        buf.Append(key.KeyChar);
+                    }
+                    Draw();
+                }
+            }
+
+            bool TrySave()
+            {
+                var error = validate?.Invoke(fields);
+                if (error == null) return true;
+                Render();
+                Message(error + "  (press a key)", ConsoleColor.Red);
+                Console.ReadKey(intercept: true);
+                ClearMessage();
+                Render();
+                return false;
+            }
+
+            // Discard-guard shared by Back and Esc.
+            bool ConfirmDiscardIfDirty()
+            {
+                if (!fields.Any(f => !f.ReadOnly && f.Value != f.Original)) return true;
+                const string q = "Discard changes? (y/N) ";
+                Message(q, ConsoleColor.Yellow);
+                Console.SetCursorPosition(Math.Min(2 + q.Length, Console.WindowWidth - 1), promptRow);
+                Console.CursorVisible = true;
+                var ans = Console.ReadKey(intercept: true);
+                Console.CursorVisible = false;
+                if (ans.Key == ConsoleKey.Y) return true;
+                ClearMessage();
+                Render();
+                return false;
             }
 
             try
             {
                 Console.CursorVisible = false;
+                Scaffold();
+                ClearMessage();
                 Render();
+
+                var menuBuf = new StringBuilder();
+
                 while (true)
                 {
                     var key = Console.ReadKey(intercept: true);
+
+                    // Digits build the menu-choice buffer, echoed on the prompt line.
+                    if (char.IsDigit(key.KeyChar))
+                    {
+                        menuBuf.Append(key.KeyChar);
+                        ShowMenuBuffer(menuBuf.ToString());
+                        continue;
+                    }
+
+                    // Any other key abandons an in-progress choice and falls through.
+                    if (menuBuf.Length > 0 &&
+                        key.Key != ConsoleKey.Enter &&
+                        key.Key != ConsoleKey.Backspace &&
+                        key.Key != ConsoleKey.Escape)
+                    {
+                        menuBuf.Clear();
+                        ClearMessage();
+                        Render();
+                    }
+
                     switch (key.Key)
                     {
                         case ConsoleKey.UpArrow:
-                            cursor = StepCursor(fields, cursor, -1);
+                            if (cursor > 0) cursor--;
                             Render();
                             break;
+
                         case ConsoleKey.DownArrow:
-                            cursor = StepCursor(fields, cursor, +1);
+                            if (cursor < fields.Count - 1) cursor++;
                             Render();
                             break;
-                        case ConsoleKey.Escape:
-                            ClearPrompt();
-                            Console.SetCursorPosition(0, promptRow);
-                            Console.WriteLine();
-                            return false;
-                        case ConsoleKey.Enter:
+
+                        case ConsoleKey.Backspace:
+                            if (menuBuf.Length > 0)
                             {
-                                var f = fields[cursor];
-                                if (f.ReadOnly) break;
-                                ClearPrompt();
-                                Console.SetCursorPosition(0, promptRow);
-                                Console.CursorVisible = true;
-                                Console.Write($"  {f.Label} [{f.Value}]: ");
-                                var entered = Console.ReadLine() ?? "";
-                                Console.CursorVisible = false;
-                                if (entered.Length > 0)
-                                {
-                                    if (f.Numeric && !int.TryParse(entered.Trim(), out _))
-                                    {
-                                        Message($"{f.Label} must be an integer.", ConsoleColor.Red);
-                                        Render();
-                                        break;
-                                    }
-                                    f.Value = f.Numeric ? entered.Trim() : entered;
-                                }
-                                ClearPrompt();
-                                Render();
-                                break;
+                                menuBuf.Length--;
+                                if (menuBuf.Length == 0) { ClearMessage(); Render(); }
+                                else ShowMenuBuffer(menuBuf.ToString());
                             }
-                        default:
-                            // S saves from anywhere; a stray key just redraws.
-                            if (key.Key == ConsoleKey.S && (key.Modifiers & ConsoleModifiers.Control) == 0)
+                            break;
+
+                        case ConsoleKey.Enter:
+                            // Committing a menu choice takes precedence over field edit.
+                            if (menuBuf.Length > 0)
                             {
-                                var error = validate?.Invoke(fields);
-                                if (error != null)
+                                var choice = menuBuf.ToString();
+                                menuBuf.Clear();
+                                ClearMessage();
+                                var hit = BuildMenu().FirstOrDefault(it => it.Num.ToString() == choice);
+                                if (hit.Action == null)
                                 {
-                                    Message(error, ConsoleColor.Red);
+                                    Message($"No menu item {choice}.", ConsoleColor.Yellow);
+                                    Console.ReadKey(intercept: true);
+                                    ClearMessage();
                                     Render();
                                     break;
                                 }
-                                ClearPrompt();
-                                Console.SetCursorPosition(0, promptRow);
-                                Console.WriteLine();
-                                return true;
+                                if (hit.Action == "save")
+                                {
+                                    if (TrySave()) return true;
+                                    break;
+                                }
+                                if (ConfirmDiscardIfDirty()) return false;   // back
+                                break;
                             }
+
+                            // Empty buffer → edit the focused field in place.
+                            ClearMessage();
+                            {
+                                var f = fields[cursor];
+                                if (f.ReadOnly)
+                                {
+                                    Message(f.Note != null ? $"{f.Label} is read-only {f.Note}" : $"{f.Label} is read-only", ConsoleColor.DarkGray);
+                                    break;
+                                }
+                                while (true)
+                                {
+                                    var input = InlineEdit(cursor, f.Value);
+                                    if (input == null) break;   // Esc = cancel this edit
+                                    if (f.Numeric && !int.TryParse(input.Trim(), out _))
+                                    {
+                                        Message($"{f.Label} must be an integer.", ConsoleColor.Yellow);
+                                        continue;
+                                    }
+                                    f.Value = f.Numeric ? input.Trim() : input;
+                                    break;
+                                }
+                                Render();
+                            }
+                            break;
+
+                        case ConsoleKey.S:
+                            // Save accelerator (the numbered item is the documented surface).
+                            if (TrySave()) return true;
+                            break;
+
+                        case ConsoleKey.Escape:
+                            // Esc clears an in-progress choice; otherwise it is Back.
+                            if (menuBuf.Length > 0)
+                            {
+                                menuBuf.Clear();
+                                ClearMessage();
+                                Render();
+                                break;
+                            }
+                            if (ConfirmDiscardIfDirty()) return false;
                             break;
                     }
                 }
             }
-            finally { Console.CursorVisible = true; }
+            finally
+            {
+                Console.CursorVisible = true;
+                // Park the cursor below the widget so subsequent output is clean. Land on
+                // the prompt row (guaranteed to exist) and WriteLine from there.
+                try
+                {
+                    Console.SetCursorPosition(0, promptRow);
+                    Console.WriteLine();
+                }
+                catch { }
+            }
         }
 
         /// <summary>
@@ -222,20 +394,6 @@ namespace ibsCompiler
         {
             for (int i = 0; i < fields.Count; i++) if (!fields[i].ReadOnly) return i;
             return -1;
-        }
-
-        /// <summary>Move the cursor by <paramref name="delta"/>, skipping read-only rows and stopping at the ends.</summary>
-        private static int StepCursor(IList<Field> fields, int cursor, int delta)
-        {
-            int i = cursor + delta;
-            while (i >= 0 && i < fields.Count && fields[i].ReadOnly) i += delta;
-            return (i >= 0 && i < fields.Count) ? i : cursor;
-        }
-
-        private static string Fit(string s)
-        {
-            int w = Math.Max(1, Console.WindowWidth - 1);
-            return s.Length < w ? s.PadRight(w) : s.Substring(0, w);
         }
     }
 }

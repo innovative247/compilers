@@ -411,8 +411,6 @@ namespace ibsCompiler
         // ================================================================
         private static void AddMessageFlow(ResolvedProfile profile, MessageFileEditor.LiveType lt, string group)
         {
-            Console.WriteLine();
-            Cyan($"  Add message to {lt.Label} / {group}");
             // Reserve the number first so the form can show it the way the GUI's detail
             // panel does — s#msgno on screen before the text is typed.
             var reserved = MessageFileEditor.ReserveMsgno(profile, lt.Type, group);

@@ -60,14 +60,22 @@ compile_msg  MYPROFILE        # no flags -> legacy Import/Export/Add menu (regre
 
 ## Add message (reserved msgno contract)
 
+- [ ] The screen title appears **once**.
 - [ ] The form shows all four rows at once: dim read-only `s#msgno` with the **reserved**
       number and `(reserved)`, then `Language` (default 1), `Company` (default 0), `Message`.
-- [ ] Up/Down moves between the three editable rows and **skips** the dim `s#msgno` row;
-      the cursor never lands above Language or below Message.
-- [ ] `Enter` on a row prompts `<Label> [<current>]: ` — a blank entry keeps the current
-      value, a new entry replaces it and the row redraws immediately.
-- [ ] A non-integer into Language/Company is refused inline (red message, value unchanged).
-- [ ] `Esc` cancels the whole form (nothing written). `S` saves.
+- [ ] It behaves exactly like the set_profile editor: Up/Down moves the `>` pointer,
+      `Enter` edits the focused row **in place** (seeded with its current value; typing,
+      Backspace and Enter-to-commit all work on the row itself), the numbered
+      `1. Save` / `98. Back` menu sits under the fields, and `Choice: ` is visible on the
+      prompt line from the start.
+- [ ] A changed row shows the ` *` dirty marker.
+- [ ] `Enter` on the dim `s#msgno` row reports it is read-only and changes nothing.
+- [ ] `Esc` inside an inline edit abandons just that edit (row keeps its old value).
+- [ ] `Esc` while navigating backs out — with unsaved changes it asks
+      `Discard changes? (y/N)` first; `N` stays in the form, `y` leaves without writing.
+- [ ] A non-integer into Language/Company is refused (yellow message, edit stays open).
+- [ ] `S` and menu item `1` both save; a validation failure keeps the form open with the
+      reason on the prompt line.
 - [ ] Saving with an empty Message is refused; saving with Language≠1 or Company≠0 is
       refused with the "use Translate" message (a new message is always the base row).
 - [ ] The dry-run preview shows the **reserved MSGNO** and the exact tab row before the
@@ -90,10 +98,11 @@ compile_msg  MYPROFILE        # no flags -> legacy Import/Export/Add menu (regre
 - [ ] All row fields shown (msgno/cmpy/lang/group/flag/text).
 - [ ] The prompt line shows `Choice [98]: ` from the start — Back is the default; Delete
       (item `3`, a destructive action) is never defaulted and always requires explicit entry.
-- [ ] `1` Edit: same four-row form; `s#msgno`, `Language` and `Company` are dim/read-only
-      (they are the row's key) and `Message` is pre-filled with the current text. Leaving
-      the text unchanged reports "Nothing changed"; a real change prints green
-      `EDITED <msgno>` and bounces back to the refreshed Find list.
+- [ ] `1` Edit: same form, same keys (Up/Down, Enter edits in place, 1/S save, 98/Esc back);
+      `s#msgno`, `Language` and `Company` are dim/read-only (they are the row's key) and
+      `Message` is seeded with the current text. Leaving the text unchanged reports
+      "Nothing changed"; a real change prints green `EDITED <msgno>` and bounces back to
+      the refreshed Find list.
 - [ ] `2` Translate: same form with `Message` pre-filled from the row, `Language` defaulting
       to 1 `(1 = base)` and `Company` to 0 `(0 = all companies)`. Saving with both still at
       the base values is refused ("needs a different language, a different company, or
