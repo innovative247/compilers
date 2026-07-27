@@ -71,6 +71,12 @@ compile_msg  MYPROFILE        # no flags -> legacy Import/Export/Add menu (regre
 - [ ] A changed row shows the ` *` dirty marker.
 - [ ] `Enter` on the dim `s#msgno` row reports it is read-only and changes nothing.
 - [ ] `Esc` inside an inline edit abandons just that edit (row keeps its old value).
+- [ ] **Long text** (paste/type a full ~250-char message): the row never wraps or spills.
+      While editing, the view scrolls horizontally with the caret and `…` marks each end
+      that has text out of view; Left/Right/Home/End move the caret and the window follows;
+      Backspace/Delete/insert all act at the caret, not the end. Save, reopen Edit, and
+      confirm the stored text is complete and unchanged (compare with `--find`).
+- [ ] While navigating (not editing), a too-long value is shown cut with a trailing `…`.
 - [ ] `Esc` while navigating backs out — with unsaved changes it asks
       `Discard changes? (y/N)` first; `N` stays in the form, `y` leaves without writing.
 - [ ] A non-integer into Language/Company is refused (yellow message, edit stays open).

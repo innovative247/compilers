@@ -17,6 +17,9 @@ namespace ibsCompiler
     /// </summary>
     internal static class MessageForm
     {
+        /// <summary>Column where a field's value starts: "  " + pointer+space + label(-16) + ": ".</summary>
+        private const int ValueCol = 2 + 2 + 16 + 2;
+
         /// <summary>One row of the form. <see cref="Value"/> carries the default in and the answer out.</summary>
         internal sealed class Field
         {
@@ -46,7 +49,7 @@ namespace ibsCompiler
             foreach (var f in fields) f.Original = f.Value;
 
             const int MenuRows = 3;  // Save + Back, plus one blank row before the prompt
-            const string Footer = "  [Up/Down] move  [Enter] edit";
+            const string Footer = "  [Up/Down] move  [Enter] edit  (in an edit: Left/Right/Home/End, Esc cancels)";
 
             // Layout (top→bottom): blank + title + blank + N field rows + blank + footer +
             // blank + menu rows + prompt row + one spare row so the final newline never
@@ -95,7 +98,13 @@ namespace ibsCompiler
                 var pointer = isCursor ? ">" : " ";
                 var dirty = !f.ReadOnly && f.Value != f.Original ? " *" : "";
                 var note = string.IsNullOrEmpty(f.Note) ? "" : $"   {f.Note}";
-                var line = Fit($"  {pointer} {f.Label,-16}: {f.Value}{dirty}{note}");
+                // A message can run to 255 bytes — far past one row. Show as much as fits
+                // and mark the cut with an ellipsis rather than letting Fit chop it
+                // silently; the inline editor scrolls to reveal the rest.
+                var shown = f.Value;
+                int room = Math.Max(4, Console.WindowWidth - 1 - ValueCol - dirty.Length - note.Length);
+                if (shown.Length > room) shown = shown.Substring(0, room - 1) + "…";
+                var line = Fit($"  {pointer} {f.Label,-16}: {shown}{dirty}{note}");
                 if (f.ReadOnly)
                 {
                     var p = Console.ForegroundColor;
@@ -148,19 +157,37 @@ namespace ibsCompiler
 
             void ShowMenuBuffer(string buf) => ConsoleMenu.DrawChoiceBuffer(promptRow, "Choice", buf);
 
-            // In-place single-line editor seeded with the current value (ProfileEditor's).
+            // In-place single-line editor seeded with the current value — ProfileEditor's,
+            // extended with a caret and a horizontally scrolling window because a message
+            // is up to 255 bytes and never fits one terminal row. The window follows the
+            // caret; a leading/trailing '…' marks text scrolled out of view.
             string? InlineEdit(int fieldIdx, string seed)
             {
                 var f = fields[fieldIdx];
                 var buf = new StringBuilder(seed);
                 int row = startRow + fieldIdx;
-                int labelCol = 2 + 2 + 16 + 2; // "  " + pointer+space + label(-16) + ": "
+                int caret = buf.Length;   // start at the end, like a normal prompt
+                int off = 0;              // first visible character
 
                 void Draw()
                 {
+                    int room = Math.Max(8, Console.WindowWidth - 1 - ValueCol);
+                    // Keep the caret inside the window, then clamp the window to the text.
+                    if (caret < off) off = caret;
+                    if (caret > off + room - 1) off = caret - room + 1;
+                    if (off > Math.Max(0, buf.Length - room + 1)) off = Math.Max(0, buf.Length - room + 1);
+                    if (off < 0) off = 0;
+
+                    var visible = buf.ToString(off, Math.Min(room, buf.Length - off));
+                    // Ellipsis markers replace the edge character they stand in for, so the
+                    // caret column arithmetic below stays exact.
+                    var chars = visible.ToCharArray();
+                    if (off > 0 && chars.Length > 0) chars[0] = '…';
+                    if (off + visible.Length < buf.Length && chars.Length > 0) chars[chars.Length - 1] = '…';
+
                     Console.SetCursorPosition(0, row);
-                    Console.Write(Fit($"  > {f.Label,-16}: {buf}"));
-                    Console.SetCursorPosition(Math.Min(labelCol + buf.Length, Console.WindowWidth - 1), row);
+                    Console.Write(Fit($"  > {f.Label,-16}: {new string(chars)}"));
+                    Console.SetCursorPosition(Math.Min(ValueCol + (caret - off), Console.WindowWidth - 1), row);
                 }
 
                 Console.CursorVisible = true;
@@ -168,15 +195,23 @@ namespace ibsCompiler
                 while (true)
                 {
                     var key = Console.ReadKey(intercept: true);
-                    if (key.Key == ConsoleKey.Enter) { Console.CursorVisible = false; return buf.ToString(); }
-                    if (key.Key == ConsoleKey.Escape) { Console.CursorVisible = false; return null; }
-                    if (key.Key == ConsoleKey.Backspace)
+                    switch (key.Key)
                     {
-                        if (buf.Length > 0) buf.Remove(buf.Length - 1, 1);
-                    }
-                    else if (!char.IsControl(key.KeyChar))
-                    {
-                        buf.Append(key.KeyChar);
+                        case ConsoleKey.Enter:  Console.CursorVisible = false; return buf.ToString();
+                        case ConsoleKey.Escape: Console.CursorVisible = false; return null;
+                        case ConsoleKey.LeftArrow:  if (caret > 0) caret--; break;
+                        case ConsoleKey.RightArrow: if (caret < buf.Length) caret++; break;
+                        case ConsoleKey.Home: caret = 0; break;
+                        case ConsoleKey.End:  caret = buf.Length; break;
+                        case ConsoleKey.Backspace:
+                            if (caret > 0) { buf.Remove(caret - 1, 1); caret--; }
+                            break;
+                        case ConsoleKey.Delete:
+                            if (caret < buf.Length) buf.Remove(caret, 1);
+                            break;
+                        default:
+                            if (!char.IsControl(key.KeyChar)) { buf.Insert(caret, key.KeyChar); caret++; }
+                            break;
                     }
                     Draw();
                 }
