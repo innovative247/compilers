@@ -38,8 +38,15 @@ foreach ($rid in @('linux-x64', 'osx-x64', 'osx-arm64')) {
         Write-Host "  $tarFile (created by publish.ps1)" -ForegroundColor Green
         continue
     }
-    wsl tar -czf $tarFile -C $rid .
+    # settings.json holds real profiles - server addresses, usernames, passwords.
+    # publish.ps1's native tar excludes it; this WSL fallback must too, or a live
+    # credential file ships inside a PUBLIC release asset (it did, v2.0.87..v3.0.0).
+    wsl tar --exclude=./settings.json -czf $tarFile -C $rid .
     if ($LASTEXITCODE -ne 0) { Write-Host "Failed to create $rid tar.gz" -ForegroundColor Red; Pop-Location; exit 1 }
+    if ((wsl tar -tzf $tarFile | Select-String -Pattern '(^|/)settings\.json$' -Quiet)) {
+        Write-Host "ABORT: $tarFile contains settings.json (credential leak)" -ForegroundColor Red
+        Pop-Location; exit 1
+    }
     Write-Host "  Created: compilers-net8-$rid.tar.gz" -ForegroundColor Green
 }
 Pop-Location
