@@ -1695,6 +1695,36 @@ function Test-Messages {
         if ($r.StdOut -notmatch 'DryEdit') { throw "dry-run should echo the rebuilt row: $($r.StdOut)" }
         if ((Get-FileHash $guiMsg -Algorithm SHA256).Hash -ne $hashBefore) { throw '--dry-run must not modify the file' }
     }
+    Test-Case 'set_messages.edit_newline_text_errors' {
+        # No line break may ever reach css.*_msg - one row per message, always.
+        Reset-MsgFixture
+        $r = Invoke-Cli set_messages '--edit-msg' '--type' 'gui' '--msgno' '100' '--cmpy' '0' '--lang' '1' '--text' "two`nlines" $script:TestProfile
+        if ($r.ExitCode -eq 0) { throw 'edit with a newline must fail' }
+        if ($r.StdErr -notmatch 'carriage return or newline') { throw "stderr should reject the newline: $($r.StdErr)" }
+        $lines = [System.IO.File]::ReadAllLines($guiMsg)
+        if ($lines.Count -ne 8) { throw "file must be untouched (8 lines), got $($lines.Count)" }
+    }
+    Test-Case 'set_messages.translate_newline_text_errors' {
+        Reset-MsgFixture
+        $r = Invoke-Cli set_messages '--translate' '--type' 'gui' '--msgno' '100' '--lang' '2' '--text' "two`nlines" $script:TestProfile
+        if ($r.ExitCode -eq 0) { throw 'translate with a newline must fail' }
+        if ($r.StdErr -notmatch 'carriage return or newline') { throw "stderr should reject the newline: $($r.StdErr)" }
+    }
+    Test-Case 'set_messages.long_text_round_trips_untruncated' {
+        # A full-length message must survive edit -> file -> find with every byte intact
+        # and still occupy exactly one physical line.
+        Reset-MsgFixture
+        $long = ('A' * 254) + 'Z'   # 255 bytes, the column ceiling
+        $r = Invoke-Cli set_messages '--edit-msg' '--type' 'gui' '--msgno' '100' '--cmpy' '0' '--lang' '1' '--text' $long $script:TestProfile
+        Assert-ExitCode $r
+        $lines = [System.IO.File]::ReadAllLines($guiMsg)
+        if ($lines.Count -ne 8) { throw "expected 8 lines (no wrapping into the file), got $($lines.Count)" }
+        $cols = $lines[0] -split "`t"
+        if ($cols[6] -ne $long) { throw "stored text differs from the input (len $($cols[6].Length) vs $($long.Length))" }
+        $f = Invoke-Cli set_messages '--find' $long '--type' 'gui' $script:TestProfile
+        Assert-ExitCode $f
+        if ($f.StdOut -notmatch 'FOUND 1') { throw "the full text should be findable verbatim: $($f.StdOut)" }
+    }
     Test-Case 'set_messages.edit_requires_field' {
         Reset-MsgFixture
         $r = Invoke-Cli set_messages '--edit-msg' '--type' 'gui' '--msgno' '100' '--cmpy' '0' '--lang' '1' $script:TestProfile

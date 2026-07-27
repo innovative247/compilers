@@ -118,25 +118,21 @@ namespace ibsCompiler
                 {
                     // ---- type screen ----
                     types = MessageFileEditor.ListLiveTypes(profile);
-                    Console.WriteLine();
-                    Cyan($"  Messages — {profileName}");
-                    Dim($"  Source: {setupDir}");
-                    Console.WriteLine();
-                    for (int i = 0; i < types.Count; i++)
-                        Console.WriteLine($"   {i + 1}. {types[i].Label} Messages (css.{types[i].Type}_msgrp)");
-                    Console.WriteLine("  99. Exit");
-                    Console.WriteLine();
 
-                    // Exit is the obvious default — preserves the old blank-Enter-exits shortcut.
-                    var choice = ConsoleMenu.ReadDeferredChoice(defaultChoice: "99");
-                    if (string.IsNullOrEmpty(choice) || choice == "99") return 0;
-                    if (!int.TryParse(choice, out var n) || n < 1 || n > types.Count)
-                    {
-                        Red($"  No type {choice}.");
-                        continue;
-                    }
+                    // Same picker as the group screen: Up/Down highlight plus a deferred
+                    // numbered choice. Falls back to a plain list on a small terminal.
+                    bool tooSmall = Console.WindowHeight < 10 || Console.WindowWidth < 40;
+                    int selected;
+                    string extra;
+                    if (tooSmall)
+                        (selected, extra) = TypePickFallback(types, profileName, setupDir);
+                    else
+                        (selected, extra) = TypePickScrolling(types, profileName, setupDir);
 
-                    var nav = GroupScreen(cmdvars, profile, executor, types[n - 1], profileName, isGonzo, setupDir);
+                    if (extra == "again") continue;      // bad number on the fallback list
+                    if (extra == "exit" || selected < 0) return 0;
+
+                    var nav = GroupScreen(cmdvars, profile, executor, types[selected], profileName, isGonzo, setupDir);
                     if (nav == Nav.Exit) return 0;
                     // Nav.Back → re-loop to the type screen.
                 }
@@ -184,6 +180,147 @@ namespace ibsCompiler
                     // Nav.Back → refresh the group list.
                 }
             }
+        }
+
+        /// <summary>
+        /// Scrolling message-type picker — the same interaction as the group picker:
+        /// Up/Down move the highlight, Enter opens the highlighted row, digits build a
+        /// deferred Choice buffer (row number or 99 Exit), Esc/Q exits.
+        /// Returns (typeIndex, "") on a select, else (-1, "exit").
+        /// </summary>
+        private static (int, string) TypePickScrolling(List<MessageFileEditor.LiveType> types, string profileName, string setupDir)
+        {
+            int cursor = 0, scroll = 0;
+            var buf = new StringBuilder();
+            int w = Math.Max(40, Console.WindowWidth) - 1;
+
+            Console.WriteLine();
+            Cyan($"  Messages — {profileName}");
+            Dim($"  Source: {setupDir}");
+            Console.WriteLine();
+            Console.WriteLine("  " + Fit($"{"",4}{"TYPE",-8}SOURCE FILE", w - 2));
+
+            int visibleRows = Math.Max(3, Console.WindowHeight - 8);
+            visibleRows = Math.Min(visibleRows, Math.Max(1, types.Count));
+
+            // Reserve the window + footer rows so the buffer scrolls if we are near the bottom.
+            for (int i = 0; i < visibleRows; i++) Console.WriteLine();
+            Console.WriteLine();
+            Console.WriteLine("  [Up/Down] move  [Enter] open  99 Exit");
+            int footerRow = Console.CursorTop;
+            int startRow = footerRow - 2 - visibleRows;
+            int promptRow = footerRow;
+
+            void RenderWindow()
+            {
+                for (int i = 0; i < visibleRows; i++)
+                {
+                    Console.SetCursorPosition(0, startRow + i);
+                    int idx = scroll + i;
+                    string line;
+                    if (idx >= types.Count) line = "";
+                    else
+                    {
+                        var t = types[idx];
+                        var ptr = idx == cursor ? ">" : " ";
+                        line = $"  {ptr} {idx + 1,-2}{t.Label,-8}css.{t.Type}_msgrp";
+                    }
+                    Console.Write(Fit(line, w));
+                }
+                Console.SetCursorPosition(0, startRow + (cursor - scroll));
+            }
+
+            void ClearPrompt()
+            {
+                ConsoleMenu.DrawChoiceBuffer(promptRow, "Choice", "");
+                Console.CursorVisible = false;
+            }
+
+            RenderWindow();
+
+            try
+            {
+                Console.CursorVisible = false;
+                ClearPrompt();
+                while (true)
+                {
+                    var key = Console.ReadKey(intercept: true);
+
+                    if (char.IsDigit(key.KeyChar))
+                    {
+                        buf.Append(key.KeyChar);
+                        ConsoleMenu.DrawChoiceBuffer(promptRow, "Choice", buf.ToString());
+                        continue;
+                    }
+                    if (buf.Length > 0 && key.Key != ConsoleKey.Enter
+                        && key.Key != ConsoleKey.Backspace && key.Key != ConsoleKey.Escape)
+                    {
+                        buf.Clear();
+                        ClearPrompt();
+                    }
+
+                    switch (key.Key)
+                    {
+                        case ConsoleKey.UpArrow:
+                            if (cursor > 0) { cursor--; if (cursor < scroll) scroll = cursor; RenderWindow(); }
+                            break;
+                        case ConsoleKey.DownArrow:
+                            if (cursor < types.Count - 1)
+                            {
+                                cursor++;
+                                if (cursor >= scroll + visibleRows) scroll = cursor - visibleRows + 1;
+                                RenderWindow();
+                            }
+                            break;
+                        case ConsoleKey.Backspace:
+                            if (buf.Length > 0)
+                            {
+                                buf.Length--;
+                                if (buf.Length == 0) ClearPrompt();
+                                else ConsoleMenu.DrawChoiceBuffer(promptRow, "Choice", buf.ToString());
+                            }
+                            break;
+                        case ConsoleKey.Enter:
+                            if (buf.Length > 0)
+                            {
+                                var c = buf.ToString(); buf.Clear();
+                                ClearPrompt();
+                                if (c == "99") { EndPicker(footerRow); return (-1, "exit"); }
+                                if (int.TryParse(c, out var num) && num >= 1 && num <= types.Count)
+                                { EndPicker(footerRow); return (num - 1, ""); }
+                                Console.SetCursorPosition(0, promptRow);
+                                Red(Fit($"  No type {c}.", w));
+                                break;
+                            }
+                            if (types.Count > 0) { EndPicker(footerRow); return (cursor, ""); }
+                            break;
+                        case ConsoleKey.Escape:
+                        case ConsoleKey.Q:
+                            EndPicker(footerRow); return (-1, "exit");
+                    }
+                }
+            }
+            finally { Console.CursorVisible = true; }
+        }
+
+        /// <summary>Plain fallback for a terminal too small to host the scrolling type list.</summary>
+        private static (int, string) TypePickFallback(List<MessageFileEditor.LiveType> types, string profileName, string setupDir)
+        {
+            Console.WriteLine();
+            Cyan($"  Messages — {profileName}");
+            Dim($"  Source: {setupDir}");
+            Console.WriteLine();
+            for (int i = 0; i < types.Count; i++)
+                Console.WriteLine($"   {i + 1}. {types[i].Label} Messages (css.{types[i].Type}_msgrp)");
+            Console.WriteLine("  99. Exit");
+            Console.WriteLine();
+
+            // Exit is the obvious default — preserves the old blank-Enter-exits shortcut.
+            var choice = ConsoleMenu.ReadDeferredChoice(defaultChoice: "99");
+            if (string.IsNullOrEmpty(choice) || choice == "99") return (-1, "exit");
+            if (int.TryParse(choice, out var n) && n >= 1 && n <= types.Count) return (n - 1, "");
+            Red($"  No type {choice}.");
+            return (-1, "again");
         }
 
         /// <summary>
@@ -424,7 +561,7 @@ namespace ibsCompiler
                 new() { Label = "s#msgno",  Value = reserved.Msgno.ToString(), ReadOnly = true, Note = "(reserved)" },
                 new() { Label = "Language", Value = "1", Numeric = true },
                 new() { Label = "Company",  Value = "0", Numeric = true },
-                new() { Label = "Message",  Value = "" },
+                new() { Label = "Message",  Value = "", Wrap = true, MaxBytes = 255 },
             };
 
             if (!MessageForm.Run($"Add message — {lt.Label} / {group}", fields, f =>
@@ -736,7 +873,7 @@ namespace ibsCompiler
                         new() { Label = "s#msgno",  Value = row.Msgno.ToString(), ReadOnly = true },
                         new() { Label = "Language", Value = row.Lang.ToString(),  ReadOnly = true, Note = "(key)" },
                         new() { Label = "Company",  Value = row.Cmpy.ToString(),  ReadOnly = true, Note = "(key)" },
-                        new() { Label = "Message",  Value = row.Text },
+                        new() { Label = "Message",  Value = row.Text, Wrap = true, MaxBytes = 255 },
                     };
 
                     if (!MessageForm.Run($"Edit {lt.Label} message {row.Msgno}", fields, f =>
@@ -800,7 +937,7 @@ namespace ibsCompiler
                 new() { Label = "s#msgno",  Value = row.Msgno.ToString(), ReadOnly = true },
                 new() { Label = "Language", Value = "1", Numeric = true, Note = "(1 = base)" },
                 new() { Label = "Company",  Value = "0", Numeric = true, Note = "(0 = all companies)" },
-                new() { Label = "Message",  Value = row.Text },
+                new() { Label = "Message",  Value = row.Text, Wrap = true, MaxBytes = 255 },
             };
 
             if (!MessageForm.Run($"Translate {lt.Label} message {row.Msgno}", fields, f =>

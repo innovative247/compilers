@@ -24,13 +24,18 @@ compile_msg  MYPROFILE        # no flags -> legacy Import/Export/Add menu (regre
 
 ## Type screen
 
-- [ ] Numbered vertical list, one row per live type: `1. GUI Messages (css.gui_msgrp)` etc.
+- [ ] Scrolling picker, same interaction as the group screen: Up/Down move the `>`
+      highlight, Enter opens the highlighted row, typing a number then Enter opens that
+      row, `99`/Esc/Q exits, and `Choice: ` is visible from the start.
+- [ ] Columns line up: `TYPE  SOURCE FILE` (e.g. `GUI     css.gui_msgrp`).
 - [ ] A dim `Source: <path>` line prints under the screen title, showing the resolved
       `GetPath_Setup` directory for the profile (e.g. `Source: C:\_innovative\_source\
       current.sql\css\setup`).
-- [ ] The prompt line shows `Choice [99]: ` from the start (before any key is pressed) —
-      Exit is the default, so plain Enter exits with code 0, same as `99`.
-- [ ] An out-of-range number reprints the list with a red "No type N".
+- [ ] The prompt line shows the bare `Choice: ` label from the start; plain Enter with no
+      digits typed opens the highlighted row (it is not a numbered default).
+- [ ] An out-of-range number leaves the list up and shows a red "No type N".
+- [ ] Shrink the terminal below ~10 rows: the type screen falls back to the plain numbered
+      list, where `Choice [99]: ` applies and plain Enter exits with code 0.
 
 ## Group screen (SBN-GUI-style table)
 
@@ -71,12 +76,19 @@ compile_msg  MYPROFILE        # no flags -> legacy Import/Export/Add menu (regre
 - [ ] A changed row shows the ` *` dirty marker.
 - [ ] `Enter` on the dim `s#msgno` row reports it is read-only and changes nothing.
 - [ ] `Esc` inside an inline edit abandons just that edit (row keeps its old value).
-- [ ] **Long text** (paste/type a full ~250-char message): the row never wraps or spills.
-      While editing, the view scrolls horizontally with the caret and `…` marks each end
-      that has text out of view; Left/Right/Home/End move the caret and the window follows;
-      Backspace/Delete/insert all act at the caret, not the end. Save, reopen Edit, and
-      confirm the stored text is complete and unchanged (compare with `--find`).
-- [ ] While navigating (not editing), a too-long value is shown cut with a trailing `…`.
+- [ ] **Long text — nothing is ever cut.** Type/paste a full ~250-char message: the
+      Message field wraps onto as many rows as it needs, continuation rows indented to the
+      value column, and the **whole** text is visible both while editing and while
+      navigating. No `…`, no clipped tail.
+- [ ] The Message block keeps a fixed height as you type (it is reserved for the 255-byte
+      ceiling), so the rows below never jump around.
+- [ ] Left/Right/Home/End and Up/Down move the caret inside the wrapped text (Up/Down move
+      a row within the field); Backspace/Delete/insert act at the caret, not the end.
+- [ ] Typing past 255 bytes is refused with a yellow "limited to 255 bytes" note.
+- [ ] Save, reopen Edit, and confirm the stored text is complete and byte-identical
+      (cross-check with `set_messages <profile> --find "<text>" --type gui`).
+- [ ] **No line breaks reach the file**: after saving a long message, `css.gui_msg` still
+      has exactly one physical line for it (the wrap is display-only).
 - [ ] `Esc` while navigating backs out — with unsaved changes it asks
       `Discard changes? (y/N)` first; `N` stays in the form, `y` leaves without writing.
 - [ ] A non-integer into Language/Company is refused (yellow message, edit stays open).

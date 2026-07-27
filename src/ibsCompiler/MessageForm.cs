@@ -11,6 +11,13 @@ namespace ibsCompiler
     /// SBN GUI's message detail panel, where s#msgno, company, language and the text are
     /// visible together instead of arriving as a chain of one-shot prompts.
     ///
+    /// **Nothing is ever truncated.** A message runs to 255 bytes, so its field wraps
+    /// across as many screen rows as it needs — the whole value is on screen at all
+    /// times, while editing and while navigating. The wrap is presentation only: the
+    /// value stays a single line and no CR/LF can enter it (a newline keystroke commits
+    /// the edit, and control characters are never inserted), so what lands in
+    /// <c>css.&lt;type&gt;_msg</c> is always one physical line.
+    ///
     /// Simpler than the profile editor only in what it does not need: no Test items, no
     /// live applicability, no enum/bool cycling. Read-only rows (a reserved s#msgno, an
     /// edit's key columns) render dim and refuse the edit.
@@ -31,6 +38,13 @@ namespace ibsCompiler
             public bool Numeric { get; set; }
             /// <summary>Dim trailing note, e.g. "(reserved)" or "(key)".</summary>
             public string? Note { get; set; }
+            /// <summary>
+            /// Wrap this field's value across as many rows as it needs instead of keeping it
+            /// on one. The stored value is still a single line — this is display only.
+            /// </summary>
+            public bool Wrap { get; set; }
+            /// <summary>UTF-8 byte ceiling enforced while typing (0 = no limit). The message column is 255.</summary>
+            public int MaxBytes { get; set; }
             /// <summary>Pre-edit value, captured at entry, for the dirty marker and discard guard.</summary>
             internal string Original { get; set; } = "";
         }
@@ -51,10 +65,29 @@ namespace ibsCompiler
             const int MenuRows = 3;  // Save + Back, plus one blank row before the prompt
             const string Footer = "  [Up/Down] move  [Enter] edit  (in an edit: Left/Right/Home/End, Esc cancels)";
 
-            // Layout (top→bottom): blank + title + blank + N field rows + blank + footer +
+            // Characters that fit on one row after the label column. Fixed for the life of
+            // the form so the reserved height and the caret arithmetic always agree.
+            int room = Math.Max(8, Console.WindowWidth - 1 - ValueCol);
+
+            // Rows reserved per field. A wrapping field reserves what its ceiling needs
+            // (MaxBytes is an upper bound on characters), never what it currently holds —
+            // so typing can never change the layout under the cursor.
+            int RowsFor(Field f)
+            {
+                if (!f.Wrap) return 1;
+                int cap = Math.Max(f.MaxBytes, f.Value.Length);
+                if (cap <= 0) cap = 1;
+                return Math.Max(1, (cap + room - 1) / room);
+            }
+            var heights = fields.Select(RowsFor).ToArray();
+            int totalFieldRows = heights.Sum();
+            var offsets = new int[fields.Count];       // row offset of each field within the block
+            for (int i = 1; i < fields.Count; i++) offsets[i] = offsets[i - 1] + heights[i - 1];
+
+            // Layout (top→bottom): blank + title + blank + field rows + blank + footer +
             // blank + menu rows + prompt row + one spare row so the final newline never
             // scrolls the cached row numbers out from under us.
-            if (Console.WindowHeight < fields.Count + MenuRows + 8 || Console.WindowWidth < 40)
+            if (Console.WindowHeight < totalFieldRows + MenuRows + 8 || Console.WindowWidth < 40)
                 return RunSequential(title, fields, validate);
 
             int startRow = 0, menuRow0 = 0, promptRow = 0;
@@ -67,7 +100,7 @@ namespace ibsCompiler
                 Console.WriteLine("  " + title);
                 Console.ForegroundColor = prev;
                 Console.WriteLine();
-                for (int i = 0; i < fields.Count; i++) Console.WriteLine();
+                for (int i = 0; i < totalFieldRows; i++) Console.WriteLine();
                 Console.WriteLine();
                 Console.WriteLine(Footer);
                 Console.WriteLine();
@@ -79,7 +112,7 @@ namespace ibsCompiler
                 Console.WriteLine();
                 promptRow = Console.CursorTop - 2;
                 menuRow0 = promptRow - MenuRows;
-                startRow = menuRow0 - 3 - fields.Count;
+                startRow = menuRow0 - 3 - totalFieldRows;
             }
 
             int cursor = FirstEditable(fields);
@@ -91,28 +124,36 @@ namespace ibsCompiler
                 return s.Length < w ? s.PadRight(w) : s.Substring(0, w);
             }
 
-            void DrawRow(int idx, bool isCursor)
+            // Every row of one field: the label row carries the first chunk of the value,
+            // continuation rows are indented to the value column. Suffix (dirty marker +
+            // note) rides the LAST chunk so it never lands mid-text.
+            void DrawField(int idx, bool isCursor, string? overrideValue = null)
             {
                 var f = fields[idx];
-                Console.SetCursorPosition(0, startRow + idx);
-                var pointer = isCursor ? ">" : " ";
-                var dirty = !f.ReadOnly && f.Value != f.Original ? " *" : "";
-                var note = string.IsNullOrEmpty(f.Note) ? "" : $"   {f.Note}";
-                // A message can run to 255 bytes — far past one row. Show as much as fits
-                // and mark the cut with an ellipsis rather than letting Fit chop it
-                // silently; the inline editor scrolls to reveal the rest.
-                var shown = f.Value;
-                int room = Math.Max(4, Console.WindowWidth - 1 - ValueCol - dirty.Length - note.Length);
-                if (shown.Length > room) shown = shown.Substring(0, room - 1) + "…";
-                var line = Fit($"  {pointer} {f.Label,-16}: {shown}{dirty}{note}");
-                if (f.ReadOnly)
+                var value = overrideValue ?? f.Value;
+                var suffix = (!f.ReadOnly && value != f.Original ? " *" : "")
+                           + (string.IsNullOrEmpty(f.Note) ? "" : $"   {f.Note}");
+
+                var chunks = Chunk(value, room);
+                var pad = new string(' ', ValueCol);
+                for (int r = 0; r < heights[idx]; r++)
                 {
-                    var p = Console.ForegroundColor;
-                    Console.ForegroundColor = ConsoleColor.DarkGray;
-                    Console.Write(line);
-                    Console.ForegroundColor = p;
+                    var chunk = r < chunks.Count ? chunks[r] : "";
+                    var tail = r == chunks.Count - 1 ? suffix : "";
+                    var text = r == 0
+                        ? $"  {(isCursor ? ">" : " ")} {f.Label,-16}: {chunk}{tail}"
+                        : $"{pad}{chunk}{tail}";
+                    Console.SetCursorPosition(0, startRow + offsets[idx] + r);
+                    var line = Fit(text);
+                    if (f.ReadOnly)
+                    {
+                        var p = Console.ForegroundColor;
+                        Console.ForegroundColor = ConsoleColor.DarkGray;
+                        Console.Write(line);
+                        Console.ForegroundColor = p;
+                    }
+                    else Console.Write(line);
                 }
-                else Console.Write(line);
             }
 
             // Numbered actions, matching the browser's 98/99 convention.
@@ -134,9 +175,9 @@ namespace ibsCompiler
 
             void Render()
             {
-                for (int i = 0; i < fields.Count; i++) DrawRow(i, i == cursor);
+                for (int i = 0; i < fields.Count; i++) DrawField(i, i == cursor);
                 RenderMenu();
-                Console.SetCursorPosition(0, startRow + cursor);
+                Console.SetCursorPosition(0, startRow + offsets[cursor]);
             }
 
             void Message(string text, ConsoleColor color)
@@ -157,37 +198,21 @@ namespace ibsCompiler
 
             void ShowMenuBuffer(string buf) => ConsoleMenu.DrawChoiceBuffer(promptRow, "Choice", buf);
 
-            // In-place single-line editor seeded with the current value — ProfileEditor's,
-            // extended with a caret and a horizontally scrolling window because a message
-            // is up to 255 bytes and never fits one terminal row. The window follows the
-            // caret; a leading/trailing '…' marks text scrolled out of view.
+            // In-place editor seeded with the current value — ProfileEditor's, plus a caret
+            // and wrapped rendering so a 255-byte message is fully visible and fully
+            // reachable. Returns null when the edit was abandoned with Esc.
             string? InlineEdit(int fieldIdx, string seed)
             {
                 var f = fields[fieldIdx];
                 var buf = new StringBuilder(seed);
-                int row = startRow + fieldIdx;
                 int caret = buf.Length;   // start at the end, like a normal prompt
-                int off = 0;              // first visible character
 
                 void Draw()
                 {
-                    int room = Math.Max(8, Console.WindowWidth - 1 - ValueCol);
-                    // Keep the caret inside the window, then clamp the window to the text.
-                    if (caret < off) off = caret;
-                    if (caret > off + room - 1) off = caret - room + 1;
-                    if (off > Math.Max(0, buf.Length - room + 1)) off = Math.Max(0, buf.Length - room + 1);
-                    if (off < 0) off = 0;
-
-                    var visible = buf.ToString(off, Math.Min(room, buf.Length - off));
-                    // Ellipsis markers replace the edge character they stand in for, so the
-                    // caret column arithmetic below stays exact.
-                    var chars = visible.ToCharArray();
-                    if (off > 0 && chars.Length > 0) chars[0] = '…';
-                    if (off + visible.Length < buf.Length && chars.Length > 0) chars[chars.Length - 1] = '…';
-
-                    Console.SetCursorPosition(0, row);
-                    Console.Write(Fit($"  > {f.Label,-16}: {new string(chars)}"));
-                    Console.SetCursorPosition(Math.Min(ValueCol + (caret - off), Console.WindowWidth - 1), row);
+                    DrawField(fieldIdx, isCursor: true, overrideValue: buf.ToString());
+                    Console.SetCursorPosition(
+                        Math.Min(ValueCol + caret % room, Console.WindowWidth - 1),
+                        startRow + offsets[fieldIdx] + Math.Min(caret / room, heights[fieldIdx] - 1));
                 }
 
                 Console.CursorVisible = true;
@@ -197,10 +222,18 @@ namespace ibsCompiler
                     var key = Console.ReadKey(intercept: true);
                     switch (key.Key)
                     {
-                        case ConsoleKey.Enter:  Console.CursorVisible = false; return buf.ToString();
+                        case ConsoleKey.Enter:
+                            // A newline arriving mid-paste would otherwise commit here and
+                            // spray the rest of the pasted text at the navigation loop.
+                            // Anything already queued belongs to this edit — drop it.
+                            while (Console.KeyAvailable) Console.ReadKey(intercept: true);
+                            Console.CursorVisible = false;
+                            return buf.ToString();
                         case ConsoleKey.Escape: Console.CursorVisible = false; return null;
                         case ConsoleKey.LeftArrow:  if (caret > 0) caret--; break;
                         case ConsoleKey.RightArrow: if (caret < buf.Length) caret++; break;
+                        case ConsoleKey.UpArrow:    caret = Math.Max(0, caret - room); break;
+                        case ConsoleKey.DownArrow:  caret = Math.Min(buf.Length, caret + room); break;
                         case ConsoleKey.Home: caret = 0; break;
                         case ConsoleKey.End:  caret = buf.Length; break;
                         case ConsoleKey.Backspace:
@@ -210,7 +243,17 @@ namespace ibsCompiler
                             if (caret < buf.Length) buf.Remove(caret, 1);
                             break;
                         default:
-                            if (!char.IsControl(key.KeyChar)) { buf.Insert(caret, key.KeyChar); caret++; }
+                            // Control characters (CR/LF included) are never inserted, which
+                            // is what keeps the stored value a single line.
+                            if (char.IsControl(key.KeyChar)) break;
+                            if (f.MaxBytes > 0 &&
+                                Encoding.UTF8.GetByteCount(buf.ToString()) + Encoding.UTF8.GetByteCount(key.KeyChar.ToString()) > f.MaxBytes)
+                            {
+                                Message($"{f.Label} is limited to {f.MaxBytes} bytes.", ConsoleColor.Yellow);
+                                break;
+                            }
+                            buf.Insert(caret, key.KeyChar);
+                            caret++;
                             break;
                     }
                     Draw();
@@ -344,6 +387,7 @@ namespace ibsCompiler
                                     f.Value = f.Numeric ? input.Trim() : input;
                                     break;
                                 }
+                                ClearMessage();
                                 Render();
                             }
                             break;
@@ -381,9 +425,21 @@ namespace ibsCompiler
             }
         }
 
+        /// <summary>Split a single-line value into fixed-width display chunks (never fewer than one).</summary>
+        internal static List<string> Chunk(string value, int width)
+        {
+            var chunks = new List<string>();
+            if (width < 1) width = 1;
+            for (int i = 0; i < value.Length; i += width)
+                chunks.Add(value.Substring(i, Math.Min(width, value.Length - i)));
+            if (chunks.Count == 0) chunks.Add("");
+            return chunks;
+        }
+
         /// <summary>
         /// Small-terminal fallback: the same fields as a top-to-bottom prompt run, each
-        /// showing its default in brackets. No cursor movement, but nothing is lost.
+        /// showing its default in brackets. No cursor movement, but nothing is truncated —
+        /// ReadLine takes the whole value and any stray CR/LF is stripped before it is kept.
         /// </summary>
         private static bool RunSequential(string title, IList<Field> fields, Func<IList<Field>, string?>? validate)
         {
@@ -398,12 +454,17 @@ namespace ibsCompiler
                         Console.WriteLine($"    {f.Label,-16}: {f.Value}{(string.IsNullOrEmpty(f.Note) ? "" : "   " + f.Note)}");
                         continue;
                     }
-                    Console.Write($"    {f.Label} [{f.Value}]: ");
-                    var entered = Console.ReadLine() ?? "";
+                    Console.WriteLine($"    {f.Label} [{f.Value}]:");
+                    var entered = (Console.ReadLine() ?? "").Replace("\r", "").Replace("\n", "");
                     if (entered.Length == 0) continue;
                     if (f.Numeric && !int.TryParse(entered.Trim(), out _))
                     {
                         Console.WriteLine($"    {f.Label} must be an integer.");
+                        return false;
+                    }
+                    if (f.MaxBytes > 0 && Encoding.UTF8.GetByteCount(entered) > f.MaxBytes)
+                    {
+                        Console.WriteLine($"    {f.Label} is limited to {f.MaxBytes} bytes.");
                         return false;
                     }
                     f.Value = f.Numeric ? entered.Trim() : entered;
