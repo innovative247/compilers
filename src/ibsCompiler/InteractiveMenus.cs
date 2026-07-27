@@ -2326,7 +2326,8 @@ namespace ibsCompiler
         /// <summary>
         /// Headless message delete:
         ///   set_messages PROFILE --delete-msg --type T --msgno N --cmpy C --lang L (--yes | --dry-run)
-        /// A real delete requires --yes; --dry-run previews without writing. Output "DELETED &lt;msgno&gt;".
+        /// A real delete requires --yes; --dry-run previews without writing. Output "DELETED &lt;msgno&gt;",
+        /// with a "(&lt;n&gt; rows)" suffix when deleting the base row cascaded to its translations.
         /// </summary>
         private static int RunDeleteMessageHeadless(List<string> args, ResolvedProfile profile)
         {
@@ -2352,7 +2353,9 @@ namespace ibsCompiler
                 Console.Error.WriteLine($"ERROR: {result.Error}");
                 return 1;
             }
-            Console.WriteLine($"DELETED {result.Msgno}");
+            Console.WriteLine(result.RowsDeleted > 1
+                ? $"DELETED {result.Msgno} ({result.RowsDeleted} rows)"
+                : $"DELETED {result.Msgno}");
             return 0;
         }
 

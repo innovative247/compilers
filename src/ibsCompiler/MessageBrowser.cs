@@ -413,13 +413,32 @@ namespace ibsCompiler
         {
             Console.WriteLine();
             Cyan($"  Add message to {lt.Label} / {group}");
-            Console.Write("  Message text: ");
-            var text = Console.ReadLine() ?? "";
-            if (text.Length == 0) { Red("  Cancelled (empty text)."); return; }
+            // Reserve the number first so the form can show it the way the GUI's detail
+            // panel does — s#msgno on screen before the text is typed.
+            var reserved = MessageFileEditor.ReserveMsgno(profile, lt.Type, group);
+            if (!reserved.Success) { Red($"  ERROR: {reserved.Error}"); return; }
 
-            // Language, company and update flag are not asked for: a new message is
-            // always the base row (lang 1 / cmpy 0, flag 'X'), and variants are made
-            // with Translate from the message's detail screen.
+            // Language and company are shown (and navigable) but a new message is always
+            // the base row — ba_<type>_msgrp_dtl_new rejects anything else, and the
+            // validator below says so before the write is attempted.
+            var fields = new List<MessageForm.Field>
+            {
+                new() { Label = "s#msgno",  Value = reserved.Msgno.ToString(), ReadOnly = true, Note = "(reserved)" },
+                new() { Label = "Language", Value = "1", Numeric = true },
+                new() { Label = "Company",  Value = "0", Numeric = true },
+                new() { Label = "Message",  Value = "" },
+            };
+
+            if (!MessageForm.Run($"Add message — {lt.Label} / {group}", fields, f =>
+            {
+                if (MessageForm.Get(f, "Message").Length == 0) return "Message text is required.";
+                if (MessageForm.GetInt(f, "Language", 1) != 1 || MessageForm.GetInt(f, "Company", 0) != 0)
+                    return "A new message is always the base row (language 1, company 0) — use Translate for a variant.";
+                return null;
+            }))
+            { Console.WriteLine("  Cancelled."); return; }
+
+            var text = MessageForm.Get(fields, "Message");
             var preview = MessageFileEditor.AddMessage(profile, lt.Type, group, text, dryRun: true);
             if (!preview.Success) { Red($"  ERROR: {preview.Error}"); return; }
             if (preview.Warning != null) { var p = Console.ForegroundColor; Console.ForegroundColor = ConsoleColor.Yellow; Console.WriteLine($"  WARNING: {preview.Warning}"); Console.ForegroundColor = p; }
@@ -711,10 +730,23 @@ namespace ibsCompiler
                 if (string.IsNullOrEmpty(choice) || choice == "98") return changed;
                 if (choice == "1")
                 {
+                    // Language and company are the row's key — the update proc locates by
+                    // them and cannot move a row — so they show as read-only context.
                     // The update flag and change time are derived on write, never typed.
-                    Console.Write("  New text (Enter cancels): ");
-                    var nt = Console.ReadLine();
-                    if (string.IsNullOrEmpty(nt)) { Console.WriteLine("  Nothing changed."); continue; }
+                    var fields = new List<MessageForm.Field>
+                    {
+                        new() { Label = "s#msgno",  Value = row.Msgno.ToString(), ReadOnly = true },
+                        new() { Label = "Language", Value = row.Lang.ToString(),  ReadOnly = true, Note = "(key)" },
+                        new() { Label = "Company",  Value = row.Cmpy.ToString(),  ReadOnly = true, Note = "(key)" },
+                        new() { Label = "Message",  Value = row.Text },
+                    };
+
+                    if (!MessageForm.Run($"Edit {lt.Label} message {row.Msgno}", fields, f =>
+                        MessageForm.Get(f, "Message").Length == 0 ? "Message text is required." : null))
+                    { Console.WriteLine("  Cancelled."); continue; }
+
+                    var nt = MessageForm.Get(fields, "Message");
+                    if (nt == row.Text) { Console.WriteLine("  Nothing changed."); continue; }
 
                     var res = MessageFileEditor.UpdateMessage(
                         profile, lt.Type, row.Msgno, row.Cmpy, row.Lang,
@@ -731,6 +763,15 @@ namespace ibsCompiler
                 }
                 else if (choice == "3")
                 {
+                    // Deleting the base row takes every translation with it — say so before
+                    // asking for the confirmation, not after.
+                    var preview = MessageFileEditor.DeleteMessage(
+                        profile, lt.Type, row.Msgno, row.Cmpy, row.Lang,
+                        dryRun: true, lineIndex: row.LineIndex);
+                    if (!preview.Success) { Red($"  ERROR: {preview.Error}"); continue; }
+                    if (preview.RowsDeleted > 1)
+                        Red($"  This is the base row — deleting it also removes {preview.RowsDeleted - 1} translation(s).");
+
                     Console.Write($"  Type 'delete' to remove message {row.Msgno}: ");
                     var conf = (Console.ReadLine() ?? "").Trim();
                     if (!conf.Equals("delete", StringComparison.OrdinalIgnoreCase)) { Console.WriteLine("  Cancelled."); continue; }
@@ -739,7 +780,7 @@ namespace ibsCompiler
                         profile, lt.Type, row.Msgno, row.Cmpy, row.Lang,
                         dryRun: false, lineIndex: row.LineIndex);
                     if (!res.Success) { Red($"  ERROR: {res.Error}"); continue; }
-                    Green($"  DELETED {res.Msgno}");
+                    Green(res.RowsDeleted > 1 ? $"  DELETED {res.Msgno} ({res.RowsDeleted} rows)" : $"  DELETED {res.Msgno}");
                     changed = true;
                     return changed;
                 }
@@ -753,30 +794,29 @@ namespace ibsCompiler
         // ================================================================
         private static bool TranslateFlow(ResolvedProfile profile, MessageFileEditor.LiveType lt, MessageFileEditor.MsgRow row)
         {
-            Console.WriteLine();
-            Cyan($"  Translate {lt.Label} message {row.Msgno}");
-            Dim($"  Base (lang 1 / cmpy 0): {row.Text}");
-            Console.WriteLine();
-
-            Console.Write("  Language [1 = leave as base]: ");
-            var langStr = (Console.ReadLine() ?? "").Trim();
-            int lang = 1;
-            if (langStr.Length > 0 && !int.TryParse(langStr, out lang)) { Red("  Language must be an integer."); return false; }
-
-            Console.Write("  Company [0 = all companies]: ");
-            var cmpyStr = (Console.ReadLine() ?? "").Trim();
-            int cmpy = 0;
-            if (cmpyStr.Length > 0 && !int.TryParse(cmpyStr, out cmpy)) { Red("  Company must be an integer."); return false; }
-
-            if (lang == 1 && cmpy == 0)
+            // The variant is always built on the base row, whichever row Translate was
+            // invoked from — the language/company defaults are the base values, and at
+            // least one of them has to change.
+            var fields = new List<MessageForm.Field>
             {
-                Red("  A translation needs a different language and/or company than the base row.");
-                return false;
-            }
+                new() { Label = "s#msgno",  Value = row.Msgno.ToString(), ReadOnly = true },
+                new() { Label = "Language", Value = "1", Numeric = true, Note = "(1 = base)" },
+                new() { Label = "Company",  Value = "0", Numeric = true, Note = "(0 = all companies)" },
+                new() { Label = "Message",  Value = row.Text },
+            };
 
-            Console.Write("  Translated text: ");
-            var text = Console.ReadLine() ?? "";
-            if (text.Length == 0) { Red("  Cancelled (empty text)."); return false; }
+            if (!MessageForm.Run($"Translate {lt.Label} message {row.Msgno}", fields, f =>
+            {
+                if (MessageForm.Get(f, "Message").Length == 0) return "Translated text is required.";
+                if (MessageForm.GetInt(f, "Language", 1) == 1 && MessageForm.GetInt(f, "Company", 0) == 0)
+                    return "A translation needs a different language, a different company, or both.";
+                return null;
+            }))
+            { Console.WriteLine("  Cancelled."); return false; }
+
+            int lang = MessageForm.GetInt(fields, "Language", 1);
+            int cmpy = MessageForm.GetInt(fields, "Company", 0);
+            var text = MessageForm.Get(fields, "Message");
 
             var preview = MessageFileEditor.TranslateMessage(profile, lt.Type, row.Msgno, lang, cmpy, text, dryRun: true);
             if (!preview.Success) { Red($"  ERROR: {preview.Error}"); return false; }

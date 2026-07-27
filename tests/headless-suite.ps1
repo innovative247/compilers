@@ -1715,6 +1715,38 @@ function Test-Messages {
         $raw = [System.IO.File]::ReadAllBytes($guiMsg)
         if ($raw[-1] -ne 0x0A) { throw 'trailing newline must be preserved after a delete' }
     }
+    Test-Case 'set_messages.delete_base_cascades' {
+        # ba_<type>_msgrp_dtl_del: deleting the base row removes the whole message -
+        # msgno 101 has a lang-1 and a lang-2 row, both must go.
+        Reset-MsgFixture
+        $before = [System.IO.File]::ReadAllLines($guiMsg).Count
+        $r = Invoke-Cli set_messages '--delete-msg' '--yes' '--type' 'gui' '--msgno' '101' '--cmpy' '0' '--lang' '1' $script:TestProfile
+        Assert-ExitCode $r
+        if ($r.StdOut.Trim() -ne 'DELETED 101 (2 rows)') { throw "expected 'DELETED 101 (2 rows)', got: '$($r.StdOut)'" }
+        $lines = [System.IO.File]::ReadAllLines($guiMsg)
+        if ($lines.Count -ne $before - 2) { throw "expected two lines removed (was $before, now $($lines.Count))" }
+        if ($lines | Where-Object { $_ -like "101`t*" }) { throw 'no row for msgno 101 should survive' }
+    }
+    Test-Case 'set_messages.delete_base_without_translations' {
+        # Single-row message: the cascade collapses to one row, no "(n rows)" suffix.
+        Reset-MsgFixture
+        $r = Invoke-Cli set_messages '--delete-msg' '--yes' '--type' 'gui' '--msgno' '300' '--cmpy' '0' '--lang' '1' $script:TestProfile
+        Assert-ExitCode $r
+        if ($r.StdOut.Trim() -ne 'DELETED 300') { throw "expected 'DELETED 300', got: '$($r.StdOut)'" }
+    }
+    Test-Case 'set_messages.delete_base_cascade_preserves_other_rows' {
+        Reset-MsgFixture
+        $before = Get-RawLines $guiMsg
+        $r = Invoke-Cli set_messages '--delete-msg' '--yes' '--type' 'gui' '--msgno' '101' '--cmpy' '0' '--lang' '1' $script:TestProfile
+        Assert-ExitCode $r
+        $after = Get-RawLines $guiMsg
+        # Fixture lines 1 and 2 are the two 101 rows; everything else must be byte-identical.
+        if ($after.Count -ne $before.Count - 2) { throw "expected $($before.Count - 2) lines, got $($after.Count)" }
+        for ($i = 0; $i -lt $after.Count; $i++) {
+            $src = if ($i -eq 0) { 0 } else { $i + 2 }
+            if ((Get-BytesHash $after[$i]) -ne (Get-BytesHash $before[$src])) { throw "surviving line $i (maps to before $src) was altered" }
+        }
+    }
     Test-Case 'set_messages.delete_requires_yes' {
         Reset-MsgFixture
         $hashBefore = (Get-FileHash $guiMsg -Algorithm SHA256).Hash

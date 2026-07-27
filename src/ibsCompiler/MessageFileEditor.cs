@@ -44,6 +44,19 @@ namespace ibsCompiler
         public static AddMessageResult AddMessage(
             ResolvedProfile profile, string type, string group, string text,
             int lang = 1, int cmpy = 0, bool dryRun = false)
+            => AddCore(profile, type, group, text, lang, cmpy, dryRun, reserveOnly: false);
+
+        /// <summary>
+        /// The number <see cref="AddMessage"/> would hand out for this group, without
+        /// supplying any text — the add form shows the reserved s#msgno before the operator
+        /// types the message, the way the GUI's detail panel does. Never writes.
+        /// </summary>
+        public static AddMessageResult ReserveMsgno(ResolvedProfile profile, string type, string group)
+            => AddCore(profile, type, group, "", 1, 0, dryRun: true, reserveOnly: true);
+
+        private static AddMessageResult AddCore(
+            ResolvedProfile profile, string type, string group, string text,
+            int lang, int cmpy, bool dryRun, bool reserveOnly)
         {
             // ---- input validation (before touching the filesystem) ----
             var t = (type ?? "").Trim().ToLowerInvariant();
@@ -58,13 +71,16 @@ namespace ibsCompiler
             if (groupKey.Length > 6)
                 return AddMessageResult.Fail($"group '{groupKey}' exceeds 6 characters");
 
-            if (text == null)
-                return AddMessageResult.Fail("message text is required");
-            var textBytes = System.Text.Encoding.UTF8.GetByteCount(text);
-            if (textBytes > 255)
-                return AddMessageResult.Fail($"message text exceeds 255 bytes (got {textBytes})");
-            if (text.IndexOf('\r') >= 0 || text.IndexOf('\n') >= 0)
-                return AddMessageResult.Fail("message text may not contain a carriage return or newline");
+            if (!reserveOnly)
+            {
+                if (text == null)
+                    return AddMessageResult.Fail("message text is required");
+                var textBytes = System.Text.Encoding.UTF8.GetByteCount(text);
+                if (textBytes > 255)
+                    return AddMessageResult.Fail($"message text exceeds 255 bytes (got {textBytes})");
+                if (text.IndexOf('\r') >= 0 || text.IndexOf('\n') >= 0)
+                    return AddMessageResult.Fail("message text may not contain a carriage return or newline");
+            }
 
             // ba_<type>_msgrp_dtl_new rejects anything but the base row: New creates
             // the lang=1/cmpy=0 master, and every other lang/cmpy combination is a
@@ -345,6 +361,8 @@ namespace ibsCompiler
         {
             public bool Success { get; set; }
             public int Msgno { get; set; }
+            /// <summary>Physical rows removed — more than one when a base row took its translations with it.</summary>
+            public int RowsDeleted { get; set; }
             public string? Error { get; set; }
             public bool DryRun { get; set; }
             public static DeleteMessageResult Fail(string error) => new() { Success = false, Error = error };
@@ -603,8 +621,10 @@ namespace ibsCompiler
         /// <summary>
         /// Delete a single message row located by (msgno, cmpy, lang), with the same keying and
         /// ambiguity rules as <see cref="UpdateMessage"/>. Drops the physical line and rewrites
-        /// the file byte-for-byte apart from the removed line. Deleting a translation also stamps
-        /// the base row's upd_flg back to 'X', the way <c>ba_&lt;type&gt;_msgrp_dtl_del</c> does.
+        /// the file byte-for-byte apart from the removed lines. Mirrors
+        /// <c>ba_&lt;type&gt;_msgrp_dtl_del</c>: deleting the base row (lang 1, cmpy 0) cascades to
+        /// every language/company variant of that msgno in the group, while deleting a
+        /// translation drops only that row and stamps the base row's upd_flg back to 'X'.
         /// </summary>
         public static DeleteMessageResult DeleteMessage(
             ResolvedProfile profile, string type, int msgno, int cmpy, int lang,
@@ -624,20 +644,44 @@ namespace ibsCompiler
             if (target == null)
                 return DeleteMessageResult.Fail(locateError!);
 
-            // Removing a translation makes the base row stale for the next compile.
-            var baseRow = (lang == 1 && cmpy == 0)
-                ? null
-                : file.Rows.FirstOrDefault(r => r.Msgno == msgno && r.Lang == 1 && r.Cmpy == 0);
+            bool isBase = lang == 1 && cmpy == 0;
+
+            // Deleting the base row takes the whole message with it — every language and
+            // company variant of that msgno in the same group — exactly as
+            // ba_<type>_msgrp_dtl_del does. Deleting a translation drops just that row and
+            // leaves the base row stale for the next compile.
+            List<int> doomed;
+            MsgRow? baseRow = null;
+            if (isBase)
+            {
+                doomed = file.Rows
+                    .Where(r => r.Msgno == msgno && r.Group == target.Group)
+                    .Select(r => r.LineIndex)
+                    .ToList();
+            }
+            else
+            {
+                doomed = new List<int> { target.LineIndex };
+                baseRow = file.Rows.FirstOrDefault(r => r.Msgno == msgno && r.Lang == 1 && r.Cmpy == 0);
+            }
 
             if (!dryRun)
             {
                 var segments = new List<byte[]>(file.RawLines);
                 if (baseRow != null) segments[baseRow.LineIndex] = PatchUpdFlg(baseRow.RawBytes, 'X');
-                segments.RemoveAt(target.LineIndex);
+                // Descending, so each removal leaves the lower indexes valid.
+                foreach (var idx in doomed.OrderByDescending(i => i))
+                    segments.RemoveAt(idx);
                 CommitLines(file, segments);
             }
 
-            return new DeleteMessageResult { Success = true, Msgno = msgno, DryRun = dryRun };
+            return new DeleteMessageResult
+            {
+                Success = true,
+                Msgno = msgno,
+                RowsDeleted = doomed.Count,
+                DryRun = dryRun,
+            };
         }
 
         /// <summary>

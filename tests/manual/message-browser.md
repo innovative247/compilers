@@ -60,9 +60,16 @@ compile_msg  MYPROFILE        # no flags -> legacy Import/Export/Add menu (regre
 
 ## Add message (reserved msgno contract)
 
-- [ ] type/group are fixed to the current selection; text is required (empty text cancels).
-- [ ] **No lang / cmpy / update-flag prompts** — a new message is always the base row
-      (lang 1, cmpy 0, flag `X`); variants come from Translate on the detail screen.
+- [ ] The form shows all four rows at once: dim read-only `s#msgno` with the **reserved**
+      number and `(reserved)`, then `Language` (default 1), `Company` (default 0), `Message`.
+- [ ] Up/Down moves between the three editable rows and **skips** the dim `s#msgno` row;
+      the cursor never lands above Language or below Message.
+- [ ] `Enter` on a row prompts `<Label> [<current>]: ` — a blank entry keeps the current
+      value, a new entry replaces it and the row redraws immediately.
+- [ ] A non-integer into Language/Company is refused inline (red message, value unchanged).
+- [ ] `Esc` cancels the whole form (nothing written). `S` saves.
+- [ ] Saving with an empty Message is refused; saving with Language≠1 or Company≠0 is
+      refused with the "use Translate" message (a new message is always the base row).
 - [ ] The dry-run preview shows the **reserved MSGNO** and the exact tab row before the
       y/N confirm; `N` writes nothing; `y` writes and prints green `MSGNO <n> saved.`
 - [ ] Re-add into the same group -> the reserved number advances (lowest free number in
@@ -83,15 +90,21 @@ compile_msg  MYPROFILE        # no flags -> legacy Import/Export/Add menu (regre
 - [ ] All row fields shown (msgno/cmpy/lang/group/flag/text).
 - [ ] The prompt line shows `Choice [98]: ` from the start — Back is the default; Delete
       (item `3`, a destructive action) is never defaulted and always requires explicit entry.
-- [ ] `1` Edit: prompts for text only (no update-flag prompt); Enter cancels; a real change
-      prints green `EDITED <msgno>` and bounces back to the refreshed Find list.
-- [ ] `2` Translate: shows the base text, prompts language / company / translated text,
-      previews the row, then y/N. Prints green `TRANSLATED <msgno> lang L cmpy C`. lang 1 +
-      cmpy 0 is refused; a lang/cmpy that already exists is refused.
+- [ ] `1` Edit: same four-row form; `s#msgno`, `Language` and `Company` are dim/read-only
+      (they are the row's key) and `Message` is pre-filled with the current text. Leaving
+      the text unchanged reports "Nothing changed"; a real change prints green
+      `EDITED <msgno>` and bounces back to the refreshed Find list.
+- [ ] `2` Translate: same form with `Message` pre-filled from the row, `Language` defaulting
+      to 1 `(1 = base)` and `Company` to 0 `(0 = all companies)`. Saving with both still at
+      the base values is refused ("needs a different language, a different company, or
+      both"). A lang/cmpy that already exists is refused. Success prints green
+      `TRANSLATED <msgno> lang L cmpy C`.
 - [ ] After a Translate, the **base row's flag reads `X`** in the refreshed Find list.
-- [ ] `3` Delete: requires typing `delete` to confirm; prints green `DELETED <msgno>`; the
-      row is gone from the refreshed Find list. Deleting a translation re-stamps the base
-      row's flag to `X`.
+- [ ] `3` Delete on a **translation**: removes just that row and re-stamps the base row's
+      flag to `X`.
+- [ ] `3` Delete on a **base row** with translations: warns in red that N translation(s)
+      go with it *before* the `delete` confirmation, and on confirm prints
+      `DELETED <msgno> (<n> rows)`; no row for that msgno survives in the Find list.
 - [ ] `98` Back returns without changes.
 
 ## Navigation / robustness
