@@ -1780,7 +1780,7 @@ namespace ibsCompiler
         /// </summary>
         public static readonly string[] SetMessagesBoolFlagNames = new[]
         {
-            "--import", "--export", "--yes", "--add", "--dry-run",
+            "--import", "--export", "--yes", "--add", "--translate", "--dry-run",
             // Wave-1 file-first action markers. These take NO operand of their own
             // (their data comes from --type/--group/--msgno/etc.), so they are bool
             // flags — StripLongFlags must not swallow the token that follows them.
@@ -1810,7 +1810,7 @@ namespace ibsCompiler
             // --import gets a clean error, not a stdin hang in the interactive menu.
             // This runs first for BOTH entry points (set_messages and compile_msg),
             // so every scripted/suite case routes here regardless of the split below.
-            if (args != null && CliArgs.AnyPresent(args, "--import", "--export", "--on-saved", "--yes", "--add", "--dry-run",
+            if (args != null && CliArgs.AnyPresent(args, "--import", "--export", "--on-saved", "--yes", "--add", "--translate", "--dry-run",
                                                           "--new-group", "--find", "--edit-msg", "--delete-msg"))
                 return RunSetMessagesHeadless(args, cmdvars, profile, executor);
 
@@ -1970,6 +1970,8 @@ namespace ibsCompiler
             // mutex, no GONZO guard). Dispatch them before any of that machinery.
             if (CliArgs.HasFlag(args, "--add"))
                 return RunAddMessageHeadless(args, profile);
+            if (CliArgs.HasFlag(args, "--translate"))
+                return RunTranslateMessageHeadless(args, profile);
             if (CliArgs.HasFlag(args, "--new-group"))
                 return RunNewGroupHeadless(args, profile);
             if (CliArgs.AnyPresent(args, "--find"))
@@ -2059,7 +2061,9 @@ namespace ibsCompiler
 
         /// <summary>
         /// Headless "add a message row directly to the flat files":
-        ///   set_messages PROFILE --add --type gui --group MENU --text "..." [--lang N] [--cmpy N] [--upd-flg X] [--dry-run]
+        ///   set_messages PROFILE --add --type gui --group MENU --text "..." [--dry-run]
+        /// The row is always the base message (lang 1, cmpy 0) with a derived upd_flg —
+        /// language/company variants go through --translate.
         /// Output contract:
         ///   success  -> exactly one stdout line "MSGNO &lt;n&gt;", exit 0
         ///   dry-run  -> "DRYRUN MSGNO &lt;n&gt;" then the row, exit 0, file untouched
@@ -2074,7 +2078,6 @@ namespace ibsCompiler
             var text = CliArgs.GetOption(args, "--text");
             var langStr = CliArgs.GetOption(args, "--lang");
             var cmpyStr = CliArgs.GetOption(args, "--cmpy");
-            var updFlgStr = CliArgs.GetOption(args, "--upd-flg");
             var dryRun = CliArgs.HasFlag(args, "--dry-run");
 
             if (string.IsNullOrEmpty(type))
@@ -2105,18 +2108,7 @@ namespace ibsCompiler
                 Console.Error.WriteLine("ERROR: --cmpy must be an integer.");
                 return 1;
             }
-            char? updFlg = null;
-            if (updFlgStr != null)
-            {
-                if (updFlgStr.Length != 1)
-                {
-                    Console.Error.WriteLine("ERROR: --upd-flg must be exactly one character.");
-                    return 1;
-                }
-                updFlg = updFlgStr[0];
-            }
-
-            var result = MessageFileEditor.AddMessage(profile, type, group, text, lang, cmpy, updFlg, dryRun);
+            var result = MessageFileEditor.AddMessage(profile, type, group, text, lang, cmpy, dryRun);
             if (!result.Success)
             {
                 Console.Error.WriteLine($"ERROR: {result.Error}");
@@ -2134,6 +2126,66 @@ namespace ibsCompiler
             {
                 Console.WriteLine($"MSGNO {result.Msgno}");
             }
+            return 0;
+        }
+
+        /// <summary>
+        /// Headless "translate an existing message" — a language and/or company variant
+        /// built on the base row, the file-first form of the GUI's Translate button:
+        ///   set_messages PROFILE --translate --type gui --msgno N --lang L [--cmpy C] --text "..." [--dry-run]
+        /// Output contract:
+        ///   success -> "TRANSLATED &lt;msgno&gt; lang &lt;L&gt; cmpy &lt;C&gt;", exit 0
+        ///   dry-run -> the same line prefixed DRYRUN, then the row, exit 0, file untouched
+        ///   failure -> "ERROR: &lt;reason&gt;" on stderr, exit 1
+        /// </summary>
+        private static int RunTranslateMessageHeadless(List<string> args, ResolvedProfile profile)
+        {
+            var type = CliArgs.GetOption(args, "--type");
+            var msgnoStr = CliArgs.GetOption(args, "--msgno");
+            var langStr = CliArgs.GetOption(args, "--lang");
+            var cmpyStr = CliArgs.GetOption(args, "--cmpy");
+            var text = CliArgs.GetOption(args, "--text");
+            var dryRun = CliArgs.HasFlag(args, "--dry-run");
+
+            if (string.IsNullOrEmpty(type))
+            {
+                Console.Error.WriteLine("ERROR: --translate requires --type (ibs|gui|sql|sqr|jam).");
+                return 1;
+            }
+            if (string.IsNullOrEmpty(msgnoStr) || !int.TryParse(msgnoStr, out var msgno))
+            {
+                Console.Error.WriteLine("ERROR: --translate requires --msgno <integer>.");
+                return 1;
+            }
+            if (string.IsNullOrEmpty(text))
+            {
+                Console.Error.WriteLine("ERROR: --translate requires --text.");
+                return 1;
+            }
+            // Either axis may vary: a language variant (--lang 2), a company override
+            // (--cmpy 5), or both. Each defaults to its base value.
+            int lang = 1;
+            if (!string.IsNullOrEmpty(langStr) && !int.TryParse(langStr, out lang))
+            {
+                Console.Error.WriteLine("ERROR: --lang must be an integer.");
+                return 1;
+            }
+            int cmpy = 0;
+            if (!string.IsNullOrEmpty(cmpyStr) && !int.TryParse(cmpyStr, out cmpy))
+            {
+                Console.Error.WriteLine("ERROR: --cmpy must be an integer.");
+                return 1;
+            }
+
+            var result = MessageFileEditor.TranslateMessage(profile, type, msgno, lang, cmpy, text, dryRun);
+            if (!result.Success)
+            {
+                Console.Error.WriteLine($"ERROR: {result.Error}");
+                return 1;
+            }
+
+            Console.WriteLine($"{(dryRun ? "DRYRUN TRANSLATED" : "TRANSLATED")} {result.Msgno} lang {lang} cmpy {cmpy}");
+            if (dryRun) Console.WriteLine(result.Row);
             return 0;
         }
 
@@ -2234,7 +2286,8 @@ namespace ibsCompiler
 
         /// <summary>
         /// Headless message edit:
-        ///   set_messages PROFILE --edit-msg --type T --msgno N --cmpy C --lang L (--text X | --upd-flg F | both) [--dry-run]
+        ///   set_messages PROFILE --edit-msg --type T --msgno N --cmpy C --lang L --text X [--dry-run]
+        /// upd_flg and chg_tm are re-derived on write, never supplied.
         /// Output contract:
         ///   success -> "EDITED &lt;msgno&gt;", exit 0 (dry-run also echoes the rebuilt row)
         ///   failure -> "ERROR: &lt;reason&gt;" on stderr, exit 1
@@ -2246,32 +2299,20 @@ namespace ibsCompiler
             var cmpyStr = CliArgs.GetOption(args, "--cmpy");
             var langStr = CliArgs.GetOption(args, "--lang");
             var newText = CliArgs.GetOption(args, "--text");
-            var updFlgStr = CliArgs.GetOption(args, "--upd-flg");
             var dryRun = CliArgs.HasFlag(args, "--dry-run");
 
             if (!TryParseEditKey(type, msgnoStr, cmpyStr, langStr, "--edit-msg", out var msgno, out var cmpy, out var lang))
                 return 1;
 
-            char? updFlg = null;
-            if (updFlgStr != null)
-            {
-                if (updFlgStr.Length != 1)
-                {
-                    Console.Error.WriteLine("ERROR: --upd-flg must be exactly one character.");
-                    return 1;
-                }
-                updFlg = updFlgStr[0];
-            }
-            // GetOption returns "" for a valueless --text; treat that as "no text supplied"
-            // so "--edit-msg ... " with neither field trips the requires-a-field guard.
+            // GetOption returns "" for a valueless --text; treat that as "no text supplied".
             var textArg = string.IsNullOrEmpty(newText) ? null : newText;
-            if (textArg == null && updFlg == null)
+            if (textArg == null)
             {
-                Console.Error.WriteLine("ERROR: --edit-msg requires --text and/or --upd-flg.");
+                Console.Error.WriteLine("ERROR: --edit-msg requires --text.");
                 return 1;
             }
 
-            var result = MessageFileEditor.UpdateMessage(profile, type!, msgno, cmpy, lang, textArg, updFlg, dryRun);
+            var result = MessageFileEditor.UpdateMessage(profile, type!, msgno, cmpy, lang, textArg, dryRun);
             if (!result.Success)
             {
                 Console.Error.WriteLine($"ERROR: {result.Error}");
@@ -2348,9 +2389,9 @@ namespace ibsCompiler
         }
 
         /// <summary>
-        /// Interactive "add a message" flow: prompt for type/group/text and the
-        /// optional lang/cmpy/upd-flg (Enter = defaults), show the computed msgno
-        /// and the exact tab row, confirm, then write.
+        /// Interactive "add a message" flow: prompt for type/group/text, show the
+        /// computed msgno and the exact tab row, confirm, then write. The row is
+        /// always the base message — lang/cmpy/upd_flg are not asked for.
         /// </summary>
         private static int RunAddMessageInteractive(ResolvedProfile profile)
         {
@@ -2361,35 +2402,9 @@ namespace ibsCompiler
             var group = (Console.ReadLine() ?? "").Trim();
             Console.Write("Message text: ");
             var text = Console.ReadLine() ?? "";
-            Console.Write("Language [1]: ");
-            var langStr = (Console.ReadLine() ?? "").Trim();
-            Console.Write("Company [0]: ");
-            var cmpyStr = (Console.ReadLine() ?? "").Trim();
-            Console.Write("Update flag (Enter = X for gui, space otherwise): ");
-            var updStr = Console.ReadLine() ?? "";
-
-            int lang = 1;
-            if (langStr.Length > 0 && !int.TryParse(langStr, out lang))
-            {
-                Console.Error.WriteLine("ERROR: language must be an integer.");
-                return 1;
-            }
-            int cmpy = 0;
-            if (cmpyStr.Length > 0 && !int.TryParse(cmpyStr, out cmpy))
-            {
-                Console.Error.WriteLine("ERROR: company must be an integer.");
-                return 1;
-            }
-            char? updFlg = null;
-            if (updStr.Length == 1) updFlg = updStr[0];
-            else if (updStr.Length > 1)
-            {
-                Console.Error.WriteLine("ERROR: update flag must be a single character.");
-                return 1;
-            }
 
             // Preview (dry-run) first so the user sees the computed number and row.
-            var preview = MessageFileEditor.AddMessage(profile, type, group, text, lang, cmpy, updFlg, dryRun: true);
+            var preview = MessageFileEditor.AddMessage(profile, type, group, text, dryRun: true);
             if (!preview.Success)
             {
                 Console.Error.WriteLine($"ERROR: {preview.Error}");
@@ -2409,7 +2424,7 @@ namespace ibsCompiler
                 return 0;
             }
 
-            var result = MessageFileEditor.AddMessage(profile, type, group, text, lang, cmpy, updFlg, dryRun: false);
+            var result = MessageFileEditor.AddMessage(profile, type, group, text, dryRun: false);
             if (!result.Success)
             {
                 Console.Error.WriteLine($"ERROR: {result.Error}");

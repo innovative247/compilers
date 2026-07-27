@@ -61,10 +61,12 @@ compile_msg  MYPROFILE        # no flags -> legacy Import/Export/Add menu (regre
 ## Add message (reserved msgno contract)
 
 - [ ] type/group are fixed to the current selection; text is required (empty text cancels).
-- [ ] lang default 1, cmpy default 0, upd-flg default `X` for gui / space otherwise.
+- [ ] **No lang / cmpy / update-flag prompts** — a new message is always the base row
+      (lang 1, cmpy 0, flag `X`); variants come from Translate on the detail screen.
 - [ ] The dry-run preview shows the **reserved MSGNO** and the exact tab row before the
       y/N confirm; `N` writes nothing; `y` writes and prints green `MSGNO <n> saved.`
-- [ ] Re-add into the same group -> the reserved number advances (global max+1 / block floor).
+- [ ] Re-add into the same group -> the reserved number advances (lowest free number in
+      the type's pool at or above the group's start #).
 
 ## Find (incremental search)
 
@@ -80,11 +82,16 @@ compile_msg  MYPROFILE        # no flags -> legacy Import/Export/Add menu (regre
 
 - [ ] All row fields shown (msgno/cmpy/lang/group/flag/text).
 - [ ] The prompt line shows `Choice [98]: ` from the start — Back is the default; Delete
-      (item `2`, a destructive action) is never defaulted and always requires explicit entry.
-- [ ] `1` Edit: Enter keeps current text/flag; a real change prints green `EDITED <msgno>`
-      and bounces back to the refreshed Find list (the edited row reflects the new text).
-- [ ] `2` Delete: requires typing `delete` to confirm; prints green `DELETED <msgno>`; the
-      row is gone from the refreshed Find list.
+      (item `3`, a destructive action) is never defaulted and always requires explicit entry.
+- [ ] `1` Edit: prompts for text only (no update-flag prompt); Enter cancels; a real change
+      prints green `EDITED <msgno>` and bounces back to the refreshed Find list.
+- [ ] `2` Translate: shows the base text, prompts language / company / translated text,
+      previews the row, then y/N. Prints green `TRANSLATED <msgno> lang L cmpy C`. lang 1 +
+      cmpy 0 is refused; a lang/cmpy that already exists is refused.
+- [ ] After a Translate, the **base row's flag reads `X`** in the refreshed Find list.
+- [ ] `3` Delete: requires typing `delete` to confirm; prints green `DELETED <msgno>`; the
+      row is gone from the refreshed Find list. Deleting a translation re-stamps the base
+      row's flag to `X`.
 - [ ] `98` Back returns without changes.
 
 ## Navigation / robustness

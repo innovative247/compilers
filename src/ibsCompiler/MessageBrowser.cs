@@ -78,7 +78,7 @@ namespace ibsCompiler
             {
                 Console.Error.WriteLine(
                     "interactive browser requires a terminal; use the headless flags "
-                    + "(--add/--find/--edit-msg/--delete-msg/--new-group/--import/--export)");
+                    + "(--add/--translate/--find/--edit-msg/--delete-msg/--new-group/--import/--export)");
                 return 1;
             }
 
@@ -417,23 +417,10 @@ namespace ibsCompiler
             var text = Console.ReadLine() ?? "";
             if (text.Length == 0) { Red("  Cancelled (empty text)."); return; }
 
-            Console.Write("  Language [1]: ");
-            var langStr = (Console.ReadLine() ?? "").Trim();
-            int lang = 1;
-            if (langStr.Length > 0 && !int.TryParse(langStr, out lang)) { Red("  Language must be an integer."); return; }
-
-            Console.Write("  Company [0]: ");
-            var cmpyStr = (Console.ReadLine() ?? "").Trim();
-            int cmpy = 0;
-            if (cmpyStr.Length > 0 && !int.TryParse(cmpyStr, out cmpy)) { Red("  Company must be an integer."); return; }
-
-            Console.Write($"  Update flag [Enter = {(lt.Type == "gui" ? "X" : "space")}]: ");
-            var updStr = Console.ReadLine() ?? "";
-            char? updFlg = null;
-            if (updStr.Length == 1) updFlg = updStr[0];
-            else if (updStr.Length > 1) { Red("  Update flag must be a single character."); return; }
-
-            var preview = MessageFileEditor.AddMessage(profile, lt.Type, group, text, lang, cmpy, updFlg, dryRun: true);
+            // Language, company and update flag are not asked for: a new message is
+            // always the base row (lang 1 / cmpy 0, flag 'X'), and variants are made
+            // with Translate from the message's detail screen.
+            var preview = MessageFileEditor.AddMessage(profile, lt.Type, group, text, dryRun: true);
             if (!preview.Success) { Red($"  ERROR: {preview.Error}"); return; }
             if (preview.Warning != null) { var p = Console.ForegroundColor; Console.ForegroundColor = ConsoleColor.Yellow; Console.WriteLine($"  WARNING: {preview.Warning}"); Console.ForegroundColor = p; }
 
@@ -445,7 +432,7 @@ namespace ibsCompiler
             var ans = (Console.ReadLine() ?? "").Trim().ToLowerInvariant();
             if (ans != "y" && ans != "yes") { Console.WriteLine("  Cancelled."); return; }
 
-            var result = MessageFileEditor.AddMessage(profile, lt.Type, group, text, lang, cmpy, updFlg, dryRun: false);
+            var result = MessageFileEditor.AddMessage(profile, lt.Type, group, text, dryRun: false);
             if (!result.Success) { Red($"  ERROR: {result.Error}"); return; }
             Green($"  MSGNO {result.Msgno} saved.");
         }
@@ -714,7 +701,8 @@ namespace ibsCompiler
                 Console.WriteLine($"    text  : {row.Text}");
                 Console.WriteLine();
                 Console.WriteLine("   1. Edit");
-                Console.WriteLine("   2. Delete");
+                Console.WriteLine("   2. Translate (new language / company)");
+                Console.WriteLine("   3. Delete");
                 Console.WriteLine("  98. Back");
                 Console.WriteLine();
 
@@ -723,27 +711,25 @@ namespace ibsCompiler
                 if (string.IsNullOrEmpty(choice) || choice == "98") return changed;
                 if (choice == "1")
                 {
-                    Console.Write("  New text (Enter keeps current): ");
+                    // The update flag and change time are derived on write, never typed.
+                    Console.Write("  New text (Enter cancels): ");
                     var nt = Console.ReadLine();
-                    string? newText = string.IsNullOrEmpty(nt) ? null : nt;
-
-                    Console.Write("  New update flag (Enter keeps): ");
-                    var nf = Console.ReadLine() ?? "";
-                    char? newFlg = null;
-                    if (nf.Length == 1) newFlg = nf[0];
-                    else if (nf.Length > 1) { Red("  Update flag must be a single character."); continue; }
-
-                    if (newText == null && newFlg == null) { Console.WriteLine("  Nothing changed."); continue; }
+                    if (string.IsNullOrEmpty(nt)) { Console.WriteLine("  Nothing changed."); continue; }
 
                     var res = MessageFileEditor.UpdateMessage(
                         profile, lt.Type, row.Msgno, row.Cmpy, row.Lang,
-                        newText, newFlg, dryRun: false, lineIndex: row.LineIndex);
+                        nt, dryRun: false, lineIndex: row.LineIndex);
                     if (!res.Success) { Red($"  ERROR: {res.Error}"); continue; }
                     Green($"  EDITED {res.Msgno}");
                     changed = true;
                     return changed; // the row's LineIndex/text are now stale — bounce to the refreshed list.
                 }
                 else if (choice == "2")
+                {
+                    if (TranslateFlow(profile, lt, row)) { changed = true; return changed; }
+                    continue;
+                }
+                else if (choice == "3")
                 {
                     Console.Write($"  Type 'delete' to remove message {row.Msgno}: ");
                     var conf = (Console.ReadLine() ?? "").Trim();
@@ -759,6 +745,53 @@ namespace ibsCompiler
                 }
                 else Red($"  No action {choice}.");
             }
+        }
+
+        // ================================================================
+        // Translate — build a language / company variant on the base message
+        // (the GUI's Translate button). Returns true when the file changed.
+        // ================================================================
+        private static bool TranslateFlow(ResolvedProfile profile, MessageFileEditor.LiveType lt, MessageFileEditor.MsgRow row)
+        {
+            Console.WriteLine();
+            Cyan($"  Translate {lt.Label} message {row.Msgno}");
+            Dim($"  Base (lang 1 / cmpy 0): {row.Text}");
+            Console.WriteLine();
+
+            Console.Write("  Language [1 = leave as base]: ");
+            var langStr = (Console.ReadLine() ?? "").Trim();
+            int lang = 1;
+            if (langStr.Length > 0 && !int.TryParse(langStr, out lang)) { Red("  Language must be an integer."); return false; }
+
+            Console.Write("  Company [0 = all companies]: ");
+            var cmpyStr = (Console.ReadLine() ?? "").Trim();
+            int cmpy = 0;
+            if (cmpyStr.Length > 0 && !int.TryParse(cmpyStr, out cmpy)) { Red("  Company must be an integer."); return false; }
+
+            if (lang == 1 && cmpy == 0)
+            {
+                Red("  A translation needs a different language and/or company than the base row.");
+                return false;
+            }
+
+            Console.Write("  Translated text: ");
+            var text = Console.ReadLine() ?? "";
+            if (text.Length == 0) { Red("  Cancelled (empty text)."); return false; }
+
+            var preview = MessageFileEditor.TranslateMessage(profile, lt.Type, row.Msgno, lang, cmpy, text, dryRun: true);
+            if (!preview.Success) { Red($"  ERROR: {preview.Error}"); return false; }
+
+            Console.WriteLine();
+            Console.WriteLine("  Row: " + preview.Row.Replace("\t", " | "));
+            Dim("  The base row's update flag is stamped 'X' so the next compile picks it up.");
+            Console.Write("  Write this translation? (y/N): ");
+            var ans = (Console.ReadLine() ?? "").Trim().ToLowerInvariant();
+            if (ans != "y" && ans != "yes") { Console.WriteLine("  Cancelled."); return false; }
+
+            var res = MessageFileEditor.TranslateMessage(profile, lt.Type, row.Msgno, lang, cmpy, text, dryRun: false);
+            if (!res.Success) { Red($"  ERROR: {res.Error}"); return false; }
+            Green($"  TRANSLATED {res.Msgno} lang {lang} cmpy {cmpy}");
+            return true;
         }
     }
 }

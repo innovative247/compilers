@@ -1481,20 +1481,114 @@ function Test-Messages {
         if ($cols[3].Length -ne 6) { throw "grp column must be padded to 6 chars, got '$($cols[3])' (len $($cols[3].Length))" }
         if ($cols[3] -ne 'MENU  ') { throw "grp column should be 'MENU  ', got '$($cols[3])'" }
     }
-    Test-Case 'set_messages.add_updflg_default_gui_X' {
+    Test-Case 'set_messages.add_updflg_base_is_X' {
+        # upd_flg is derived, never supplied: a base row (lang 1 / cmpy 0) is 'X'
+        # for every message type, exactly as ba_<type>_msgrp_dtl_new writes it.
         Reset-MsgFixture
         $r = Invoke-Cli set_messages '--add' '--type' 'gui' '--group' 'MENU' '--text' 'GuiFlag' $script:TestProfile
         Assert-ExitCode $r
         $cols = (([System.IO.File]::ReadAllLines($guiMsg))[-1]) -split "`t"
-        if ($cols[4] -ne 'X') { throw "gui upd_flg should default to 'X', got '$($cols[4])'" }
-    }
-    Test-Case 'set_messages.add_updflg_default_ibs_space' {
-        Reset-MsgFixture
+        if ($cols[4] -ne 'X') { throw "gui base upd_flg should be 'X', got '$($cols[4])'" }
+
         $r = Invoke-Cli set_messages '--add' '--type' 'ibs' '--group' 'CORE' '--text' 'IbsFlag' $script:TestProfile
         Assert-ExitCode $r
         if ($r.StdOut.Trim() -ne 'MSGNO 201') { throw "expected 'MSGNO 201', got: '$($r.StdOut)'" }
         $cols = (([System.IO.File]::ReadAllLines($ibsMsg))[-1]) -split "`t"
-        if ($cols[4] -ne ' ') { throw "ibs upd_flg should default to a single space, got '$($cols[4])'" }
+        if ($cols[4] -ne 'X') { throw "ibs base upd_flg should be 'X', got '$($cols[4])'" }
+    }
+    Test-Case 'set_messages.add_non_base_rejected' {
+        # New only ever creates the base row - ba_<type>_msgrp_dtl_new raises 403
+        # for any other lang/cmpy. Variants must go through --translate.
+        Reset-MsgFixture
+        $r = Invoke-Cli set_messages '--add' '--type' 'gui' '--group' 'MENU' '--text' 'Danish' '--lang' '2' $script:TestProfile
+        if ($r.ExitCode -eq 0) { throw 'adding a non-base lang must fail' }
+        if ($r.StdErr -notmatch 'translate') { throw "stderr should point at --translate: $($r.StdErr)" }
+    }
+    Test-Case 'set_messages.add_upd_flg_flag_gone' {
+        # The old --upd-flg escape hatch is gone; it must not silently win.
+        Reset-MsgFixture
+        $r = Invoke-Cli set_messages '--add' '--type' 'gui' '--group' 'MENU' '--text' 'FlagIgnored' '--upd-flg' 'Z' $script:TestProfile
+        Assert-ExitCode $r
+        $cols = (([System.IO.File]::ReadAllLines($guiMsg))[-1]) -split "`t"
+        if ($cols[4] -ne 'X') { throw "upd_flg must stay derived ('X'), got '$($cols[4])'" }
+    }
+
+    # ===== set_messages --translate (language / company variant of a base row) =====
+    Test-Case 'set_messages.translate_headless' {
+        Reset-MsgFixture
+        $before = [System.IO.File]::ReadAllLines($guiMsg).Count
+        $r = Invoke-Cli set_messages '--translate' '--type' 'gui' '--msgno' '100' '--lang' '2' '--text' 'Foerste menubesked' $script:TestProfile
+        Assert-ExitCode $r
+        if ($r.StdOut.Trim() -ne 'TRANSLATED 100 lang 2 cmpy 0') { throw "unexpected stdout: '$($r.StdOut)'" }
+        $lines = [System.IO.File]::ReadAllLines($guiMsg)
+        if ($lines.Count -ne $before + 1) { throw "expected exactly one new line (was $before, now $($lines.Count))" }
+        $cols = $lines[-1] -split "`t"
+        if ($cols[0] -ne '100')    { throw "msgno should be 100, got '$($cols[0])'" }
+        if ($cols[1] -ne '2')      { throw "lang should be 2, got '$($cols[1])'" }
+        if ($cols[2] -ne '0')      { throw "cmpy should be 0, got '$($cols[2])'" }
+        if ($cols[3] -ne 'MENU  ') { throw "group should be inherited from the base row, got '$($cols[3])'" }
+        if ($cols[4] -ne ' ')      { throw "translation upd_flg should be blank, got '$($cols[4])'" }
+        # ...and the base row is stamped 'X' (ba_<type>_msgrp_dtl_trans).
+        $baseCols = $lines[0] -split "`t"
+        if ($baseCols[4] -ne 'X') { throw "base row upd_flg should be stamped 'X', got '$($baseCols[4])'" }
+    }
+    Test-Case 'set_messages.translate_company_variant' {
+        Reset-MsgFixture
+        $r = Invoke-Cli set_messages '--translate' '--type' 'gui' '--msgno' '100' '--cmpy' '5' '--text' 'Company five text' $script:TestProfile
+        Assert-ExitCode $r
+        if ($r.StdOut.Trim() -ne 'TRANSLATED 100 lang 1 cmpy 5') { throw "unexpected stdout: '$($r.StdOut)'" }
+        $cols = (([System.IO.File]::ReadAllLines($guiMsg))[-1]) -split "`t"
+        if ($cols[1] -ne '1' -or $cols[2] -ne '5') { throw "expected lang 1 / cmpy 5, got '$($cols[1])'/'$($cols[2])'" }
+    }
+    Test-Case 'set_messages.translate_base_rejected' {
+        Reset-MsgFixture
+        $r = Invoke-Cli set_messages '--translate' '--type' 'gui' '--msgno' '100' '--lang' '1' '--cmpy' '0' '--text' 'X' $script:TestProfile
+        if ($r.ExitCode -eq 0) { throw 'translating to lang 1 / cmpy 0 must fail' }
+        if ($r.StdErr -notmatch 'base message') { throw "stderr should name the base message: $($r.StdErr)" }
+    }
+    Test-Case 'set_messages.translate_requires_base' {
+        Reset-MsgFixture
+        $r = Invoke-Cli set_messages '--translate' '--type' 'gui' '--msgno' '999' '--lang' '2' '--text' 'X' $script:TestProfile
+        if ($r.ExitCode -eq 0) { throw 'translating a msgno with no base row must fail' }
+        if ($r.StdErr -notmatch 'no base message') { throw "stderr should say there is no base row: $($r.StdErr)" }
+    }
+    Test-Case 'set_messages.translate_duplicate_rejected' {
+        # 101 already has a lang-2 row in the fixture.
+        Reset-MsgFixture
+        $r = Invoke-Cli set_messages '--translate' '--type' 'gui' '--msgno' '101' '--lang' '2' '--text' 'X' $script:TestProfile
+        if ($r.ExitCode -eq 0) { throw 'a second row for the same lang/cmpy must fail' }
+        if ($r.StdErr -notmatch 'already has') { throw "stderr should report the existing row: $($r.StdErr)" }
+    }
+    Test-Case 'set_messages.translate_dryrun_no_write' {
+        Reset-MsgFixture
+        $hashBefore = (Get-FileHash $guiMsg -Algorithm SHA256).Hash
+        $r = Invoke-Cli set_messages '--translate' '--dry-run' '--type' 'gui' '--msgno' '100' '--lang' '2' '--text' 'Preview' $script:TestProfile
+        Assert-ExitCode $r
+        if ($r.StdOut -notmatch 'DRYRUN TRANSLATED 100 lang 2 cmpy 0') { throw "expected a DRYRUN line: $($r.StdOut)" }
+        if ((Get-FileHash $guiMsg -Algorithm SHA256).Hash -ne $hashBefore) { throw 'dry-run must not touch the file' }
+    }
+    Test-Case 'set_messages.translate_preserves_raw_bytes' {
+        # Stamping the base row must not re-encode any line - the raw 0xE9 row (line 5)
+        # and every other untouched line stay byte-identical.
+        Reset-MsgFixture
+        $before = Get-RawLines $guiMsg
+        $r = Invoke-Cli set_messages '--translate' '--type' 'gui' '--msgno' '100' '--lang' '2' '--text' 'Bytes' $script:TestProfile
+        Assert-ExitCode $r
+        $after = Get-RawLines $guiMsg
+        if ($after.Count -ne $before.Count + 1) { throw "expected one appended line (was $($before.Count), now $($after.Count))" }
+        for ($i = 1; $i -lt $before.Count; $i++) {   # line 0 is the stamped base row
+            if ((Get-BytesHash $after[$i]) -ne (Get-BytesHash $before[$i])) { throw "untouched line $i was altered" }
+        }
+    }
+    Test-Case 'set_messages.delete_translation_stamps_base' {
+        # ba_<type>_msgrp_dtl_del re-flags the base row when a translation goes away.
+        Reset-MsgFixture
+        $r = Invoke-Cli set_messages '--delete-msg' '--yes' '--type' 'gui' '--msgno' '101' '--cmpy' '0' '--lang' '2' $script:TestProfile
+        Assert-ExitCode $r
+        $lines = [System.IO.File]::ReadAllLines($guiMsg)
+        $base = $lines | Where-Object { $_ -like "101`t1`t0`t*" }
+        $cols = $base -split "`t"
+        if ($cols[4] -ne 'X') { throw "base row upd_flg should be stamped 'X', got '$($cols[4])'" }
     }
 
     # ===== set_messages --new-group (append a css.<type>_msgrp definition) =====
@@ -1604,7 +1698,7 @@ function Test-Messages {
     Test-Case 'set_messages.edit_requires_field' {
         Reset-MsgFixture
         $r = Invoke-Cli set_messages '--edit-msg' '--type' 'gui' '--msgno' '100' '--cmpy' '0' '--lang' '1' $script:TestProfile
-        if ($r.ExitCode -eq 0) { throw 'edit with neither --text nor --upd-flg must fail' }
+        if ($r.ExitCode -eq 0) { throw 'edit without --text must fail' }
         if ($r.StdErr -notmatch 'requires --text') { throw "stderr should require a field: $($r.StdErr)" }
     }
 

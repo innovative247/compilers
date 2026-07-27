@@ -43,7 +43,7 @@ namespace ibsCompiler
         /// </summary>
         public static AddMessageResult AddMessage(
             ResolvedProfile profile, string type, string group, string text,
-            int lang = 1, int cmpy = 0, char? updFlg = null, bool dryRun = false)
+            int lang = 1, int cmpy = 0, bool dryRun = false)
         {
             // ---- input validation (before touching the filesystem) ----
             var t = (type ?? "").Trim().ToLowerInvariant();
@@ -66,10 +66,13 @@ namespace ibsCompiler
             if (text.IndexOf('\r') >= 0 || text.IndexOf('\n') >= 0)
                 return AddMessageResult.Fail("message text may not contain a carriage return or newline");
 
-            if (lang < 0)
-                return AddMessageResult.Fail("lang must be >= 0");
-            if (cmpy < 0)
-                return AddMessageResult.Fail("cmpy must be >= 0");
+            // ba_<type>_msgrp_dtl_new rejects anything but the base row: New creates
+            // the lang=1/cmpy=0 master, and every other lang/cmpy combination is a
+            // translation built on top of it (ba_<type>_msgrp_dtl_trans).
+            if (lang != 1 || cmpy != 0)
+                return AddMessageResult.Fail(
+                    "a new message is always the base row (lang 1, cmpy 0); " +
+                    "use --translate to add a language/company variant of an existing message");
 
             var setupDir = ibs_compiler_common.GetPath_Setup(profile);
             var msgPath = Path.Combine(setupDir, $"css.{t}_msg");
@@ -145,7 +148,7 @@ namespace ibsCompiler
                     $"(pool {DescribePool(t)} is exhausted)");
 
             // ---- build the row ----
-            char flag = updFlg ?? (t == "gui" ? 'X' : ' ');
+            char flag = DerivedUpdFlg(lang, cmpy);
             var grpPadded = groupKey.PadRight(6);
             var chgTm = ibs_compiler_common.SecondsSince1980();
             var row = string.Join("\t",
@@ -179,6 +182,16 @@ namespace ibsCompiler
 
             return result;
         }
+
+        /// <summary>
+        /// The update flag is derived, never entered. Every maintenance proc
+        /// (<c>ba_&lt;type&gt;_msgrp_dtl_new/_upd/_trans/_del</c>) computes it the same way:
+        /// the base row (lang 1, cmpy 0) carries <c>'X'</c>, every translation row carries
+        /// blank. It is a "changed since last compile" marker on the base row —
+        /// <c>i_compile_&lt;type&gt;_messages</c> clears the whole column when it compiles.
+        /// Because the column is <c>char(1)</c>, a blank lands in the flat file as one space.
+        /// </summary>
+        public static char DerivedUpdFlg(int lang, int cmpy) => (lang == 1 && cmpy == 0) ? 'X' : ' ';
 
         /// <summary>
         /// Allocatable message-number ranges per type, mirroring the pool each
@@ -312,6 +325,20 @@ namespace ibsCompiler
             public string? Error { get; set; }
             public bool DryRun { get; set; }
             public static UpdateMessageResult Fail(string error) => new() { Success = false, Error = error };
+        }
+
+        /// <summary>Outcome of a Translate: the appended variant row plus the base row it was built on.</summary>
+        public sealed class TranslateMessageResult
+        {
+            public bool Success { get; set; }
+            public int Msgno { get; set; }
+            public string Group { get; set; } = "";
+            /// <summary>The base (lang 1, cmpy 0) text, so a caller can show what was translated.</summary>
+            public string BaseText { get; set; } = "";
+            public string Row { get; set; } = "";
+            public string? Error { get; set; }
+            public bool DryRun { get; set; }
+            public static TranslateMessageResult Fail(string error) => new() { Success = false, Error = error };
         }
 
         public sealed class DeleteMessageResult
@@ -527,13 +554,13 @@ namespace ibsCompiler
         /// Update a single message row located by (msgno, cmpy, lang). When
         /// <paramref name="lineIndex"/> is supplied (TUI disambiguation) it is used directly
         /// after verifying it matches the key; otherwise two or more matching rows are an
-        /// ambiguity error. At least one of newText/newUpdFlg is required. The row's bytes are
-        /// rebuilt (7 cols, refreshed chg_tm) and the whole file is rewritten byte-for-byte
-        /// except for that one line.
+        /// ambiguity error. The row's bytes are rebuilt (7 cols, re-derived upd_flg, refreshed
+        /// chg_tm — exactly what <c>ba_&lt;type&gt;_msgrp_dtl_upd</c> writes) and the whole file
+        /// is rewritten byte-for-byte except for that one line.
         /// </summary>
         public static UpdateMessageResult UpdateMessage(
             ResolvedProfile profile, string type, int msgno, int cmpy, int lang,
-            string? newText = null, char? newUpdFlg = null, bool dryRun = false, int? lineIndex = null)
+            string? newText = null, bool dryRun = false, int? lineIndex = null)
         {
             var t = NormalizeType(type);
             if ((type ?? "").Trim().Equals("rpt", StringComparison.OrdinalIgnoreCase))
@@ -541,10 +568,9 @@ namespace ibsCompiler
             if (t == null)
                 return UpdateMessageResult.Fail($"unknown message type '{type}' (expected one of {string.Join("|", ValidTypes)})");
 
-            if (newText == null && newUpdFlg == null)
-                return UpdateMessageResult.Fail("nothing to update (supply new text and/or an update flag)");
+            if (newText == null)
+                return UpdateMessageResult.Fail("nothing to update (supply the new message text)");
 
-            if (newText != null)
             {
                 var bytes = System.Text.Encoding.UTF8.GetByteCount(newText);
                 if (bytes > 255)
@@ -561,8 +587,8 @@ namespace ibsCompiler
             if (target == null)
                 return UpdateMessageResult.Fail(locateError!);
 
-            var text = newText ?? target.Text;
-            var flag = newUpdFlg ?? target.UpdFlg;
+            var text = newText;
+            var flag = DerivedUpdFlg(lang, cmpy);
             var chgTm = ibs_compiler_common.SecondsSince1980();
             var newRow = string.Join("\t",
                 msgno.ToString(), lang.ToString(), cmpy.ToString(),
@@ -577,7 +603,8 @@ namespace ibsCompiler
         /// <summary>
         /// Delete a single message row located by (msgno, cmpy, lang), with the same keying and
         /// ambiguity rules as <see cref="UpdateMessage"/>. Drops the physical line and rewrites
-        /// the file byte-for-byte apart from the removed line.
+        /// the file byte-for-byte apart from the removed line. Deleting a translation also stamps
+        /// the base row's upd_flg back to 'X', the way <c>ba_&lt;type&gt;_msgrp_dtl_del</c> does.
         /// </summary>
         public static DeleteMessageResult DeleteMessage(
             ResolvedProfile profile, string type, int msgno, int cmpy, int lang,
@@ -597,10 +624,94 @@ namespace ibsCompiler
             if (target == null)
                 return DeleteMessageResult.Fail(locateError!);
 
+            // Removing a translation makes the base row stale for the next compile.
+            var baseRow = (lang == 1 && cmpy == 0)
+                ? null
+                : file.Rows.FirstOrDefault(r => r.Msgno == msgno && r.Lang == 1 && r.Cmpy == 0);
+
             if (!dryRun)
-                RewriteFile(file, target.LineIndex, null, delete: true);
+            {
+                var segments = new List<byte[]>(file.RawLines);
+                if (baseRow != null) segments[baseRow.LineIndex] = PatchUpdFlg(baseRow.RawBytes, 'X');
+                segments.RemoveAt(target.LineIndex);
+                CommitLines(file, segments);
+            }
 
             return new DeleteMessageResult { Success = true, Msgno = msgno, DryRun = dryRun };
+        }
+
+        /// <summary>
+        /// Build a language and/or company variant on top of an existing base message —
+        /// the file-first equivalent of <c>ba_&lt;type&gt;_msgrp_dtl_trans</c> (the GUI's
+        /// "Translate" button). The base row (lang 1, cmpy 0) supplies the group and must
+        /// exist; the new row is appended with a blank upd_flg and a fresh chg_tm, and the
+        /// base row is stamped 'X' so the next compile picks the message up. Both writes land
+        /// in one atomic file replace.
+        /// </summary>
+        public static TranslateMessageResult TranslateMessage(
+            ResolvedProfile profile, string type, int msgno, int lang, int cmpy,
+            string text, bool dryRun = false)
+        {
+            var t = NormalizeType(type);
+            if ((type ?? "").Trim().Equals("rpt", StringComparison.OrdinalIgnoreCase))
+                return TranslateMessageResult.Fail("rpt messages are not part of the live pipeline");
+            if (t == null)
+                return TranslateMessageResult.Fail($"unknown message type '{type}' (expected one of {string.Join("|", ValidTypes)})");
+
+            if (lang == 1 && cmpy == 0)
+                return TranslateMessageResult.Fail(
+                    "lang 1 / cmpy 0 is the base message, not a translation (use --add or --edit-msg)");
+            if (lang < 0) return TranslateMessageResult.Fail("lang must be >= 0");
+            if (cmpy < 0) return TranslateMessageResult.Fail("cmpy must be >= 0");
+
+            if (text == null || text.Length == 0)
+                return TranslateMessageResult.Fail("translated text is required");
+            var textBytes = System.Text.Encoding.UTF8.GetByteCount(text);
+            if (textBytes > 255)
+                return TranslateMessageResult.Fail($"message text exceeds 255 bytes (got {textBytes})");
+            if (text.IndexOf('\r') >= 0 || text.IndexOf('\n') >= 0)
+                return TranslateMessageResult.Fail("message text may not contain a carriage return or newline");
+
+            var file = LoadFile(profile, t);
+            if (!File.Exists(file.Path))
+                return TranslateMessageResult.Fail($"message file not found: {file.Path}");
+
+            var baseRows = file.Rows.Where(r => r.Msgno == msgno && r.Lang == 1 && r.Cmpy == 0).ToList();
+            if (baseRows.Count == 0)
+                return TranslateMessageResult.Fail(
+                    $"no base message {msgno} (lang 1, cmpy 0) in css.{t}_msg — a translation needs one to build on");
+            if (baseRows.Count > 1)
+                return TranslateMessageResult.Fail(
+                    $"ambiguous ({baseRows.Count} base rows for msgno {msgno}); fix the duplicate before translating");
+            var baseRow = baseRows[0];
+
+            if (file.Rows.Any(r => r.Msgno == msgno && r.Lang == lang && r.Cmpy == cmpy))
+                return TranslateMessageResult.Fail(
+                    $"msgno {msgno} already has a lang {lang} / cmpy {cmpy} row (use --edit-msg to change it)");
+
+            var chgTm = ibs_compiler_common.SecondsSince1980();
+            var row = string.Join("\t",
+                msgno.ToString(), lang.ToString(), cmpy.ToString(),
+                baseRow.Group.PadRight(6), DerivedUpdFlg(lang, cmpy).ToString(),
+                chgTm.ToString(), text);
+
+            if (!dryRun)
+            {
+                var segments = new List<byte[]>(file.RawLines);
+                segments[baseRow.LineIndex] = PatchUpdFlg(baseRow.RawBytes, 'X');
+                segments.Add(System.Text.Encoding.UTF8.GetBytes(row));
+                CommitLines(file, segments);
+            }
+
+            return new TranslateMessageResult
+            {
+                Success = true,
+                Msgno = msgno,
+                Group = baseRow.Group,
+                BaseText = baseRow.Text,
+                Row = row,
+                DryRun = dryRun,
+            };
         }
 
         /// <summary>
@@ -652,7 +763,38 @@ namespace ibsCompiler
             var segments = new List<byte[]>(file.RawLines);
             if (delete) segments.RemoveAt(targetIndex);
             else segments[targetIndex] = newLine!;
+            CommitLines(file, segments);
+        }
 
+        /// <summary>
+        /// Replace column 5 (upd_flg) of a physical line, leaving every other byte alone —
+        /// the base row can hold legacy non-UTF-8 text that must survive a flag stamp.
+        /// Lines that do not have 7 tab-delimited columns come back untouched.
+        /// </summary>
+        private static byte[] PatchUpdFlg(byte[] raw, char flag)
+        {
+            var fields = new List<(int Start, int Len)>();
+            int start = 0;
+            for (int i = 0; i < raw.Length; i++)
+            {
+                if (raw[i] != 0x09) continue;
+                fields.Add((start, i - start));
+                start = i + 1;
+            }
+            fields.Add((start, raw.Length - start));
+            if (fields.Count < 7) return raw;
+
+            var (fs, fl) = fields[4];
+            var patched = new byte[raw.Length - fl + 1];
+            Array.Copy(raw, 0, patched, 0, fs);
+            patched[fs] = (byte)flag;
+            Array.Copy(raw, fs + fl, patched, fs + 1, raw.Length - fs - fl);
+            return patched;
+        }
+
+        /// <summary>Atomically write <paramref name="segments"/> as the file's physical lines (LF-joined, original trailing-newline behaviour).</summary>
+        private static void CommitLines(MsgFile file, List<byte[]> segments)
+        {
             using var ms = new MemoryStream();
             for (int i = 0; i < segments.Count; i++)
             {
