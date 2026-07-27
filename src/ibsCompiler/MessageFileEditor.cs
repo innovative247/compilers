@@ -80,8 +80,6 @@ namespace ibsCompiler
             // ---- parse css.<type>_msg ----
             var allMsgnos = new HashSet<int>();
             var groupMsgnos = new List<int>();
-            string? collisionOwner = null;
-            var msgnoOwner = new Dictionary<int, string>();
             int duplicateInGroup = 0;
 
             foreach (var line in File.ReadAllLines(msgPath))
@@ -93,7 +91,6 @@ namespace ibsCompiler
 
                 allMsgnos.Add(msgno);
                 var rowGroup = cols[3].Trim().ToUpperInvariant();
-                if (!msgnoOwner.ContainsKey(msgno)) msgnoOwner[msgno] = rowGroup;
 
                 if (rowGroup == groupKey)
                 {
@@ -130,31 +127,22 @@ namespace ibsCompiler
                     $"unknown group '{groupKey}' (no rows in css.{t}_msg and no entry in css.{t}_msgrp)");
 
             // ---- next number ----
-            int next;
-            if (knownInMsg)
-            {
-                next = groupMsgnos.Max() + 1;
-            }
+            // Same rule the database uses (ba_<type>_msgrp_dtl_mod / _alloc):
+            // the lowest number in the type's allocatable pool that is free
+            // across every group, at or above the group's s#minmsg floor.
+            // s#minmsg is a floor, never a ceiling — blocks interleave, so
+            // "group max + 1" would walk straight into the next group.
+            int floor;
+            if (knownInMsgrp)
+                floor = Math.Max(0, minMsgByGroup[groupKey]);
             else
-            {
-                // Group is known only via css.<type>_msgrp (no live rows yet).
-                // A positive s#minmsg seeds the block at that floor. A zero
-                // (or absent) floor means "no reserved block" — fall back to the
-                // global next-free number so the group can still be populated.
-                var min = minMsgByGroup[groupKey];
-                if (min > 0)
-                    next = min;
-                else
-                    next = allMsgnos.Count > 0 ? allMsgnos.Max() + 1 : 1;
-            }
+                floor = groupMsgnos.Min(); // group exists only as live rows — stay in its own range
 
-            // ---- hard collision guard: number must be free everywhere ----
-            if (allMsgnos.Contains(next))
-            {
-                msgnoOwner.TryGetValue(next, out collisionOwner);
+            int next = NextFreeMsgno(t, floor, allMsgnos);
+            if (next < 0)
                 return AddMessageResult.Fail(
-                    $"message number {next} is already in use (block exhausted / overlaps group {collisionOwner ?? "?"})");
-            }
+                    $"no free {t} message number at or above {floor} " +
+                    $"(pool {DescribePool(t)} is exhausted)");
 
             // ---- build the row ----
             char flag = updFlg ?? (t == "gui" ? 'X' : ' ');
@@ -190,6 +178,46 @@ namespace ibsCompiler
             }
 
             return result;
+        }
+
+        /// <summary>
+        /// Allocatable message-number ranges per type, mirroring the pool each
+        /// <c>ba_unused_&lt;type&gt;_msg_rebuild</c> proc builds from <c>&amp;integers&amp;</c>.
+        /// A number outside these ranges can never be handed out by the database,
+        /// so the file-first path must not invent one either.
+        /// </summary>
+        private static readonly Dictionary<string, (int Lo, int Hi)[]> MsgnoPools =
+            new(StringComparer.OrdinalIgnoreCase)
+            {
+                // ba_unused_gui_msg_rebuild: no <= 9999, plus no+10000 for no in 3000..10000
+                ["gui"] = new[] { (1, 9999), (13000, 20000) },
+                ["ibs"] = new[] { (1, 10000) },
+                ["sqr"] = new[] { (1, 10000) },
+                ["jam"] = new[] { (1, 3000) },
+                ["sql"] = new[] { (1, 2000) },
+            };
+
+        /// <summary>Human-readable pool description for error text, e.g. "1-9999,13000-20000".</summary>
+        private static string DescribePool(string type) =>
+            MsgnoPools.TryGetValue(type, out var ranges)
+                ? string.Join(",", ranges.Select(r => $"{r.Lo}-{r.Hi}"))
+                : "?";
+
+        /// <summary>
+        /// Lowest number in <paramref name="type"/>'s pool that is >= <paramref name="floor"/>
+        /// and not present in <paramref name="used"/>. Returns -1 when the pool is exhausted
+        /// at or above the floor.
+        /// </summary>
+        public static int NextFreeMsgno(string type, int floor, HashSet<int> used)
+        {
+            if (!MsgnoPools.TryGetValue(type, out var ranges)) return -1;
+            foreach (var (lo, hi) in ranges)
+            {
+                var start = Math.Max(lo, floor);
+                for (var n = start; n <= hi; n++)
+                    if (!used.Contains(n)) return n;
+            }
+            return -1;
         }
 
         /// <summary>

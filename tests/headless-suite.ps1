@@ -1378,34 +1378,45 @@ function Test-Messages {
         Assert-ExitCode $r
         if ($r.StdOut.Trim() -ne 'MSGNO 500') { throw "expected 'MSGNO 500', got: '$($r.StdOut)'" }
     }
-    Test-Case 'set_messages.add_zero_minmsg_global_maxplus1' {
-        # ZEROG: empty in _msg and s#minmsg=0. The file-first rule seeds an empty
-        # zero-floor group at the GLOBAL max+1 (fixture max is 750 -> 751) instead
-        # of erroring; the collision guard still runs afterward.
+    Test-Case 'set_messages.add_zero_minmsg_pool_low' {
+        # ZEROG: empty in _msg and s#minmsg=0. Floor 0 means the whole gui pool is
+        # fair game, so the DB rule (min unused >= floor) hands out 1, not max+1.
         Reset-MsgFixture
         $before = [System.IO.File]::ReadAllLines($guiMsg).Count
         $r = Invoke-Cli set_messages '--add' '--type' 'gui' '--group' 'ZEROG' '--text' 'ZeroSeed' $script:TestProfile
         Assert-ExitCode $r
-        if ($r.StdOut.Trim() -ne 'MSGNO 751') { throw "expected 'MSGNO 751', got: '$($r.StdOut)'" }
+        if ($r.StdOut.Trim() -ne 'MSGNO 1') { throw "expected 'MSGNO 1', got: '$($r.StdOut)'" }
         $after = [System.IO.File]::ReadAllLines($guiMsg)
         if ($after.Count -ne $before + 1) { throw "expected exactly one new line (was $before, now $($after.Count))" }
     }
-    Test-Case 'set_messages.add_crosses_seed_now_succeeds' {
-        # SPAN's max+1 (751) sits above LOWSED's sparse seed (720). s#minmsg is a
-        # floor/seed list, not a partition map, so the old block-ceiling guard
-        # falsely rejected this. 751 is free everywhere -> the add must now SUCCEED.
+    Test-Case 'set_messages.add_fills_gap_above_floor' {
+        # SPAN owns 700 and 750 with floor 700. The old max+1 rule jumped to 751
+        # (into whatever owns the next block); the DB rule fills the gap at 701.
         Reset-MsgFixture
-        $r = Invoke-Cli set_messages '--add' '--type' 'gui' '--group' 'SPAN' '--text' 'CrossSeed' $script:TestProfile
+        $r = Invoke-Cli set_messages '--add' '--type' 'gui' '--group' 'SPAN' '--text' 'GapFill' $script:TestProfile
         Assert-ExitCode $r
-        if ($r.StdOut.Trim() -ne 'MSGNO 751') { throw "expected 'MSGNO 751', got: '$($r.StdOut)'" }
+        if ($r.StdOut.Trim() -ne 'MSGNO 701') { throw "expected 'MSGNO 701', got: '$($r.StdOut)'" }
     }
-    Test-Case 'set_messages.add_collision_errors' {
-        # COLL seeds at 100 which MENU already owns -> hard collision guard fires.
+    Test-Case 'set_messages.add_seed_taken_skips_to_next_free' {
+        # COLL seeds at 100 which MENU already owns. s#minmsg is a floor, not a
+        # reservation -> allocation walks up to the first free number (102).
         Reset-MsgFixture
         $r = Invoke-Cli set_messages '--add' '--type' 'gui' '--group' 'COLL' '--text' 'X' $script:TestProfile
-        if ($r.ExitCode -eq 0) { throw 'collision with existing number must fail' }
-        if ($r.StdErr -notmatch 'already in use|block exhausted|overlaps') {
-            throw "stderr should explain the collision: $($r.StdErr)"
+        Assert-ExitCode $r
+        if ($r.StdOut.Trim() -ne 'MSGNO 102') { throw "expected 'MSGNO 102', got: '$($r.StdOut)'" }
+    }
+    Test-Case 'set_messages.add_pool_exhausted_errors' {
+        # HIGH's floor sits above the top of the gui pool (20000) -> no number can
+        # be allocated and the add must fail rather than invent one.
+        Reset-MsgFixture
+        Write-LfFile $guiMsgrp @(
+            "MENU  `t100`tMenu messages"
+            "HIGH  `t20001`tFloor above the top of the gui pool"
+        )
+        $r = Invoke-Cli set_messages '--add' '--type' 'gui' '--group' 'HIGH' '--text' 'X' $script:TestProfile
+        if ($r.ExitCode -eq 0) { throw 'floor above the pool must fail' }
+        if ($r.StdErr -notmatch 'no free gui message number') {
+            throw "stderr should explain pool exhaustion: $($r.StdErr)"
         }
     }
     Test-Case 'set_messages.add_unknown_group_errors' {
@@ -1501,10 +1512,10 @@ function Test-Messages {
         if (-not $raw.EndsWith("`n")) { throw 'file must end with a trailing newline' }
         $bytes = [System.IO.File]::ReadAllBytes($guiMsgrp)
         if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) { throw 'file must not have a UTF-8 BOM' }
-        # A brand-new zero-floor group must then take a msgno at the global max+1 (751).
+        # A brand-new zero-floor group draws from the bottom of the pool (1).
         $add = Invoke-Cli set_messages '--add' '--type' 'gui' '--group' 'NEWGRP' '--text' 'FirstNewGrp' $script:TestProfile
         Assert-ExitCode $add
-        if ($add.StdOut.Trim() -ne 'MSGNO 751') { throw "add into NEWGRP expected 'MSGNO 751', got: '$($add.StdOut)'" }
+        if ($add.StdOut.Trim() -ne 'MSGNO 1') { throw "add into NEWGRP expected 'MSGNO 1', got: '$($add.StdOut)'" }
     }
     Test-Case 'set_messages.new_group_dryrun_no_write' {
         Reset-MsgFixture
