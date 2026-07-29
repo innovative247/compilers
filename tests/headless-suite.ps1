@@ -1635,12 +1635,25 @@ function Test-Messages {
     # ===== set_messages --find (search rows) =====
     Test-Case 'set_messages.find_headless' {
         Reset-MsgFixture
-        # text term (case-insensitive) -> the three 'menu' rows.
-        $r = Invoke-Cli set_messages '--find' 'menu' '--type' 'gui' $script:TestProfile
+        # Bare term is EXACT (no implied wildcard) -> 'menu' is nobody's whole text.
+        $r0 = Invoke-Cli set_messages '--find' 'menu' '--type' 'gui' $script:TestProfile
+        Assert-ExitCode $r0
+        if ($r0.StdOut.Trim() -ne 'FOUND 0') { throw "bare term must be exact, expected 'FOUND 0', got: $($r0.StdOut)" }
+        # *term* = contains (case-insensitive) -> the three 'menu' rows.
+        $r = Invoke-Cli set_messages '--find' '*menu*' '--type' 'gui' $script:TestProfile
         Assert-ExitCode $r
-        if ($r.StdOut -notmatch '(?m)^FOUND 3\r?$') { throw "text term expected 'FOUND 3', got: $($r.StdOut)" }
+        if ($r.StdOut -notmatch '(?m)^FOUND 3\r?$') { throw "'*menu*' expected 'FOUND 3', got: $($r.StdOut)" }
         if ($r.StdOut -notmatch '(?m)^MATCH 100\t0\t1\tMENU\t') { throw "expected a MATCH row for msgno 100: $($r.StdOut)" }
-        # numeric term -> msgno-substring hits (101 appears on two languages).
+        # trailing wildcard = starts-with -> 'First menu message' only.
+        $rp = Invoke-Cli set_messages '--find' 'First*' '--type' 'gui' $script:TestProfile
+        Assert-ExitCode $rp
+        if ($rp.StdOut -notmatch '(?m)^FOUND 1\r?$') { throw "'First*' expected 'FOUND 1', got: $($rp.StdOut)" }
+        # leading wildcard = ends-with -> only the 'fr' translation row.
+        $rs = Invoke-Cli set_messages '--find' '*fr' '--type' 'gui' $script:TestProfile
+        Assert-ExitCode $rs
+        if ($rs.StdOut -notmatch '(?m)^FOUND 1\r?$') { throw "'*fr' expected 'FOUND 1', got: $($rs.StdOut)" }
+        if ($rs.StdOut -notmatch '(?m)^MATCH 101\t0\t2\tMENU\t') { throw "'*fr' should hit 101/lang2: $($rs.StdOut)" }
+        # exact numeric term -> msgno hits (101 appears on two languages).
         $r2 = Invoke-Cli set_messages '--find' '101' '--type' 'gui' $script:TestProfile
         Assert-ExitCode $r2
         if ($r2.StdOut -notmatch '(?m)^FOUND 2\r?$') { throw "numeric term expected 'FOUND 2', got: $($r2.StdOut)" }

@@ -7,6 +7,7 @@ const string Usage = "Usage: set_messages <server/profile> [-U user] [-P pass] [
     + "       set_messages <server/profile> --translate --type <t> --msgno N [--lang L] [--cmpy C] --text <msg> [--dry-run]\n"
     + "       set_messages <server/profile> --new-group --type <t> --group <grp> --desc <text> [--start N] [--dry-run]\n"
     + "       set_messages <server/profile> --find <term> --type <t> [--group <grp>] [--cmpy N] [--lang N]\n"
+    + "                    (--find is exact; use * to widen: 'or' | '*or*' | '*or' | 'or*')\n"
     + "       set_messages <server/profile> --edit-msg --type <t> --msgno N --cmpy C --lang L --text <msg> [--dry-run]\n"
     + "       set_messages <server/profile> --delete-msg --type <t> --msgno N --cmpy C --lang L (--yes | --dry-run)";
 if (!VersionCheck.CheckForUpdates("set_messages", args, Usage)) return 0;

@@ -582,9 +582,9 @@ namespace ibsCompiler
             Console.WriteLine($"  Reserved MSGNO {preview.Msgno}");
             Console.WriteLine("  Row: " + preview.Row.Replace("\t", " | "));
             Console.WriteLine();
-            Console.Write("  Write this message? (y/N): ");
+            Console.Write("  Write this message? (Y/n): ");
             var ans = (Console.ReadLine() ?? "").Trim().ToLowerInvariant();
-            if (ans != "y" && ans != "yes") { Console.WriteLine("  Cancelled."); return; }
+            if (ans == "n" || ans == "no") { Console.WriteLine("  Cancelled."); return; }
 
             var result = MessageFileEditor.AddMessage(profile, lt.Type, group, text, dryRun: false);
             if (!result.Success) { Red($"  ERROR: {result.Error}"); return; }
@@ -683,7 +683,7 @@ namespace ibsCompiler
                 if (lang.HasValue) chips += $"  [lang={lang}]";
                 Console.Write(Fit($"  Filter: {filter}_" + chips, w));
                 Console.SetCursorPosition(0, headerRow + 1);
-                Console.Write(Fit($"  showing {results.Count} of {file.Rows.Count}", w));
+                Console.Write(Fit($"  showing {results.Count} of {file.Rows.Count}   (* = wildcard: or | *or* | *or)", w));
             }
 
             void RenderWindow()
@@ -817,7 +817,7 @@ namespace ibsCompiler
         {
             Console.WriteLine();
             Cyan($"  Find in {lt.Label} messages (compact)");
-            Console.Write("  Search term (blank = all): ");
+            Console.Write("  Search term (blank = all, * = wildcard, e.g. *or*): ");
             var term = Console.ReadLine() ?? "";
             var results = MessageFileEditor.FindMessages(file, lt.Type, term);
             if (results.Count == 0) { Console.WriteLine("  No matches."); return Nav.Back; }
