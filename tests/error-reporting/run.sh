@@ -43,9 +43,9 @@ inline_sql() {
         | sed 's/[ ]*$//'
 }
 
-# check_outcome <label> <expect> <exit-code> <output>; appends to FAILURES on mismatch.
+# check_outcome <label> <expect> <must_contain> <exit-code> <output>; appends to FAILURES.
 check_outcome() {
-    local label="$1" expect="$2" code="$3" out="$4" needle hits
+    local label="$1" expect="$2" must="$3" code="$4" out="$5" needle hits rest
     if [ "$expect" = "ok" ]; then
         if [ "$code" -ne 0 ]; then
             FAILURES="$FAILURES
@@ -58,6 +58,19 @@ $out"
   $label - expected success but an error was reported. output:
 $out"
             return 1
+        fi
+        if [ -n "$must" ] && [ "$must" != "-" ]; then
+            rest="$must"
+            while [ -n "$rest" ]; do
+                needle="${rest%%|*}"
+                if [ "$rest" = "$needle" ]; then rest=""; else rest="${rest#*|}"; fi
+                if ! printf '%s' "$out" | grep -qF "$needle"; then
+                    FAILURES="$FAILURES
+  $label - expected '$needle' in the rendered output. output:
+$out"
+                    return 1
+                fi
+            done
         fi
         return 0
     fi
@@ -98,8 +111,8 @@ run_platform() {
     echo
     echo "--- $name ($profile.$database) ---"
 
-    local id file expect sqlfile inline out code problems
-    while IFS=$'\t' read -r id file c_syb c_ms c_pg; do
+    local id file expect must sqlfile inline out code problems
+    while IFS=$'\t' read -r id file c_syb c_ms c_pg must; do
         case "$id" in '#'*|'id'|'') continue ;; esac
         case "$column" in
             2) expect="$c_syb" ;;
@@ -116,10 +129,10 @@ run_platform() {
 
         inline="$(inline_sql "$sqlfile")"
         out="$("$ISQLLINE" "$inline" "$database" "$profile" 2>&1)"; code=$?
-        check_outcome "$id/isqlline" "$expect" "$code" "$out" || problems=1
+        check_outcome "$id/isqlline" "$expect" "$must" "$code" "$out" || problems=1
 
         out="$("$RUNSQL" "$sqlfile" "$database" "$profile" --changelog:n 2>&1)"; code=$?
-        check_outcome "$id/runsql" "$expect" "$code" "$out" || problems=1
+        check_outcome "$id/runsql" "$expect" "$must" "$code" "$out" || problems=1
 
         if [ "$problems" -eq 0 ]; then
             echo "[PASS]  $id"; PASS=$((PASS+1))

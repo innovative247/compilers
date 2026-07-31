@@ -395,6 +395,22 @@ function Test-AdHocQueries {
         $hits = ([regex]::Matches($combined, 'Msg 208')).Count
         if ($hits -ne 1) { throw "expected exactly one 'Msg 208' block, got $hits. output: $combined" }
     }
+    Test-Case 'isqlline.sybase_decimal_scale' {
+        # AseClient returns numeric/money as a Decimal with the scale already stripped,
+        # so 1.00 arrived as 1 and printed as "1" where isql and SQL Server print "1.00".
+        # SybaseExecutor re-applies the declared scale; money reports NumericScale = -1
+        # and is resolved from the type name (always 4 places).
+        $r = Invoke-Cli isqlline 'select(convert(numeric(10,3),2.5)),(convert(money,12.5)),(convert(int,7))' 'master' 'GONZO'
+        Assert-ExitCode $r
+        $out = $r.StdOut
+        foreach ($needle in @('2.500', '12.5000')) {
+            if ($out -notmatch [regex]::Escape($needle)) {
+                throw "expected '$needle' - declared decimal scale must survive rendering. stdout: $out"
+            }
+        }
+        # Integer columns must NOT pick up decimal places.
+        if ($out -match '\b7\.0') { throw "int column was formatted as a decimal. stdout: $out" }
+    }
     Test-Case 'isqlline.error_postgres_exit_code' {
         # ExecReturn is a struct: RunChunk once took it by value, so every Postgres error
         # printed its message and still exited 0. Needs a LIVE server, so it runs against

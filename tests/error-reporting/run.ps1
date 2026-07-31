@@ -46,7 +46,7 @@ function Invoke-Capture {
 }
 
 function Test-Outcome {
-    param([string]$Label, [string]$Expect, $Result)
+    param([string]$Label, [string]$Expect, [string]$MustContain, $Result)
 
     $out = $Result.Output
     if ($Expect -eq 'ok') {
@@ -55,6 +55,13 @@ function Test-Outcome {
         }
         if ($out -match '(?m)^\s*Msg ') {
             return "$Label - expected success but an error was reported. output:`n$out"
+        }
+        if ($MustContain -and $MustContain -ne '-') {
+            foreach ($needle in $MustContain.Split('|')) {
+                if ($out -notmatch [regex]::Escape($needle)) {
+                    return "$Label - expected '$needle' in the rendered output. output:`n$out"
+                }
+            }
         }
         return $null
     }
@@ -94,9 +101,10 @@ function Invoke-Platform {
     Write-Host "--- $Name ($profileName.$database) ---" -ForegroundColor Cyan
 
     foreach ($row in $script:Cases) {
-        $expect = $row[$Column]
-        $file   = Join-Path (Join-Path $root 'cases') $row[1]
-        $id     = $row[0]
+        $expect      = $row[$Column]
+        $mustContain = $row[5]
+        $file        = Join-Path (Join-Path $root 'cases') $row[1]
+        $id          = $row[0]
 
         if ($expect -eq 'n/a') {
             Write-Host "[SKIP]  $id" -ForegroundColor DarkGray
@@ -108,11 +116,11 @@ function Invoke-Platform {
 
         $inline = Get-InlineSql $file
         $r = Invoke-Capture $isqlline @($inline, $database, $profileName)
-        $p = Test-Outcome "$id/isqlline" $expect $r
+        $p = Test-Outcome "$id/isqlline" $expect $mustContain $r
         if ($p) { $problems += $p }
 
         $r = Invoke-Capture $runsql @($file, $database, $profileName, '--changelog:n')
-        $p = Test-Outcome "$id/runsql" $expect $r
+        $p = Test-Outcome "$id/runsql" $expect $mustContain $r
         if ($p) { $problems += $p }
 
         if ($problems.Count -eq 0) {
@@ -132,7 +140,7 @@ foreach ($line in (Get-Content (Join-Path $root 'cases.tsv'))) {
     if ($line -match '^\s*#' -or $line.Trim() -eq '') { continue }
     $cols = $line -split "`t"
     if ($cols[0] -eq 'id') { continue }   # header
-    if ($cols.Count -lt 5) { throw "malformed cases.tsv row: $line" }
+    if ($cols.Count -lt 6) { throw "malformed cases.tsv row: $line" }
     $script:Cases += ,$cols
 }
 

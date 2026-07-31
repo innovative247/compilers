@@ -59,7 +59,8 @@ executor and the original bug was equally invisible in both.
 must exit non-zero **and** print that substring **exactly once** — a second copy means
 the error is being reported twice (the driver's info-message channel *and* the
 exception it also raises, which is a real hazard for errors raised before the first
-result set, where both fire).
+result set, where both fire). `must_contain` is a pipe-separated list of substrings that
+must all appear, checked only where the case is expected to succeed.
 
 | Case | What it covers |
 |------|----------------|
@@ -69,24 +70,21 @@ result set, where both fire).
 | `error-after-rows` | Error raised *after* rows have already streamed to the console. |
 | `missing-table` | Error raised *before* any result set — the path that always worked. Guards the de-dupe. |
 | `raiserror` | An explicit server-raised error. |
-| `money-and-decimal` | `select 1 * 1.00 ,1* $1` — succeeds on Sybase/SQL Server, and on PostgreSQL `$1` is a bind placeholder, so it must be reported as an error rather than silently returning. |
+| `money-and-decimal` | `select 1 * 1.00 ,1* $1` — succeeds on Sybase/SQL Server and must render `1.00` / `1.0000` on both; on PostgreSQL `$1` is a bind placeholder, so it must be reported as an error rather than silently returning. |
+| `decimal-scales` | `numeric(10,3)`, `money`, `int` and `float` in one row — each must keep its declared number of decimal places, and the non-decimal types must be left alone. |
 
-## Known divergence (not an error-reporting defect)
+## Numeric scale
 
-`money-and-decimal` renders differently per platform:
+The last two cases guard a defect found alongside the error reporting one: the AseClient
+returns `numeric` / `money` values as a `Decimal` whose scale has already been stripped,
+so `1.00` arrived as `1` and printed as `"1"` where `isql` and SQL Server print `1.00`.
+`SybaseExecutor` now re-applies the column's declared scale (`DeclaredScale`), taking it
+from the schema table's `NumericScale` and from the type name for `money`/`smallmoney`,
+which ASE reports as `NumericScale = -1` despite both being fixed at 4 decimal places.
 
-| Platform | Output |
-|----------|--------|
-| SQL Server | `1.00` and `1.0000` |
-| Sybase ASE | `1` and `1` |
-
-The AseClient returns those `numeric(14,2)` / `money` values as a `Decimal` with the
-scale already stripped, so the trailing zeros are gone before the renderer sees them.
-`isql` prints `1.00`. The corpus deliberately does **not** assert the rendered value —
-it is a numeric-formatting fidelity issue, separate from error reporting, and fixing it
-means either formatting to the schema's `NumericScale` in `SybaseExecutor` (the `money`
-type reports `NumericScale = -1`, so it needs a type-name special case) or fixing the
-driver. Left open on purpose.
+`must_contain` is checked on every platform where the case is expected to succeed, so
+these cases assert that Sybase and SQL Server render **identical** values — which is the
+property that was broken.
 
 ## Relationship to the main suite
 

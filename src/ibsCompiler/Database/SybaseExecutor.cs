@@ -519,6 +519,36 @@ namespace ibsCompiler.Database
             } while (await reader.NextResultAsync());
         }
 
+        // Declared scale of a decimal column, or -1 when it can't be established (leave the
+        // value formatted as the driver handed it over).
+        //
+        // ASE reports money/smallmoney with NumericScale = -1 in the schema table even though
+        // both are fixed at 4 decimal places, so those are resolved from the type name. Plain
+        // numeric/decimal columns carry a usable NumericScale. When diagnostics are active the
+        // schema table is deliberately not fetched (it would dump the server's plan tokens),
+        // so only the type-name cases can be resolved — acceptable, since a query plan is not
+        // a result grid anyone reads values off.
+        private static int DeclaredScale(System.Data.Common.DbDataReader reader, System.Data.DataTable? schema, int i)
+        {
+            try
+            {
+                var typeName = (reader.GetDataTypeName(i) ?? "").Trim().ToLowerInvariant();
+                if (typeName == "money" || typeName == "smallmoney") return 4;
+            }
+            catch { }
+
+            if (schema == null || i >= schema.Rows.Count) return -1;
+            try
+            {
+                var raw = schema.Rows[i]["NumericScale"];
+                if (raw == DBNull.Value) return -1;
+                int scale = Convert.ToInt32(raw);
+                // 0..38 is the only meaningful range; ASE uses -1/255 as "not applicable".
+                return (scale >= 0 && scale <= 38) ? scale : -1;
+            }
+            catch { return -1; }
+        }
+
         private async System.Threading.Tasks.Task StreamOneResultSetAsync(System.Data.Common.DbDataReader reader, Action<string> emit)
         {
             int colCount = reader.FieldCount;
@@ -533,6 +563,7 @@ namespace ibsCompiler.Database
             var widths = new int[colCount];
             var names = new string[colCount];
             var isNumeric = new bool[colCount];
+            var scales = new int[colCount];
 
             for (int i = 0; i < colCount; i++)
             {
@@ -541,6 +572,7 @@ namespace ibsCompiler.Database
                 isNumeric[i] = t == typeof(int) || t == typeof(long) || t == typeof(short) ||
                                t == typeof(decimal) || t == typeof(double) || t == typeof(float) ||
                                t == typeof(byte);
+                scales[i] = t == typeof(decimal) ? DeclaredScale(reader, schema, i) : -1;
 
                 // Default when no schema (diagnostics mode / lookup failure): use the
                 // type's known render width for fixed types, else the variable-width cap
@@ -592,7 +624,21 @@ namespace ibsCompiler.Database
                 line.Clear();
                 for (int i = 0; i < colCount; i++)
                 {
-                    string val = reader.IsDBNull(i) ? "NULL" : (reader[i].ToString() ?? "").TrimEnd();
+                    string val;
+                if (reader.IsDBNull(i))
+                {
+                    val = "NULL";
+                }
+                else
+                {
+                    var v = reader[i];
+                    // AseClient hands back numeric/money values as a Decimal whose scale has
+                    // already been stripped, so 1.00 arrives as 1 and plain ToString() prints
+                    // "1" where isql prints "1.00". Re-apply the column's declared scale.
+                    val = (scales[i] >= 0 && v is decimal d)
+                        ? d.ToString("F" + scales[i], System.Globalization.CultureInfo.InvariantCulture)
+                        : (v.ToString() ?? "").TrimEnd();
+                }
                     if (val.Length > widths[i]) val = val.Substring(0, widths[i]);
                     if (i > 0) line.Append(' ');
                     line.Append(isNumeric[i] ? val.PadLeft(widths[i]) : val.PadRight(widths[i]));
