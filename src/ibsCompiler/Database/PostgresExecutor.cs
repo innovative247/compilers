@@ -167,7 +167,7 @@ namespace ibsCompiler.Database
                 {
                     if (string.IsNullOrWhiteSpace(chunk)) continue;
                     if (ExitRegex.IsMatch(chunk.Trim())) break;
-                    RunChunk(conn, chunk, sink.Emit, result);
+                    RunChunk(conn, chunk, sink.Emit, ref result);
                 }
             }
             catch (Exception ex)
@@ -204,7 +204,7 @@ namespace ibsCompiler.Database
             try
             {
                 if (!string.IsNullOrWhiteSpace(batch) && _persistentConn != null)
-                    RunChunk(_persistentConn, batch, sink.Emit, result);
+                    RunChunk(_persistentConn, batch, sink.Emit, ref result);
             }
             catch (Exception ex)
             {
@@ -230,7 +230,10 @@ namespace ibsCompiler.Database
         // Execute one GO-chunk as individual statements (D3). A PostgresException aborts the
         // REMAINDER of the current chunk (server batch-abort behavior) but not the whole run —
         // the caller moves on to the next GO-chunk.
-        private void RunChunk(NpgsqlConnection conn, string chunk, Action<string> emit, ExecReturn result)
+        // `result` MUST be by-ref: ExecReturn is a struct (CommandVariables.cs:80), so a
+        // by-value parameter would take the failure flag to the grave and every PG error
+        // would print but still exit 0.
+        private void RunChunk(NpgsqlConnection conn, string chunk, Action<string> emit, ref ExecReturn result)
         {
             foreach (var stmt in SplitStatements(chunk))
             {
@@ -309,8 +312,11 @@ namespace ibsCompiler.Database
         // message text, plus Where/Line when the server supplied them.
         private static void EmitPgException(PostgresException ex, Action<string> emit)
         {
+            // NOTE: ex.Line is the PG *server source* line (errors.c:872), not the user's SQL —
+            // reporting it as "Line" is actively misleading. ex.Position is the 1-based
+            // character offset into the statement that was sent, which is what the user can act on.
             var header = $"Msg {ex.SqlState}, Severity {ex.Severity}";
-            if (!string.IsNullOrEmpty(ex.Line)) header += $", Line {ex.Line}";
+            if (ex.Position > 0) header += $", Position {ex.Position}";
             emit(header);
             emit(ex.MessageText);
             if (!string.IsNullOrEmpty(ex.Where)) emit(ex.Where);

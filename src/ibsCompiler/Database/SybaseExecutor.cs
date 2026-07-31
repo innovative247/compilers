@@ -18,6 +18,17 @@ namespace ibsCompiler.Database
         // messages stream as the server emits them.
         private Action<string>? _emit;
 
+        // Severe errors already written for the batch currently executing, and whether any
+        // were seen at all. Reset per batch by BeginBatch.
+        private readonly HashSet<string> _batchErrorKeys = new();
+        private bool _batchHadError;
+
+        private void BeginBatch()
+        {
+            _batchErrorKeys.Clear();
+            _batchHadError = false;
+        }
+
         // True once the session has a diagnostic mode active (set showplan/statistics/
         // noexec ON). ASE keeps these for the life of the connection; tracked across
         // batches by UpdateDiagnostics.
@@ -184,6 +195,7 @@ namespace ibsCompiler.Database
                     if (ExitRegex.IsMatch(batch.Trim())) break;
                     _skipSchemaForCurrentBatch = _diagnosticsActive; // state BEFORE this batch
                     UpdateDiagnostics(batch);
+                    BeginBatch();
                     try
                     {
                         using var cmd = new AseCommand(batch, connection);
@@ -199,6 +211,9 @@ namespace ibsCompiler.Database
                         EmitAseException(ex, sink.Emit);
                         result.Returncode = false;
                     }
+
+                    // Streaming-mode errors never throw — they only arrive via InfoMessage.
+                    if (_batchHadError) result.Returncode = false;
                 }
             }
             catch (Exception ex)
@@ -237,6 +252,7 @@ namespace ibsCompiler.Database
                 {
                     _skipSchemaForCurrentBatch = _diagnosticsActive; // state BEFORE this batch
                     UpdateDiagnostics(batch);
+                    BeginBatch();
                     using var cmd = new AseCommand(batch, _persistentConn);
                     cmd.CommandTimeout = 0;
 
@@ -250,6 +266,8 @@ namespace ibsCompiler.Database
             }
             finally
             {
+                // Streaming-mode errors never throw — they only arrive via InfoMessage.
+                if (_batchHadError) result.Returncode = false;
                 _emit = null;
                 sink.Dispose();
             }
@@ -291,7 +309,21 @@ namespace ibsCompiler.Database
             if (emit == null) return;
             foreach (AseError err in e.Errors)
             {
-                if (err.Severity >= 11) continue; // errors handled by AseException catch
+                // Severe (>10) errors arrive here too — and in streaming mode they arrive
+                // ONLY here. AseClient's StreamingDataReaderTokenHandler raises its
+                // AseException on the background pump thread AFTER the reader has been
+                // handed back, so anything the server reports once a result set has begun
+                // (arithmetic overflow 3606, divide by zero 3607, conversion 249, a
+                // raiserror inside a proc that already returned rows) never reaches the
+                // caller's catch. Emit it here and record it, so the run fails; errors
+                // that DO also surface as an AseException are de-duped by ErrorKey.
+                if (err.Severity >= 11)
+                {
+                    _batchErrorKeys.Add(ErrorKey(err));
+                    _batchHadError = true;
+                    EmitAseError(err, emit);
+                    continue;
+                }
                 var msg = err.Message;
                 if (msg.StartsWith("Changed client character set") ||
                     msg.StartsWith("Changed database context") ||
@@ -301,26 +333,37 @@ namespace ibsCompiler.Database
             }
         }
 
-        private static void EmitAseException(AseException ex, Action<string> emit)
+        // Identity of a server error, used to suppress the duplicate when the same error is
+        // reported both via InfoMessage and via the AseException thrown from ExecuteReader.
+        private static string ErrorKey(AseError err) =>
+            $"{err.MessageNumber}|{err.State}|{err.LineNum}|{err.Message}";
+
+        private void EmitAseException(AseException ex, Action<string> emit)
         {
             foreach (AseError err in ex.Errors)
             {
-                emit($"Msg {err.MessageNumber}, Level {err.Severity}, State {err.State}:");
-
-                var hasServer = !string.IsNullOrEmpty(err.ServerName);
-                var hasProc = !string.IsNullOrEmpty(err.ProcName);
-                var hasLine = err.LineNum > 0;
-                if (hasServer || hasProc || hasLine)
-                {
-                    var parts = new List<string>();
-                    if (hasServer) parts.Add($"Server '{err.ServerName}'");
-                    if (hasProc) parts.Add($"Procedure '{err.ProcName}'");
-                    if (hasLine) parts.Add($"Line {err.LineNum}");
-                    emit(string.Join(", ", parts) + ":");
-                }
-
-                emit(err.Message);
+                if (!_batchErrorKeys.Add(ErrorKey(err))) continue; // already emitted via InfoMessage
+                EmitAseError(err, emit);
             }
+        }
+
+        private static void EmitAseError(AseError err, Action<string> emit)
+        {
+            emit($"Msg {err.MessageNumber}, Level {err.Severity}, State {err.State}:");
+
+            var hasServer = !string.IsNullOrEmpty(err.ServerName);
+            var hasProc = !string.IsNullOrEmpty(err.ProcName);
+            var hasLine = err.LineNum > 0;
+            if (hasServer || hasProc || hasLine)
+            {
+                var parts = new List<string>();
+                if (hasServer) parts.Add($"Server '{err.ServerName}'");
+                if (hasProc) parts.Add($"Procedure '{err.ProcName}'");
+                if (hasLine) parts.Add($"Line {err.LineNum}");
+                emit(string.Join(", ", parts) + ":");
+            }
+
+            emit(err.Message);
         }
 
         public ExecReturn BulkCopy(string table, BcpDirection direction, string dataFile, string formatFile = "")

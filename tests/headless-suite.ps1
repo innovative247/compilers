@@ -373,6 +373,41 @@ function Test-AdHocQueries {
         if ($combined -notmatch "Server '") { throw "expected a Server '...' context line. output: $combined" }
         if ($combined -notmatch ', Line ') { throw "expected a ', Line N' context. output: $combined" }
     }
+    Test-Case 'isqlline.error_midstream_sybase' {
+        # An error the server raises AFTER a result set has begun (arithmetic overflow)
+        # reaches the client ONLY through InfoMessage in streaming mode -- AseClient's
+        # AseException fires on its background pump thread after the reader was handed
+        # back, so it never reaches our catch. Regression: this used to print rows and
+        # exit 0 with no error text at all.
+        $r = Invoke-Cli isqlline 'select(2147483647*10)' 'master' 'GONZO'
+        $combined = "$($r.StdOut)`n$($r.StdErr)"
+        if ($r.ExitCode -eq 0) { throw "arithmetic overflow must exit non-zero. output: $combined" }
+        if ($combined -notmatch 'Msg 3606') { throw "expected 'Msg 3606' overflow error. output: $combined" }
+        # The same error must not be printed twice (InfoMessage + AseException dedupe).
+        $hits = ([regex]::Matches($combined, 'Msg 3606')).Count
+        if ($hits -ne 1) { throw "expected exactly one 'Msg 3606' block, got $hits. output: $combined" }
+    }
+    Test-Case 'isqlline.error_midstream_no_dup' {
+        # Errors raised BEFORE any result set arrive via BOTH InfoMessage and AseException.
+        # Exactly one block must be printed.
+        $r = Invoke-Cli isqlline 'select*from[no_such_table]' 'master' 'GONZO'
+        $combined = "$($r.StdOut)`n$($r.StdErr)"
+        $hits = ([regex]::Matches($combined, 'Msg 208')).Count
+        if ($hits -ne 1) { throw "expected exactly one 'Msg 208' block, got $hits. output: $combined" }
+    }
+    Test-Case 'isqlline.error_postgres_exit_code' {
+        # ExecReturn is a struct: RunChunk once took it by value, so every Postgres error
+        # printed its message and still exited 0. Needs a LIVE server, so it runs against
+        # the real PGTEST profile (same pattern as the GONZO-backed Sybase cases above);
+        # $script:PgProfile is a scratch profile with no listener behind it.
+        $r = Invoke-Cli isqlline 'select(1/0)' 'pgtest' 'PGTEST'
+        $combined = "$($r.StdOut)`n$($r.StdErr)"
+        if ($combined -match 'Failed to connect') {
+            throw 'PGTEST is not reachable - start local Postgres (localhost:54329) to run this case'
+        }
+        if ($r.ExitCode -eq 0) { throw "a Postgres error must exit non-zero. output: $combined" }
+        if ($combined -notmatch 'division by zero') { throw "expected the server message. output: $combined" }
+    }
 
     # ===== iwho =====
     Test-Case 'iwho.all' {

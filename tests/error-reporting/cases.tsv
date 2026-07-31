@@ -1,0 +1,22 @@
+# Error-reporting corpus. One case per row, tab-separated. Lines starting with # are comments.
+#
+# Columns: id <TAB> file <TAB> sybase <TAB> mssql <TAB> postgres
+#
+# Each platform cell is either:
+#   ok                 the statement must succeed (exit 0, no "Msg " line)
+#   error:<substring>  the statement must fail (exit non-zero) AND print <substring>
+#                      EXACTLY ONCE (a second copy means the error is being reported
+#                      twice -- once via the driver's info-message channel and once via
+#                      the exception it also raises)
+#   n/a                the case does not apply to this platform
+#
+# The substrings are the server's own message numbers, so they are stable across
+# releases and locales in a way the message TEXT is not.
+id	file	sybase	mssql	postgres
+overflow	overflow.sql	error:Msg 3606	error:Msg 102	error:Msg 42601
+divide-by-zero	divide-by-zero.sql	error:Msg 3607	error:Msg 8134	error:Msg 22012
+bad-convert	bad-convert.sql	error:Msg 249	error:Msg 245	error:Msg 42703
+error-after-rows	error-after-rows.sql	error:Msg 249	error:Msg 245	error:Msg 42601
+missing-table	missing-table.sql	error:Msg 208	error:Msg 208	error:Msg 42P01
+raiserror	raiserror.sql	error:Msg 20000	error:Msg 102	error:Msg 42601
+money-and-decimal	money-and-decimal.sql	ok	ok	error:Msg 08P01
