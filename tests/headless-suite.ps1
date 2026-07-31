@@ -327,6 +327,29 @@ function Test-AdHocQueries {
         $r = Invoke-Cli isqlline 'SELECT(1+1)' 'master' 'NO_SUCH_PROFILE_XYZ'
         if ($r.ExitCode -eq 0) { throw 'unknown profile should exit non-zero' }
     }
+    # ===== -U/-P credential overrides (user report 2026-07-30) =====
+    # An explicitly passed -U/-P must ALWAYS reach the server — including values that
+    # happen to equal the legacy defaults ("sbn0"/"ibsibs"), which the old code treated
+    # as "not provided" sentinels and silently replaced with the profile's stored creds.
+    Test-Case 'isqlline.override_user_pass_good' {
+        $p = Get-Profile $script:SourceProfile
+        $r = Invoke-Cli isqlline 'SELECT(1+1)' 'master' $script:SourceProfile "-U$($p.USERNAME)" "-P$($p.PASSWORD)"
+        Assert-ExitCode $r
+        if ($r.StdOut -notmatch '\b2\b') { throw "expected '2' in output. stdout: $($r.StdOut)" }
+    }
+    Test-Case 'isqlline.override_user_pass_bad' {
+        $r = Invoke-Cli isqlline 'SELECT(1+1)' 'master' $script:SourceProfile '-Ubogus_no_such_user' '-Pwrong'
+        if ($r.ExitCode -eq 0) { throw 'bogus -U/-P must fail, not silently use profile creds' }
+        if ("$($r.StdOut)$($r.StdErr)" -notmatch 'Login failed|authentication|ERROR') {
+            throw "expected an auth failure. stdout: $($r.StdOut) stderr: $($r.StdErr)"
+        }
+    }
+    Test-Case 'isqlline.override_legacy_sentinels' {
+        # sbn0/ibsibs are not valid logins on SRM_LOCAL — before the fix this silently
+        # connected with the profile's sa creds and returned 0.
+        $r = Invoke-Cli isqlline 'SELECT(1+1)' 'master' $script:SourceProfile '-Usbn0' '-Pibsibs'
+        if ($r.ExitCode -eq 0) { throw '-Usbn0 -Pibsibs must be honored as an explicit override (and fail auth), not treated as a not-provided sentinel' }
+    }
     Test-Case 'isqlline.error_reports_location' {
         # A failing statement against real GONZO (Sybase) must report WHERE it failed
         # (Server/Procedure/Line context), matching legacy isql, not just the message text.

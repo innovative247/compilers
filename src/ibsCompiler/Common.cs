@@ -994,8 +994,10 @@ namespace ibsCompiler
             args.Database = "";
             args.Server = "";
             args.Upgrade_no = "";
-            args.User = string.IsNullOrEmpty(args.User) ? "sbn0" : args.User;
-            args.Pass = string.IsNullOrEmpty(args.Pass) ? "ibsibs" : args.Pass;
+            // Leave User/Pass empty when -U/-P not passed. ProfileManager.Resolve treats
+            // empty as "use profile creds"; a non-empty value is an explicit override —
+            // including literal "sbn0"/"ibsibs". Legacy defaults are applied only in the
+            // no-profile env-var fallback (ResolveFromEnvironment).
             args.Bcp = "";
             return args;
         }
