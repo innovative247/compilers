@@ -1,0 +1,9 @@
+# Shell scripts MUST be stored with LF. A CRLF `#!/usr/bin/env bash` line makes
+# Linux and macOS reject the script outright ("bad interpreter: no such file or
+# directory"), which is invisible from a Windows checkout.
+*.sh text eol=lf
+
+# Test fixtures are compared byte-for-byte by the runners; pin them so a Windows
+# checkout and a Linux checkout assert against identical bytes.
+*.tsv text eol=lf
+tests/error-reporting/cases/*.sql text eol=lf
