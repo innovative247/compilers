@@ -161,11 +161,21 @@ namespace ibsCompiler.Configuration
             if (profile.HasValue)
             {
                 var p = profile.Value.Profile;
+
+                // An explicit :port/,port suffix on the server arg overrides the
+                // profile's stored port (e.g. GONZO:5001), matching legacy isql -S.
+                var port = p.Port;
+                if (!string.IsNullOrEmpty(cmdvars.Port))
+                {
+                    var portStr = cmdvars.Port.TrimStart(':', ',');
+                    if (int.TryParse(portStr, out var portOverride)) port = portOverride;
+                }
+
                 return new ResolvedProfile
                 {
                     ProfileName = profile.Value.ProfileName,
                     Host = p.Host,
-                    Port = p.Port,
+                    Port = port,
                     User = string.IsNullOrEmpty(cmdvars.User) ? p.Username : cmdvars.User,
                     Pass = string.IsNullOrEmpty(cmdvars.Pass) ? p.Password : cmdvars.Pass,
                     ServerType = cmdvars.ServerType != default ? cmdvars.ServerType : ibs_compiler_common.ParsePlatform(p.Platform),

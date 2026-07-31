@@ -350,6 +350,19 @@ function Test-AdHocQueries {
         $r = Invoke-Cli isqlline 'SELECT(1+1)' 'master' $script:SourceProfile '-Usbn0' '-Pibsibs'
         if ($r.ExitCode -eq 0) { throw '-Usbn0 -Pibsibs must be honored as an explicit override (and fail auth), not treated as a not-provided sentinel' }
     }
+    # ===== :port suffix override on a profile name =====
+    # <profile>:<port> must override the profile's stored port (legacy isql -SSERVER:port).
+    # Before the fix the suffix was parsed off and silently discarded on profile matches.
+    Test-Case 'isqlline.override_port_good' {
+        $p = Get-Profile $script:SourceProfile
+        $r = Invoke-Cli isqlline 'SELECT(1+1)' 'master' "$($script:SourceProfile):$($p.PORT)"
+        Assert-ExitCode $r
+        if ($r.StdOut -notmatch '\b2\b') { throw "expected '2' in output. stdout: $($r.StdOut)" }
+    }
+    Test-Case 'isqlline.override_port_bad' {
+        $r = Invoke-Cli isqlline 'SELECT(1+1)' 'master' "$($script:SourceProfile):59999"
+        if ($r.ExitCode -eq 0) { throw 'a bogus :port suffix must be honored (and fail to connect), not silently replaced by the profile port' }
+    }
     Test-Case 'isqlline.error_reports_location' {
         # A failing statement against real GONZO (Sybase) must report WHERE it failed
         # (Server/Procedure/Line context), matching legacy isql, not just the message text.
