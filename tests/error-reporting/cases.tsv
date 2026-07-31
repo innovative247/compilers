@@ -10,18 +10,22 @@
 #                      the exception it also raises)
 #   n/a                the case does not apply to this platform
 #
-# The substrings are the server's own message numbers, so they are stable across
-# releases and locales in a way the message TEXT is not.
+# The substrings are the server's own message numbers (SQLSTATE on PostgreSQL), so they
+# are stable across releases and locales in a way the message TEXT is not.
 #
 # must_contain is a pipe-separated list of substrings that must ALL appear in the
 # output, checked only on the platforms where the case is expected to succeed. It is
 # how a case asserts that every platform renders the same values -- use `-` for none.
+#
+# Where a dialect cannot express the same intent, the case ships a per-platform variant
+# next to its default file (`<name>.pg.sql`, `<name>.ms.sql`, `<name>.syb.sql`) and the
+# runner picks it up automatically. The expectation still comes from this table.
 id	file	sybase	mssql	postgres	must_contain
-overflow	overflow.sql	error:Msg 3606	error:Msg 102	error:Msg 42601	-
+overflow	overflow.sql	error:Msg 3606	error:Msg 102	error:Msg 22003	-
 divide-by-zero	divide-by-zero.sql	error:Msg 3607	error:Msg 8134	error:Msg 22012	-
-bad-convert	bad-convert.sql	error:Msg 249	error:Msg 245	error:Msg 42703	-
-error-after-rows	error-after-rows.sql	error:Msg 249	error:Msg 245	error:Msg 42601	-
+bad-convert	bad-convert.sql	error:Msg 249	error:Msg 245	error:Msg 22P02	-
+error-after-rows	error-after-rows.sql	error:Msg 249	error:Msg 245	error:Msg 22P02	-
 missing-table	missing-table.sql	error:Msg 208	error:Msg 208	error:Msg 42P01	-
-raiserror	raiserror.sql	error:Msg 20000	error:Msg 102	error:Msg 42601	-
+raiserror	raiserror.sql	error:Msg 20000	error:Msg 102	error:Msg P0001	-
 money-and-decimal	money-and-decimal.sql	ok	ok	error:Msg 08P01	1.00|1.0000
-decimal-scales	decimal-scales.sql	ok	ok	n/a	2.500|12.5000|1.5
+decimal-scales	decimal-scales.sql	ok	ok	ok	2.500|12.5000|1.5

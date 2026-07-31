@@ -71,7 +71,31 @@ must all appear, checked only where the case is expected to succeed.
 | `missing-table` | Error raised *before* any result set — the path that always worked. Guards the de-dupe. |
 | `raiserror` | An explicit server-raised error. |
 | `money-and-decimal` | `select 1 * 1.00 ,1* $1` — succeeds on Sybase/SQL Server and must render `1.00` / `1.0000` on both; on PostgreSQL `$1` is a bind placeholder, so it must be reported as an error rather than silently returning. |
-| `decimal-scales` | `numeric(10,3)`, `money`, `int` and `float` in one row — each must keep its declared number of decimal places, and the non-decimal types must be left alone. |
+| `decimal-scales` | `numeric(10,3)`, `money`, `int` and `float` in one row — each must keep its declared number of decimal places, and the non-decimal types must be left alone. All three platforms must render identical values. |
+
+Every case runs on **all three platforms**, including PostgreSQL.
+
+## Per-platform SQL variants
+
+A few statements cannot express the same intent in every dialect. `convert(int,'abc')` is a
+conversion error on Sybase and SQL Server but only a *syntax* error on PostgreSQL, which would
+test nothing; `raiserror` and `&maxint& * 10` are likewise T-SQL-only.
+
+Where that happens the case ships a variant next to its default file — `<name>.pg.sql`,
+`<name>.ms.sql`, `<name>.syb.sql` — and the runner picks it up for the matching platform
+automatically. The expectation still comes from `cases.tsv`, so the *behaviour* being asserted
+stays identical even though the SQL differs:
+
+| Case | PostgreSQL variant asserts |
+|------|----------------------------|
+| `overflow` | `2147483647 * 10` → `22003 integer out of range` |
+| `bad-convert` | `cast('abc' as integer)` → `22P02 invalid input syntax` |
+| `error-after-rows` | `cast(relname as integer) from pg_class` → `22P02` once rows are already streaming |
+| `raiserror` | `do $$ ... raise exception ... $$` → `P0001` |
+| `decimal-scales` | `numeric(10,3)` / `numeric(10,4)` / `int` / `float` render exactly as they do on Sybase and SQL Server |
+
+`divide-by-zero`, `missing-table` and `money-and-decimal` need no variant — the default SQL is
+valid on all three.
 
 ## Numeric scale
 
@@ -88,7 +112,7 @@ property that was broken.
 
 ## Relationship to the main suite
 
-`tests/headless-suite.ps1` carries a three-case subset (`isqlline.error_midstream_sybase`,
-`isqlline.error_midstream_no_dup`, `isqlline.error_postgres_exit_code`) so a regression
-is caught by the normal suite run. This corpus is the fuller, cross-platform version and
-the place to add new cases.
+`tests/headless-suite.ps1` carries a four-case subset (`isqlline.error_midstream_sybase`,
+`isqlline.error_midstream_no_dup`, `isqlline.sybase_decimal_scale`,
+`isqlline.error_postgres_exit_code`) so a regression is caught by the normal suite run.
+This corpus is the fuller, cross-platform version and the place to add new cases.

@@ -86,8 +86,22 @@ function Get-InlineSql([string]$path) {
     return ($lines -join ' ').Trim()
 }
 
+# Some statements cannot express the same intent in every dialect -- `convert(int,'abc')`
+# is a conversion error on Sybase/SQL Server but merely a syntax error on PostgreSQL, which
+# would test nothing. A case may ship `<name>.<suffix>.sql` next to its default file and that
+# variant is used for the matching platform. The expectation still comes from cases.tsv.
+function Get-CaseFile {
+    param([string]$BaseFile, [string]$Suffix)
+    $dir = Join-Path $root 'cases'
+    if ($Suffix) {
+        $variant = Join-Path $dir ($BaseFile -replace '\.sql$', ".$Suffix.sql")
+        if (Test-Path $variant) { return $variant }
+    }
+    return (Join-Path $dir $BaseFile)
+}
+
 function Invoke-Platform {
-    param([string]$Name, [string]$Target, [int]$Column)
+    param([string]$Name, [string]$Target, [int]$Column, [string]$Suffix)
 
     if (-not $Target) { return }
     $parts = $Target.Split(':', 2)
@@ -103,7 +117,7 @@ function Invoke-Platform {
     foreach ($row in $script:Cases) {
         $expect      = $row[$Column]
         $mustContain = $row[5]
-        $file        = Join-Path (Join-Path $root 'cases') $row[1]
+        $file        = Get-CaseFile $row[1] $Suffix
         $id          = $row[0]
 
         if ($expect -eq 'n/a') {
@@ -154,9 +168,9 @@ if (-not $Sybase -and -not $Mssql -and -not $Postgres) {
     exit 2
 }
 
-Invoke-Platform 'Sybase'   $Sybase   2
-Invoke-Platform 'Mssql'    $Mssql    3
-Invoke-Platform 'Postgres' $Postgres 4
+Invoke-Platform 'Sybase'   $Sybase   2 'syb'
+Invoke-Platform 'Mssql'    $Mssql    3 'ms'
+Invoke-Platform 'Postgres' $Postgres 4 'pg'
 
 Write-Host ""
 Write-Host "=== Summary ===" -ForegroundColor Cyan

@@ -98,8 +98,21 @@ $out"
     return 0
 }
 
+# Some statements cannot express the same intent in every dialect -- `convert(int,'abc')`
+# is a conversion error on Sybase/SQL Server but merely a syntax error on PostgreSQL, which
+# would test nothing. A case may ship `<name>.<suffix>.sql` next to its default file and that
+# variant is used for the matching platform. The expectation still comes from cases.tsv.
+case_file() {
+    local base="$1" suffix="$2" variant
+    if [ -n "$suffix" ]; then
+        variant="$ROOT/cases/${base%.sql}.$suffix.sql"
+        if [ -f "$variant" ]; then printf '%s' "$variant"; return 0; fi
+    fi
+    printf '%s' "$ROOT/cases/$base"
+}
+
 run_platform() {
-    local name="$1" target="$2" column="$3"
+    local name="$1" target="$2" column="$3" suffix="$4"
     [ -z "$target" ] && return 0
 
     local profile="${target%%:*}" database="${target#*:}"
@@ -124,7 +137,7 @@ run_platform() {
             echo "[SKIP]  $id"; SKIP=$((SKIP+1)); continue
         fi
 
-        sqlfile="$ROOT/cases/$file"
+        sqlfile="$(case_file "$file" "$suffix")"
         problems=0
 
         inline="$(inline_sql "$sqlfile")"
@@ -153,9 +166,9 @@ if [ -z "$SYBASE" ] && [ -z "$MSSQL" ] && [ -z "$POSTGRES" ]; then
     exit 2
 fi
 
-run_platform "Sybase"   "$SYBASE"   2
-run_platform "Mssql"    "$MSSQL"    3
-run_platform "Postgres" "$POSTGRES" 4
+run_platform "Sybase"   "$SYBASE"   2 syb
+run_platform "Mssql"    "$MSSQL"    3 ms
+run_platform "Postgres" "$POSTGRES" 4 pg
 
 echo
 echo "=== Summary ==="
