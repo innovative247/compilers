@@ -55,7 +55,7 @@ Pop-Location
 Write-Host ""
 Write-Host "=== Committing ===" -ForegroundColor Cyan
 git add -u
-git commit -m "$Notes (v$Version)" -m "Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>"
+git commit -m "$Notes (v$Version)" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 if ($LASTEXITCODE -ne 0) { Write-Host "git commit failed" -ForegroundColor Red; exit 1 }
 
 # 4. Push
