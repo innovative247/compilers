@@ -49,8 +49,11 @@ compile_msg  MYPROFILE        # no flags -> legacy Import/Export/Add menu (regre
       Enter with no digits typed opens the currently highlighted `>` row instead, which is
       its own well-defined behavior, not a numbered default). Typing a row number then
       Enter opens that group by number; `98` Back to the type screen; `99` Exit.
-- [ ] `C` -> create-group prompts (group <=6 / start default 0 / description); a green
-      confirmation appears and the new group shows in the refreshed table.
+- [ ] The action menu renders vertically above the prompt (`N. New Group` / `I. Install` /
+      `98. Back` / `99. Exit`), and each table row has a space between the row number and
+      the group name.
+- [ ] `N` (or legacy `C`) -> create-group prompts (group <=6 / start default 0 / description);
+      a green confirmation appears and the new group shows in the refreshed table.
 - [ ] `I` -> Install to profile: on a **non-GONZO** profile it confirms then runs the compile;
       on **GONZO** it is blocked with the canonical-source / export-only message.
 

@@ -342,17 +342,21 @@ namespace ibsCompiler
             Cyan($"  {lt.Label} message groups  ({groups.Count})");
             Dim($"  Source: {setupDir}");
             Console.WriteLine();
-            Console.WriteLine("  " + Fit($"{"",4}{"GROUP",-8}{"START#",-8}{"ROWS",-7}DESCRIPTION", w - 2));
+            Console.WriteLine("  " + Fit($"{"",5}{"GROUP",-8}{"START#",-8}{"ROWS",-7}DESCRIPTION", w - 2));
             int headerRow = Console.CursorTop; // first data row lands here
-            int visibleRows = Math.Max(3, Console.WindowHeight - (headerRow - Console.CursorTop) - 8);
+            int visibleRows = Math.Max(3, Console.WindowHeight - (headerRow - Console.CursorTop) - 12);
             visibleRows = Math.Min(visibleRows, Math.Max(1, groups.Count));
 
             // Reserve the window + footer rows so the buffer scrolls if we are near the bottom.
             for (int i = 0; i < visibleRows; i++) Console.WriteLine();
             Console.WriteLine();
-            Console.WriteLine("  [Up/Down] move  [Enter] open  C new group  I install to profile  98 Back  99 Exit");
+            Console.WriteLine("  [Up/Down] move  [Enter] open");
+            Console.WriteLine("   N. New Group");
+            Console.WriteLine("   I. Install");
+            Console.WriteLine("  98. Back");
+            Console.WriteLine("  99. Exit");
             int footerRow = Console.CursorTop;
-            int startRow = footerRow - 2 - visibleRows;
+            int startRow = footerRow - 6 - visibleRows;
             int promptRow = footerRow; // deferred Choice buffer + messages land here
 
             void RenderWindow()
@@ -367,7 +371,7 @@ namespace ibsCompiler
                     {
                         var g = groups[idx];
                         var ptr = idx == cursor ? ">" : " ";
-                        line = $"  {ptr} {idx + 1,-2}{g.Group,-8}{g.MinMsg,-8}{g.RowCount,-7}{g.Description}";
+                        line = $"  {ptr} {idx + 1,-3}{g.Group,-8}{g.MinMsg,-8}{g.RowCount,-7}{g.Description}";
                     }
                     Console.Write(Fit(line, w));
                 }
@@ -387,7 +391,7 @@ namespace ibsCompiler
             if (groups.Count == 0)
             {
                 Console.SetCursorPosition(0, startRow);
-                Dim("  (no groups yet — press C to create one)");
+                Dim("  (no groups yet — press N to create one)");
             }
             else RenderWindow();
 
@@ -450,7 +454,8 @@ namespace ibsCompiler
                             }
                             if (groups.Count > 0) { EndPicker(footerRow); return (cursor, ""); }
                             break;
-                        case ConsoleKey.C:
+                        case ConsoleKey.N:
+                        case ConsoleKey.C: // legacy alias for New Group
                             EndPicker(footerRow); return (-1, "create");
                         case ConsoleKey.I:
                             EndPicker(footerRow); return (-1, "install");
@@ -482,13 +487,16 @@ namespace ibsCompiler
                 var g = groups[i];
                 Console.WriteLine($"  {i + 1,-4}{g.Group,-8}{g.MinMsg,-8}{g.RowCount,-7}{g.Description}");
             }
-            Console.WriteLine("   C. new group   I. install to profile   98. Back   99. Exit");
+            Console.WriteLine("   N. New Group");
+            Console.WriteLine("   I. Install");
+            Console.WriteLine("  98. Back");
+            Console.WriteLine("  99. Exit");
             Console.WriteLine();
             // Back is the safe, non-destructive default.
             var choice = ConsoleMenu.ReadDeferredChoice(allowText: true, defaultChoice: "98");
             if (string.IsNullOrEmpty(choice)) return (-1, "back");
             var up = choice.Trim().ToUpperInvariant();
-            if (up == "C") return (-1, "create");
+            if (up == "N" || up == "C") return (-1, "create");
             if (up == "I") return (-1, "install");
             if (up == "99") return (-1, "exit");
             if (up == "98") return (-1, "back");
