@@ -55,7 +55,11 @@ Pop-Location
 Write-Host ""
 Write-Host "=== Committing ===" -ForegroundColor Cyan
 git add -u
-git commit -m "$Notes (v$Version)" -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+# Attribution comes from the committing developer's own git config, so whoever cuts
+# the release is the name on it. Never hardcode a name here.
+$releasedBy = (git config user.name)
+if ([string]::IsNullOrWhiteSpace($releasedBy)) { $releasedBy = $env:USERNAME }
+git commit -m "$Notes (v$Version)" -m "$releasedBy - $Notes"
 if ($LASTEXITCODE -ne 0) { Write-Host "git commit failed" -ForegroundColor Red; exit 1 }
 
 # 4. Push
