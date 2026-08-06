@@ -190,7 +190,7 @@ namespace ibsCompiler
             {
                 ibs_compiler_common.WriteLine($"Starting {insertLabels[i]} insert...", cmdvars.OutFile);
 
-                var tempFile = CreateTempMessageFile(mainMes + "." + msgTypes[i]);
+                var tempFile = CreateTempMessageFile(mainMes + "." + msgTypes[i], cmdvars.OutFile);
                 var result = executor.BulkCopy(myOptions.ReplaceOptions(destTables[i]), BcpDirection.IN, tempFile);
                 try { File.Delete(tempFile); } catch { }
                 if (!result.Returncode) return;
@@ -226,9 +226,10 @@ namespace ibsCompiler
             ibs_compiler_common.WriteLine("compile_msg DONE.", cmdvars.OutFile);
         }
 
-        private static string CreateTempMessageFile(string sourceFile)
+        private static string CreateTempMessageFile(string sourceFile, string? outFile = null)
         {
             var tempFile = ibs_compiler_common.GetTempFile();
+            ibs_compiler_common.WriteLine("temp file: " + tempFile, outFile);
             var lines = ibs_compiler_common.BuildArrayFromDisk(sourceFile);
             ibs_compiler_common.SaveArrayToDisk(lines, tempFile);
             return tempFile;

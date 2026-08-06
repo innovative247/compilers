@@ -15,11 +15,16 @@ namespace ibsCompiler
 
             var myOptions = new Options(cmdvars, profile, true);
             if (!myOptions.GenerateOptionFiles()) return result;
+            myOptions.ReportResolvedOptionsPath();
 
             var optFileSQL = ibs_compiler_common.GetPath_OptionsSQL(cmdvars, profile);
             var optFileCompany = ibs_compiler_common.GetPath_OptionsCompany(profile);
             var optFileServer = ibs_compiler_common.GetPath_OptionsServer(cmdvars, profile);
-            var optFileFinal = ibs_compiler_common.GetTempFile();
+
+            // Named rather than random (GetTempFile) so the file is findable while the import
+            // is running; the PID keeps parallel compiles off each other's input file.
+            var optFileFinal = Path.Combine(ibs_compiler_common.GetTempPath(),
+                $"options.import.{profile.Company}.{Environment.ProcessId}.tmp");
 
             if (!File.Exists(optFileCompany))
             {
@@ -59,6 +64,7 @@ namespace ibsCompiler
                 arrOptions = ibs_compiler_common.CombineOptionFiles(tmpOptFileCompany, tmpOptFileServer);
 
             ibs_compiler_common.SaveArrayToDisk(arrOptions, optFileFinal);
+            ibs_compiler_common.WriteLine("options import file: " + optFileFinal, cmdvars.OutFile);
 
             cmdvars.Database = "master";
             cmdvars.Command = myOptions.ReplaceOptions("delete &w#options&");
@@ -73,7 +79,7 @@ namespace ibsCompiler
             isqlline_main.Run(cmdvars, profile, executor, myOptions);
 
             try { File.Delete(optFileFinal); } catch { }
-            ibs_compiler_common.WriteLine("temporary option file deleted", cmdvars.OutFile);
+            ibs_compiler_common.WriteLine("deleting options import file: " + optFileFinal, cmdvars.OutFile);
             ibs_compiler_common.WriteLine("Import of options ended at " + DateTime.Now, cmdvars.OutFile);
 
             // Also compile table_locations (options may have changed database mappings)

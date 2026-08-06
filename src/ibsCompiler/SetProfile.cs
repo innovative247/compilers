@@ -64,6 +64,7 @@ namespace ibsCompiler
             "--raw", "--no-raw",
             "--test",
             "--yes",
+            "--rebuild", "--rebuild-cache",
         };
 
         #region Icons
@@ -488,7 +489,7 @@ namespace ibsCompiler
             var nameHolder = new ProfileEditor.NameHolder { Value = (prefilledName ?? "").ToUpperInvariant() };
             var outcome = ProfileEditor.Edit(
                 nameHolder.Value, profile, isCreate: true,
-                (p, kind) => RunNamedTest(kind, string.IsNullOrEmpty(nameHolder.Value) ? "NEW" : nameHolder.Value, p),
+                (p, kind) => RunNamedTest(kind, string.IsNullOrEmpty(nameHolder.Value) ? "NEW" : nameHolder.Value, p, interactive: true),
                 ValidateAliasConflicts, nameHolder, ValidateNewProfileName);
             if (outcome == ProfileEditorOutcome.TooSmall)
             {
@@ -860,7 +861,7 @@ namespace ibsCompiler
             // Work on a JSON clone so a cancel leaves the stored profile untouched.
             var working = JsonSerializer.Deserialize<ProfileData>(JsonSerializer.Serialize(profile))!;
             var outcome = ProfileEditor.Edit(name, working, isCreate: false,
-                (p, kind) => RunNamedTest(kind, name, p), ValidateAliasConflicts,
+                (p, kind) => RunNamedTest(kind, name, p, interactive: true), ValidateAliasConflicts,
                 allowCopyDelete: true);
             switch (outcome)
             {
@@ -1013,7 +1014,7 @@ namespace ibsCompiler
             // the new aliases against ALL existing profiles (including the source).
             var outcome = ProfileEditor.Edit(
                 "", working, isCreate: true,
-                (p, kind) => RunNamedTest(kind, sourceName, p),
+                (p, kind) => RunNamedTest(kind, sourceName, p, interactive: true),
                 ValidateAliasConflicts, nameHolder, ValidateNewProfileName,
                 titleOverride: $"Copy Profile (from {sourceName})");
             if (outcome == ProfileEditorOutcome.TooSmall)
@@ -1103,7 +1104,8 @@ namespace ibsCompiler
         /// profile object it is handed — the editor passes its working copy so
         /// unsaved edits are what get tested.
         /// </summary>
-        private static void RunNamedTest(string kind, string name, ProfileData profile, string? resolve = null)
+        private static void RunNamedTest(string kind, string name, ProfileData profile, string? resolve = null,
+                                        bool rebuild = false, bool interactive = false)
         {
             switch (kind)
             {
@@ -1111,11 +1113,11 @@ namespace ibsCompiler
                 case "connection":       TestConnection(profile, allowCredentialRetry: false); break;
                 case "options":
                     if (profile.RawMode) PrintDim("  (skipped: profile is in raw mode)");
-                    else TestOptions(name, profile, presetPlaceholder: resolve ?? "&users&");
+                    else TestOptions(name, profile, presetPlaceholder: resolve ?? "&users&", rebuild, interactive);
                     break;
                 case "table-locations":
                     if (profile.RawMode) PrintDim("  (skipped: profile is in raw mode)");
-                    else TestTableLocations(profile);
+                    else TestTableLocations(name, profile, rebuild, interactive);
                     break;
                 case "changelog":
                     if (profile.RawMode) PrintDim("  (skipped: profile is in raw mode)");
@@ -1130,7 +1132,7 @@ namespace ibsCompiler
                     {
                         Console.WriteLine();
                         WriteBright($"-- {k} --");
-                        RunNamedTest(k, name, profile, resolve);
+                        RunNamedTest(k, name, profile, resolve, rebuild, interactive);
                     }
                     break;
                 default:
@@ -1250,7 +1252,8 @@ namespace ibsCompiler
                 TestConnection(profile);
         }
 
-        private static void TestOptions(string profileName, ProfileData profile, string? presetPlaceholder = null)
+        private static void TestOptions(string profileName, ProfileData profile, string? presetPlaceholder = null,
+                                        bool rebuild = false, bool interactive = false)
         {
             Console.WriteLine("\nTesting options files...");
 
@@ -1306,27 +1309,6 @@ namespace ibsCompiler
             else
                 PrintError($"  table_locations NOT found — this file is required");
 
-            // Resolve a placeholder. Headless callers preset it; interactive
-            // callers fall through to the prompt with "&users&" as default.
-            string optionInput;
-            if (presetPlaceholder != null)
-            {
-                optionInput = string.IsNullOrEmpty(presetPlaceholder) ? "&users&" : presetPlaceholder;
-            }
-            else
-            {
-                Console.WriteLine();
-                Console.Write("  Enter option or table to resolve [&users&]: ");
-                var input = Console.ReadLine()?.Trim();
-                optionInput = string.IsNullOrEmpty(input) ? "&users&" : input;
-            }
-
-            // A bare token like "users" has no &...& delimiters, so ReplaceWord
-            // short-circuits and reports "not resolved" even though table_locations
-            // is loaded. Treat a bare token as the placeholder &token&.
-            if (!optionInput.Contains('&'))
-                optionInput = "&" + optionInput.Trim() + "&";
-
             var resolved = new ResolvedProfile
             {
                 ProfileName = profileName,
@@ -1351,6 +1333,32 @@ namespace ibsCompiler
             };
             cmdvars.Server = $"{profile.Host}:{profile.Port}";
 
+            // The four files above are merged into one cached, fully-resolved
+            // token→value file. Everything that resolves a placeholder reads THAT,
+            // not the sources — so show where it lives and how stale it is.
+            ReportResolvedOptionsCache(cmdvars, resolved, rebuild, interactive);
+
+            // Resolve a placeholder. Headless callers preset it; interactive
+            // callers fall through to the prompt with "&users&" as default.
+            string optionInput;
+            if (presetPlaceholder != null)
+            {
+                optionInput = string.IsNullOrEmpty(presetPlaceholder) ? "&users&" : presetPlaceholder;
+            }
+            else
+            {
+                Console.WriteLine();
+                Console.Write("  Enter option or table to resolve [&users&]: ");
+                var input = Console.ReadLine()?.Trim();
+                optionInput = string.IsNullOrEmpty(input) ? "&users&" : input;
+            }
+
+            // A bare token like "users" has no &...& delimiters, so ReplaceWord
+            // short-circuits and reports "not resolved" even though table_locations
+            // is loaded. Treat a bare token as the placeholder &token&.
+            if (!optionInput.Contains('&'))
+                optionInput = "&" + optionInput.Trim() + "&";
+
             var myOptions = new Options(cmdvars, resolved, true);
             if (!myOptions.GenerateOptionFiles())
             {
@@ -1371,13 +1379,87 @@ namespace ibsCompiler
             catch { return 0; }
         }
 
-        private static void TestTableLocations(ProfileData profile)
+        private static void TestTableLocations(string profileName, ProfileData profile,
+                                               bool rebuild = false, bool interactive = false)
         {
             var tblLoc = Path.Combine(profile.SqlSource ?? "", "css", "setup", "table_locations");
             if (File.Exists(tblLoc))
                 PrintSuccess($"Table locations file found: {tblLoc}");
             else
                 PrintError($"Table locations file NOT found: {tblLoc}");
+
+            if (profile.RawMode || string.IsNullOrEmpty(profile.SqlSource)) return;
+
+            var company = profile.Company ?? "101";
+            var resolved = new ResolvedProfile
+            {
+                ProfileName = profileName,
+                Host = profile.Host,
+                Port = profile.Port,
+                User = profile.Username,
+                Pass = profile.Password,
+                ServerType = ibs_compiler_common.ParsePlatform(profile.Platform),
+                Company = company,
+                Language = profile.DefaultLanguage ?? "1",
+                IRPath = profile.SqlSource,
+                IsProfile = true
+            };
+            var cmdvars = new CommandVariables
+            {
+                User = profile.Username,
+                Pass = profile.Password,
+                ServerType = ibs_compiler_common.ParsePlatform(profile.Platform),
+                Database = $"{company}pr",
+                Command = "TEST"
+            };
+            cmdvars.Server = $"{profile.Host}:{profile.Port}";
+
+            // table_locations is merged into the same resolved cache the options test
+            // reports — an edit here is invisible until that cache is rebuilt.
+            ReportResolvedOptionsCache(cmdvars, resolved, rebuild, interactive);
+        }
+
+        /// <summary>
+        /// Prints where the fully-resolved options/table_locations cache lives, how old it
+        /// is, and (interactively) offers to clear and rebuild it. <paramref name="rebuild"/>
+        /// forces the clear+rebuild without prompting — the headless <c>--rebuild</c> path.
+        /// The cache is reused for 60 minutes, so a source-file edit inside that window does
+        /// not take effect until it is cleared or a compile forces a rebuild.
+        /// </summary>
+        private static void ReportResolvedOptionsCache(CommandVariables cmdvars, ResolvedProfile profile,
+                                                       bool rebuild, bool interactive)
+        {
+            var cachePath = ibs_compiler_common.GetPath_ResolvedOptions(cmdvars, profile);
+            Console.WriteLine();
+
+            if (File.Exists(cachePath))
+            {
+                var age = (int)DateTime.Now.Subtract(new FileInfo(cachePath).CreationTime).TotalMinutes;
+                PrintSuccess($"  resolved options file: {cachePath}");
+                PrintDim($"    {CountLines(cachePath)} lines, {age} min old (rebuilt automatically after 60)");
+            }
+            else
+            {
+                PrintDim($"  resolved options file: {cachePath} (not built yet)");
+            }
+
+            var doRebuild = rebuild;
+            if (!doRebuild && interactive)
+            {
+                Console.Write("  Clear and rebuild this file? [y/N]: ");
+                doRebuild = string.Equals(Console.ReadLine()?.Trim(), "y", StringComparison.OrdinalIgnoreCase);
+            }
+            if (!doRebuild) return;
+
+            if (ibs_compiler_common.ClearResolvedOptions(cmdvars, profile))
+                PrintSuccess("  Cleared.");
+            else
+                PrintDim("  Nothing to clear.");
+
+            if (new Options(cmdvars, profile, true).GenerateOptionFiles())
+                PrintSuccess($"  Rebuilt: {cachePath}");
+            else
+                PrintError("  Rebuild failed — see the missing-file messages above.");
         }
 
         private static void TestChangelog(string profileName, ProfileData profile)
@@ -2166,8 +2248,9 @@ namespace ibsCompiler
             what = what.Trim().ToLowerInvariant();
 
             var resolve = CliArgs.GetOption(args, "--resolve");
+            var rebuild = CliArgs.HasFlag(args, InteractiveMenus.RebuildFlagNames);
 
-            RunNamedTest(what, name, profile, resolve);
+            RunNamedTest(what, name, profile, resolve, rebuild);
             return 0;
         }
 

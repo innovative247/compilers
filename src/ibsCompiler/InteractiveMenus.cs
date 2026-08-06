@@ -122,6 +122,48 @@ namespace ibsCompiler
             }
         }
 
+        /// <summary>
+        /// Flag names that force a rebuild of the resolved options cache. Accepted by
+        /// set_options / eopt and set_table_locations / eloc.
+        /// </summary>
+        public static readonly string[] RebuildFlagNames = new[] { "--rebuild", "--rebuild-cache" };
+
+        /// <summary>
+        /// Deletes the resolved options cache and re-merges it from the source option
+        /// files (options.&lt;platform&gt; + options.&lt;company&gt; + options.&lt;company&gt;.&lt;profile&gt;
+        /// + table_locations). Prints the path either way so the caller can see exactly
+        /// which file was reset. Returns false if the rebuild failed.
+        /// </summary>
+        /// <summary>
+        /// One-line banner naming the resolved options cache. Printed by every command that
+        /// works with options or table_locations: the file lives in the shared system temp
+        /// directory, and a user who can't see the path can't inspect or clear it.
+        /// </summary>
+        public static void ShowResolvedOptionsPath(CommandVariables cmdvars, ResolvedProfile profile)
+        {
+            var path = ibs_compiler_common.GetPath_ResolvedOptions(cmdvars, profile);
+            var state = File.Exists(path)
+                ? $"{(int)DateTime.Now.Subtract(new FileInfo(path).CreationTime).TotalMinutes} min old"
+                : "not built yet";
+            Console.WriteLine($"Resolved options file: {path} ({state} — force a rebuild with --rebuild)");
+        }
+
+        public static bool RebuildResolvedOptions(CommandVariables cmdvars, ResolvedProfile profile)
+        {
+            var path = ibs_compiler_common.GetPath_ResolvedOptions(cmdvars, profile);
+            Console.WriteLine(ibs_compiler_common.ClearResolvedOptions(cmdvars, profile)
+                ? $"Cleared resolved options cache: {path}"
+                : $"No resolved options cache to clear: {path}");
+
+            if (!new Options(cmdvars, profile, true).GenerateOptionFiles())
+            {
+                Console.Error.WriteLine("ERROR: rebuild failed — see the missing-file messages above.");
+                return false;
+            }
+            Console.WriteLine($"Rebuilt resolved options cache: {path}");
+            return true;
+        }
+
         #endregion
 
         #region set_actions (eact)
@@ -199,6 +241,7 @@ namespace ibsCompiler
             "--edit-detail", "--no-edit-detail",
             "--compile",     "--no-compile",
             "--skip-edit",
+            "--rebuild",     "--rebuild-cache",
         };
 
         #endregion
@@ -285,8 +328,19 @@ namespace ibsCompiler
                 return 1;
             }
 
+            ShowResolvedOptionsPath(cmdvars, profile);
+
             var cliHeader  = CliArgs.ResolveBool(args, EditCompileTrueHeader, EditCompileFalseHeader);
             var cliCompile = CliArgs.ResolveBool(args, new[] { "--compile" }, new[] { "--no-compile" });
+
+            // --rebuild resets the resolved options cache from source. On its own it is a
+            // terminal action (nothing else to do); paired with --compile it runs first so
+            // the compile can't pick up a stale cache.
+            if (CliArgs.AnyPresent(args, RebuildFlagNames))
+            {
+                if (!RebuildResolvedOptions(cmdvars, profile)) return 1;
+                if (cliCompile != true) return 0;
+            }
 
             // Prompt to edit the source file (default: Yes)
             if (cliHeader ?? ConsoleYesNo($"Edit {locationsFile}?"))
@@ -321,6 +375,7 @@ namespace ibsCompiler
             "--merge-company", "--merge-profile",
             "--import", "--sync",
             "--all-adds", "--all-removes",
+            "--rebuild", "--rebuild-cache",
         };
 
         /// <summary>
@@ -342,6 +397,20 @@ namespace ibsCompiler
             var defFile = ibs_compiler_common.GetPath_OptionsDefault(profile);
             var platformFile = ibs_compiler_common.GetPath_OptionsSQL(cmdvars, profile);
             var setupDir = ibs_compiler_common.GetPath_Setup(profile);
+
+            ShowResolvedOptionsPath(cmdvars, profile);
+
+            // --rebuild resets the resolved options cache from source. Runs before any
+            // other action so an --import can't compile against a stale cache; on its own
+            // it is a terminal action.
+            if (args != null && CliArgs.AnyPresent(args, RebuildFlagNames))
+            {
+                if (!RebuildResolvedOptions(cmdvars, profile)) return 1;
+                if (!CliArgs.AnyPresent(args,
+                        "--add", "--sync", "--merge-company", "--merge-profile",
+                        "--copy", "--import"))
+                    return 0;
+            }
 
             // Headless CLI dispatch — only when an action flag is explicitly provided.
             // Without flags the existing interactive menu runs unchanged.

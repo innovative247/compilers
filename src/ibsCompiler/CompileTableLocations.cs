@@ -15,6 +15,7 @@ namespace ibsCompiler
 
             var myOptions = new Options(cmdvars, profile, true);
             if (!myOptions.GenerateOptionFiles()) return result;
+            myOptions.ReportResolvedOptionsPath();
 
             var tabLoc = ibs_compiler_common.GetPath_TableLocations(profile);
             if (!File.Exists(tabLoc))

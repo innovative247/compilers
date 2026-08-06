@@ -774,6 +774,56 @@ function Test-SetupCompile {
             throw "--compile codepath not reached. stdout: $($r.StdOut)"
         }
     }
+    Test-Case 'set_table_locations.rebuild' {
+        # --rebuild alone is terminal: it clears the resolved options cache, re-merges
+        # it from source, prints the path, and exits 0 without touching the DB.
+        $r = Invoke-Cli set_table_locations $script:TestProfile '--rebuild'
+        Assert-ExitCode $r
+        if ($r.StdOut -notmatch 'Rebuilt resolved options cache') {
+            throw "--rebuild did not report the rebuilt cache path. stdout: $($r.StdOut)"
+        }
+        if ($r.StdOut -match 'compile_table_locations started') {
+            throw '--rebuild alone must not run the DB compile'
+        }
+    }
+    Test-Case 'set_table_locations.rebuild_then_compile' {
+        $r = Invoke-Cli set_table_locations $script:TestProfile '--rebuild' '--skip-edit' '--compile'
+        $combined = "$($r.StdOut)`n$($r.StdErr)"
+        if ($combined -notmatch 'Rebuilt resolved options cache') {
+            throw "--rebuild --compile must rebuild first. output: $combined"
+        }
+        if ($combined -notmatch 'Compiling table_locations|compile_table_locations started') {
+            throw "--rebuild --compile must still reach the compile path. output: $combined"
+        }
+    }
+    Test-Case 'set_table_locations.rebuild_location' {
+        # The cache must live in the common system temp directory and NEVER inside the
+        # SQL working copy (it would show as untracked noise in every svn status),
+        # and the command must print the path so the user can find it.
+        $r = Invoke-Cli set_table_locations $script:TestProfile '--rebuild'
+        Assert-ExitCode $r
+        if (Test-Path (Join-Path $setup 'temp')) {
+            throw 'the cache must not be written into the SQL source tree (css/setup/temp)'
+        }
+        if ($r.StdOut -notmatch [regex]::Escape($env:TEMP)) {
+            throw "--rebuild should report a path under the system temp directory. stdout: $($r.StdOut)"
+        }
+    }
+    Test-Case 'set_table_locations.shows_cache_path' {
+        # Every run — not just --rebuild — names the resolved options file.
+        $r = Invoke-Cli set_table_locations $script:TestProfile '--skip-edit' '--no-compile'
+        Assert-ExitCode $r
+        if ($r.StdOut -notmatch 'Resolved options file:') {
+            throw "expected the resolved options path banner. stdout: $($r.StdOut)"
+        }
+    }
+    Test-Case 'set_options.shows_cache_path' {
+        $r = Invoke-Cli set_options $script:TestProfile '--rebuild'
+        Assert-ExitCode $r
+        if ($r.StdOut -notmatch 'Resolved options file:') {
+            throw "expected the resolved options path banner. stdout: $($r.StdOut)"
+        }
+    }
     Test-Case 'set_table_locations.error_source_missing' {
         # Move the source file aside; CLI must error cleanly.
         $src = Join-Path $setup 'table_locations'
@@ -2240,6 +2290,25 @@ function Test-ProfileManagement {
         $r = Invoke-Cli set_profile '--test' $script:TestProfile '--what' 'table-locations'
         Assert-ExitCode $r
         if ($r.StdOut -notmatch 'Table locations file found') { throw "expected 'Table locations file found' in output" }
+    }
+    Test-Case 'set_profile.test_table_locations_shows_cache_path' {
+        # The resolved options/table_locations cache path must be visible from the
+        # profile test, so a stale-cache symptom is diagnosable without source reading.
+        $r = Invoke-Cli set_profile '--test' $script:TestProfile '--what' 'table-locations'
+        Assert-ExitCode $r
+        if ($r.StdOut -notmatch 'resolved options file:') {
+            throw "expected the resolved options cache path in the output. stdout: $($r.StdOut)"
+        }
+    }
+    Test-Case 'set_profile.test_options_rebuild' {
+        $r = Invoke-Cli set_profile '--test' $script:TestProfile '--what' 'options' '--resolve' '&users&' '--rebuild'
+        Assert-ExitCode $r
+        if ($r.StdOut -notmatch 'resolved options file:') {
+            throw "expected the resolved options cache path in the output. stdout: $($r.StdOut)"
+        }
+        if ($r.StdOut -notmatch 'Rebuilt:') {
+            throw "--rebuild should report the rebuilt cache. stdout: $($r.StdOut)"
+        }
     }
     Test-Case 'set_profile.test_changelog' {
         # Source exits 0 whether gclog12 is on or off; we're proving the CLI is

@@ -53,13 +53,13 @@ namespace ibsCompiler
 
             // Import - create temp files with proper line endings
             ibs_compiler_common.WriteLine("Starting required fields insert...", cmdvars.OutFile);
-            var bcpFile = BuildTempFileForBcp(mainMes + ".required_fields", "css.required_fields.tmp");
+            var bcpFile = BuildTempFileForBcp(mainMes + ".required_fields", "css.required_fields.tmp", cmdvars.OutFile);
             var result = executor.BulkCopy(myOptions.ReplaceOptions("&w#i_required_fields&"), BcpDirection.IN, bcpFile);
             try { File.Delete(bcpFile); } catch { }
             if (!result.Returncode) return;
 
             ibs_compiler_common.WriteLine("Starting required fields detail insert...", cmdvars.OutFile);
-            var bcpFileDtl = BuildTempFileForBcp(mainMes + ".required_fields_dtl", "css.required_fields_dtl.tmp");
+            var bcpFileDtl = BuildTempFileForBcp(mainMes + ".required_fields_dtl", "css.required_fields_dtl.tmp", cmdvars.OutFile);
             result = executor.BulkCopy(myOptions.ReplaceOptions("&w#i_required_fields_dtl&"), BcpDirection.IN, bcpFileDtl);
             try { File.Delete(bcpFileDtl); } catch { }
             if (!result.Returncode) return;
@@ -72,9 +72,10 @@ namespace ibsCompiler
             ibs_compiler_common.WriteLine("compile_required_fields DONE.", cmdvars.OutFile);
         }
 
-        private static string BuildTempFileForBcp(string inputFile, string outputName)
+        private static string BuildTempFileForBcp(string inputFile, string outputName, string? outFile = null)
         {
             var destFile = Path.Combine(ibs_compiler_common.GetTempPath(), outputName);
+            ibs_compiler_common.WriteLine("temp file: " + destFile, outFile);
             using var source = new StreamReader(inputFile);
             using var dest = new StreamWriter(destFile, false);
             string? line;

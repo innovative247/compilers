@@ -203,10 +203,30 @@ Skips: options loading, placeholder resolution, symbolic links, changelog loggin
 
 ### Options Cache
 
-Location: `{SQL_SOURCE}/CSS/Setup/temp/{profile}.options.tmp`
-- TTL: 24 hours
-- Contains merged placeholders from option hierarchy
-- Force rebuild by deleting the cache file
+Location (`ibs_compiler_common.GetPath_ResolvedOptions`): the common system temp directory —
+`%TEMP%/options.{platform}.{company}.{profile}.tmp`, or `options.{company}.{profile}.tmp`
+when no `options.{platform}` source file exists. If `%TEMP%` contains a space the CLI falls
+back to `<install-dir>/temp/`. It is deliberately NOT written inside the SQL working copy —
+that would surface as untracked noise in every `svn status`.
+
+> Because the file is out of sight, **every command that works with options or
+> table_locations prints its full path**: `set_options`, `set_table_locations`,
+> `compile_options`, `compile_table_locations`, and `set_profile --test --what
+> options|table-locations` (which also prints the age). The other setup compiles print
+> their bulk-copy temp files the same way.
+
+- **TTL: 60 minutes** from file creation, then rebuilt on next use.
+- Contains the whole option hierarchy merged into one flat `token→value` list:
+  `options.{platform}` + `options.{company}` + `options.{company}.{profile}` +
+  `table_locations` (layered last, so table placeholders resolve to `db..table`).
+- Every compile path builds it with `forceRebuild: true`, so `compile_options` /
+  `compile_table_locations` always re-merge from source.
+- 3.1.4 briefly stored the cache in `{SQL_SOURCE}/css/setup/temp`; `--rebuild` deletes that
+  orphan too, so an install that ran 3.1.4 leaves nothing behind in the source tree.
+- Force a rebuild explicitly: `set_options <profile> --rebuild` or
+  `set_table_locations <profile> --rebuild` (alias `--rebuild-cache`), or delete the file.
+- `set_profile --test --what options|table-locations` prints the path and age, and
+  accepts `--rebuild` (interactively it prompts to clear and rebuild).
 
 ### Symlink Check Cache
 

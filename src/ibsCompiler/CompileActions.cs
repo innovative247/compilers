@@ -45,6 +45,8 @@ namespace ibsCompiler
 
             // Build temp files for bulk copy
             ibs_compiler_common.WriteLine("Line Extraction of actions started at " + DateTime.Now, cmdvars.OutFile);
+            ibs_compiler_common.WriteLine("temp file: " + Path.Combine(tempPath, "actions.tmp"), cmdvars.OutFile);
+            ibs_compiler_common.WriteLine("temp file: " + Path.Combine(tempPath, "actions_dtl.tmp"), cmdvars.OutFile);
             using (var source = new StreamReader(actHeader))
             using (var dest = new StreamWriter(Path.Combine(tempPath, "actions.tmp"), false))
             {

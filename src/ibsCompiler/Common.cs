@@ -838,6 +838,68 @@ namespace ibsCompiler
             return Path.Combine(profile.IRPath, "css", "setup", "table_locations." + profile.Company);
         }
 
+        /// <summary>
+        /// The fully-resolved options cache written by <see cref="Options.GenerateOptionFiles"/> —
+        /// every option file plus table_locations merged into one flat token→value list.
+        /// It lives in the temp directory, NOT css/setup: it is a derived file, safe to delete
+        /// at any time, and the next compile rebuilds it from the source files. Reused for 60
+        /// minutes from creation, so a source edit inside that window is invisible until the
+        /// cache is cleared (see <see cref="ClearResolvedOptions"/>) or a compile forces a rebuild.
+        /// </summary>
+        public static string GetPath_ResolvedOptions(CommandVariables cmdvars, ResolvedProfile profile)
+            => Path.Combine(GetPath_ResolvedOptionsDir(profile), GetName_ResolvedOptions(cmdvars, profile));
+
+        /// <summary>
+        /// Directory holding the resolved options cache: the common system temp directory, so
+        /// the cache is never written into a SQL working copy (it would show up as untracked
+        /// noise in every <c>svn status</c>). Every command that reads or writes it prints the
+        /// full path — see <see cref="Options.ReportResolvedOptionsPath"/>.
+        /// </summary>
+        public static string GetPath_ResolvedOptionsDir(ResolvedProfile profile)
+        {
+            var tempPath = GetTempPath();
+            return string.IsNullOrEmpty(tempPath) ? "." + Path.DirectorySeparatorChar : tempPath;
+        }
+
+        private static string GetName_ResolvedOptions(CommandVariables cmdvars, ResolvedProfile profile)
+        {
+            var serverName = (profile.IsProfile ? profile.ProfileName : cmdvars.Server ?? "")
+                .Replace('\\', '_').Replace('.', '_');
+
+            if (File.Exists(GetPath_OptionsSQL(cmdvars, profile)))
+                return $"options.{CanonicalName(profile.ServerType)}.{profile.Company}.{serverName}.tmp";
+            return $"options.{profile.Company}.{serverName}.tmp";
+        }
+
+        /// <summary>
+        /// The 3.1.4-only location of the resolved options cache (inside the SQL working copy at
+        /// <c>&lt;SQL_SOURCE&gt;/css/setup/temp</c>). Still cleared by
+        /// <see cref="ClearResolvedOptions"/> so an install that ran 3.1.4 doesn't leave an
+        /// orphan inside the source tree, but never read or written.
+        /// </summary>
+        private static string? GetPath_ResolvedOptionsLegacy(CommandVariables cmdvars, ResolvedProfile profile)
+        {
+            if (string.IsNullOrEmpty(profile.IRPath)) return null;
+            return Path.Combine(profile.IRPath, "css", "setup", "temp",
+                                GetName_ResolvedOptions(cmdvars, profile));
+        }
+
+        /// <summary>
+        /// Deletes the resolved options cache. Returns true if a file was actually removed.
+        /// </summary>
+        public static bool ClearResolvedOptions(CommandVariables cmdvars, ResolvedProfile profile)
+        {
+            bool cleared = false;
+            foreach (var path in new[] { GetPath_ResolvedOptions(cmdvars, profile),
+                                         GetPath_ResolvedOptionsLegacy(cmdvars, profile) })
+            {
+                if (string.IsNullOrEmpty(path) || !File.Exists(path)) continue;
+                try { File.Delete(path); cleared = true; }
+                catch (Exception ex) { WriteLine($"Could not delete {path}: {ex.Message}", cmdvars.OutFile); }
+            }
+            return cleared;
+        }
+
         public static string GetPath_Setup(ResolvedProfile profile)
         {
             return Path.Combine(profile.IRPath, "css", "setup");

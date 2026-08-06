@@ -21,14 +21,40 @@ namespace ibsCompiler
             _forceRebuild = forceRebuild;
         }
 
+        /// <summary>
+        /// Where the fully-resolved token→value set is cached on disk. Delete it (or use
+        /// the <c>--rebuild</c> flag on set_options / set_table_locations) to force the
+        /// next run to re-merge from the source option files.
+        /// </summary>
+        public string ResolvedOptionsPath => ibs_compiler_common.GetPath_ResolvedOptions(_cmdvars, _profile);
+
+        /// <summary>
+        /// Prints the resolved cache path (with its age) to the normal log channel. The cache
+        /// lives in the shared system temp directory, so every command that builds or reads it
+        /// says exactly where it is — otherwise a stale-cache symptom is undiagnosable without
+        /// reading source. Deliberately NOT called from GenerateOptionFiles: that runs on every
+        /// isqlline/runsql invocation and would drown ordinary query output.
+        /// </summary>
+        public void ReportResolvedOptionsPath()
+        {
+            var path = ResolvedOptionsPath;
+            if (File.Exists(path))
+            {
+                var age = (int)DateTime.Now.Subtract(new FileInfo(path).CreationTime).TotalMinutes;
+                ibs_compiler_common.WriteLine($"resolved options file: {path} ({age} min old, rebuilt after 60)", _cmdvars.OutFile);
+            }
+            else
+            {
+                ibs_compiler_common.WriteLine($"resolved options file: {path} (not built yet)", _cmdvars.OutFile);
+            }
+        }
+
         public bool GenerateOptionFiles()
         {
-            var tempPath = ibs_compiler_common.GetTempPath();
-            if (string.IsNullOrEmpty(tempPath))
-            {
+            // Only reached when SQL_SOURCE is unset and the system temp fallback is also
+            // unusable — the cache normally lives under <SQL_SOURCE>/css/setup/temp.
+            if (string.IsNullOrEmpty(_profile.IRPath) && string.IsNullOrEmpty(ibs_compiler_common.GetTempPath()))
                 ibs_compiler_common.WriteLine("Variable TEMP not set. Using current directory for temp file storage.", _cmdvars.OutFile);
-                tempPath = "." + Path.DirectorySeparatorChar;
-            }
 
             var optFileSQL = ibs_compiler_common.GetPath_OptionsSQL(_cmdvars, _profile);
             var optFileCompany = ibs_compiler_common.GetPath_OptionsCompany(_profile);
@@ -36,13 +62,7 @@ namespace ibsCompiler
             var tblFileServer = ibs_compiler_common.GetPath_TableLocations(_profile);
             var tblFileCompany = ibs_compiler_common.GetPath_TableLocationsCompany(_profile);
 
-            string optFileFinal;
-            var serverName = (_profile.IsProfile ? _profile.ProfileName : _cmdvars.Server)
-                .Replace('\\', '_').Replace('.', '_');
-            if (File.Exists(optFileSQL))
-                optFileFinal = Path.Combine(tempPath, $"options.{ibs_compiler_common.CanonicalName(_profile.ServerType)}.{_profile.Company}.{serverName}.tmp");
-            else
-                optFileFinal = Path.Combine(tempPath, $"options.{_profile.Company}.{serverName}.tmp");
+            var optFileFinal = ResolvedOptionsPath;
 
             bool forceRebuild = _forceRebuild;
             if (!File.Exists(optFileFinal))
@@ -113,6 +133,13 @@ namespace ibsCompiler
 
                 // Atomic replace: a parallel agent reading this cache never sees a partial file.
                 ibs_compiler_common.SaveArrayToDiskAtomic(_arrOptions, optFileFinal);
+
+                // The 60-minute TTL above is measured from CreationTime, but an atomic
+                // replace (and NTFS file tunneling on a delete/recreate) carries the ORIGINAL
+                // creation time onto the new file — so a just-rebuilt cache can read as
+                // hours old and be rebuilt again on the very next call. Stamp it so the age
+                // reported by set_profile, and the TTL itself, mean what they say.
+                try { File.SetCreationTime(optFileFinal, DateTime.Now); } catch { }
             }
             return true;
         }

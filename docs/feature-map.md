@@ -180,6 +180,7 @@ Interactive flow:
 | Prompt 1 = N | Skip editor | `--no-edit-header` / `--skip-edit` | `set_table_locations.no_edit_header` / `.skip_edit` | COVERED |
 | Prompt 2 = Y | Run `compile_table_locations_main.Run` | `--compile` | `set_table_locations.compile_smoke` | COVERED |
 | Prompt 2 = N | exit 0 | `--no-compile` | `set_table_locations.no_compile` | COVERED |
+| (n/a — flag only) | Clear + re-merge the resolved options cache (`%TEMP%/options.*.tmp`), print its path, exit 0. With `--compile` it runs first so the compile can'''t read a stale cache. | `--rebuild` (alias `--rebuild-cache`) | `set_table_locations.rebuild` / `.rebuild_then_compile` / `.rebuild_location` / `.shows_cache_path` | COVERED |
 | (error) | Source file missing → exit non-zero | (n/a) | `set_table_locations.error_source_missing` / `.error_profile_missing` | COVERED |
 
 ### `set_options` (alias `eopt`)
@@ -202,6 +203,7 @@ Interactive flow (dynamic menu, redrawn each loop):
 | `3` Import (Sync) — checkbox UI Remove | Remove selected extras | `--sync --all-removes` or `--sync --remove N1,N2` | `set_options.sync_all_removes` / `set_options.sync_remove` | COVERED |
 | Dynamic `4..N` Edit options.{X} | Launch editor on the picked file | (agent writes the file directly — no flag) | — | SKIP-AGENT |
 | Dynamic `N+1..M` Copy options.{X} | Copy file to new name | `--copy options.SRC --to options.DST` | `set_options.copy` | COVERED |
+| (n/a — flag only) | Clear + re-merge the resolved options cache, print its path, exit 0. Combined with another action (e.g. `--import`) it runs first. | `--rebuild` (alias `--rebuild-cache`) | `set_options.shows_cache_path` (+ shared with `set_table_locations.rebuild`) | COVERED |
 | Post-action "Import to DB?" Y | Run `compile_options_main.Run` (also recompiles `table_locations`) | `--import` (composable with any other action) | `set_options.import_smoke` / `set_options.add_then_import_smoke` | COVERED |
 | `--customize NAME=VALUE` | Override default during merge/sync (value or onoff) | `--customize K=V` (repeatable) | `set_options.customize_value` / `set_options.customize_onoff` | COVERED |
 | (error) | Every validation surface (missing flags, bad combos, name length, duplicates, missing MOD info, bad copy target, mutex actions, malformed customize) | (n/a) | `set_options.error_*` (16 tests) | COVERED |
@@ -306,8 +308,8 @@ Interactive main menu:
 | `2` → Delete → confirm | Remove from `settings.json` | `--delete NAME --yes` (mandatory `--yes`) | `set_profile.delete_yes` / `set_profile.delete_without_yes_errors` | COVERED |
 | `2` → Test → `1` SQL Source | Verify `IRPath` + `css/setup/` exists | `--test NAME --what sql-source` | `set_profile.test_sql_source` | COVERED |
 | `2` → Test → `2` Connection | Attempt connection (3 query fallback for Sybase; Postgres probes `SELECT version()` falling back to `SELECT 1`) | `--test NAME --what connection` (no credential-retry prompt headless) | `set_profile.test_connection` | COVERED |
-| `2` → Test → `3` Options | Resolve a placeholder against the full merged set — `options.<ServerType>` + `options.<company>` + `options.<company>.<server>` + `table_locations` (mirrors `Options.GenerateOptionFiles`). A bare token (e.g. `users`) is normalized to `&users&` so table names resolve; the file list shows each merge input incl. `table_locations`. | `--test NAME --what options [--resolve PLACEHOLDER]` | `set_profile.test_options` / `set_profile.test_options_bare_token` | COVERED |
-| `2` → Test → `4` Table locations | Verify `table_locations` file exists | `--test NAME --what table-locations` | `set_profile.test_table_locations` | COVERED |
+| `2` → Test → `3` Options | Resolve a placeholder against the full merged set — `options.<ServerType>` + `options.<company>` + `options.<company>.<server>` + `table_locations` (mirrors `Options.GenerateOptionFiles`). A bare token (e.g. `users`) is normalized to `&users&` so table names resolve; the file list shows each merge input incl. `table_locations`. The resolved cache file (`%TEMP%/options.[platform.]<company>.<profile>.tmp`, reused for 60 min) is reported with its path and age; `--rebuild` clears and re-merges it. | `--test NAME --what options [--resolve PLACEHOLDER] [--rebuild]` | `set_profile.test_options` / `.test_options_bare_token` / `.test_options_rebuild` | COVERED |
+| `2` → Test → `4` Table locations | Verify `table_locations` file exists, then report the resolved options cache path/age and offer to clear + rebuild it | `--test NAME --what table-locations [--rebuild]` | `set_profile.test_table_locations` / `.test_table_locations_shows_cache_path` | COVERED |
 | `2` → Test → `5` Changelog | Verify `gclog12` on, `ba_gen_chg_log_new` exists, insert test row | `--test NAME --what changelog` | `set_profile.test_changelog` | COVERED |
 | `2` → Test → `6` Symbolic links | Create missing short-path shortcuts under `IRPath`, sourced from the tree's own `create_links.sh` (else built-in list); skips any whose short path/shortcut already exists | `--test NAME --what symlinks` | `set_profile.test_symlinks` | COVERED |
 | `2` → Test → all | Run all six in order | `--test NAME --what all` | `set_profile.test_all` | COVERED |
