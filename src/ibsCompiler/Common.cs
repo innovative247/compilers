@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.RegularExpressions;
 using ibsCompiler.Configuration;
 
@@ -229,6 +230,20 @@ namespace ibsCompiler
         /// </summary>
         public static StreamWriter OpenSourceWriter(string path, bool append = false)
             => new StreamWriter(path, append) { NewLine = "\n" };
+
+        /// <summary>
+        /// Data-file writer for BulkCopy OUT. UTF-8 without BOM, LF terminators —
+        /// spelled out rather than inherited from the StreamWriter default so the
+        /// on-disk encoding of an export is a decision, not an accident.
+        /// </summary>
+        public static StreamWriter OpenBulkWriter(string path)
+            => new StreamWriter(path, false, new UTF8Encoding(false)) { NewLine = "\n" };
+
+        /// <summary>
+        /// Data-file reader for BulkCopy IN — UTF-8, BOM tolerated (detect-and-strip).
+        /// </summary>
+        public static string[] ReadBulkLines(string path)
+            => File.ReadAllLines(path, new UTF8Encoding(false));
 
         /// <summary>
         /// Seconds since the SBN epoch (1980-01-01), the int form used by
@@ -1023,6 +1038,15 @@ namespace ibsCompiler
         public static CommandVariables bcp_data_variables(List<string> arguments, ProfileManager profileMgr)
         {
             var myargs = DefaultCommandVariables(ref arguments);
+
+            // bcp-only flags — kept out of DefaultCommandVariables so no other tool
+            // inherits them. An explicit "-t" with no value must stay distinguishable
+            // from "-t absent", hence the presence probe before FindAndRemove.
+            myargs.Truncate = FindAndRemove_BoolFlag("--truncate", ref arguments, defaultValue: false);
+            bool hasTerm = arguments.Exists(a => a.Length > 1 && a.Substring(0, 2).ToUpper() == "-T");
+            var term = FindAndRemove("-t", ref arguments);
+            myargs.FieldTerminator = hasTerm ? UnescapeTerminator(term) : "\t";
+
             if (arguments.Count >= 2)
             {
                 foreach (var arg in arguments)
@@ -1031,11 +1055,47 @@ namespace ibsCompiler
                         myargs.Server = arg.Substring(2);
                 }
                 if (myargs.Server == "") myargs.Server = arguments[arguments.Count - 1];
-                if (myargs.Bcp == "") myargs.Bcp = arguments[arguments.Count - 2];
+                // Native bcp puts the datafile after the direction: <table> in|out <file> <server>.
+                // Positional shape is therefore ambiguous by one slot, resolved by where IN/OUT
+                // sits: second-to-last means no datafile, third-to-last means the slot between
+                // them is one. Anything else falls through to the old shape so the
+                // "direction must be IN or OUT" diagnostic still fires on it.
+                int dirIdx = arguments.Count - 2;
+                if (!IsDirection(arguments[dirIdx]) && arguments.Count >= 3 && IsDirection(arguments[arguments.Count - 3]))
+                {
+                    dirIdx = arguments.Count - 3;
+                    myargs.DataFile = arguments[arguments.Count - 2];
+                }
+                if (myargs.Bcp == "") myargs.Bcp = arguments[dirIdx];
                 if (myargs.OutFile != "") try { File.Delete(myargs.OutFile); } catch { }
                 myargs.Bcp = myargs.Bcp.ToUpper();
             }
             return myargs;
+        }
+
+        private static bool IsDirection(string arg)
+            => arg.Equals("IN", StringComparison.OrdinalIgnoreCase) || arg.Equals("OUT", StringComparison.OrdinalIgnoreCase);
+
+        // MSSQL bcp's -t escape forms. Everything else is taken literally, so -t"|" / -t, work.
+        private static string UnescapeTerminator(string s)
+        {
+            if (string.IsNullOrEmpty(s) || s.IndexOf('\\') < 0) return s;
+            var sb = new StringBuilder(s.Length);
+            for (int i = 0; i < s.Length; i++)
+            {
+                if (s[i] == '\\' && i + 1 < s.Length)
+                {
+                    switch (s[i + 1])
+                    {
+                        case 't': sb.Append('\t'); i++; continue;
+                        case 'n': sb.Append('\n'); i++; continue;
+                        case '0': sb.Append('\0'); i++; continue;
+                        case '\\': sb.Append('\\'); i++; continue;
+                    }
+                }
+                sb.Append(s[i]);
+            }
+            return sb.ToString();
         }
 
         private static CommandVariables DefaultCommandVariables(ref List<string> arguments)

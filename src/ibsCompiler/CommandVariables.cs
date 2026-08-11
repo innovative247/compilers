@@ -72,6 +72,11 @@ namespace ibsCompiler
         public int SeqFirst;
         public int SeqLast;
         public string Bcp;
+        // bcp_data only: native-bcp parity — datafile positional, opt-in truncate,
+        // -t field terminator.
+        public string DataFile;
+        public bool Truncate;
+        public string FieldTerminator;
         public bool ChangeLog;
         public string CommandName;
         public bool Preview;

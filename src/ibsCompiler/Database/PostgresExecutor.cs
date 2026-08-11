@@ -322,7 +322,7 @@ namespace ibsCompiler.Database
             if (!string.IsNullOrEmpty(ex.Where)) emit(ex.Where);
         }
 
-        public ExecReturn BulkCopy(string table, BcpDirection direction, string dataFile, string formatFile = "")
+        public ExecReturn BulkCopy(string table, BcpDirection direction, string dataFile, string formatFile = "", string fieldTerminator = "\t")
         {
             var result = new ExecReturn { Returncode = true, Output = "" };
 
@@ -330,11 +330,11 @@ namespace ibsCompiler.Database
             {
                 if (direction == BcpDirection.IN)
                 {
-                    BulkCopyIn(table, dataFile);
+                    BulkCopyIn(table, dataFile, fieldTerminator);
                 }
                 else
                 {
-                    var rows = BulkCopyOut(table, dataFile);
+                    var rows = BulkCopyOut(table, dataFile, fieldTerminator);
                     result.Output = rows.ToString();
                 }
             }
@@ -384,7 +384,7 @@ namespace ibsCompiler.Database
             return needs ? "\"" + ident.Replace("\"", "\"\"") + "\"" : ident;
         }
 
-        private void BulkCopyIn(string table, string dataFile)
+        private void BulkCopyIn(string table, string dataFile, string fieldTerminator)
         {
             using var conn = OpenBulkConnection();
             var target = ResolveCopyTarget(table);
@@ -398,9 +398,12 @@ namespace ibsCompiler.Database
                     columnTypes.Add(schemaReader.GetFieldType(i));
             }
 
-            var lines = File.ReadAllLines(dataFile);
+            var lines = ibs_compiler_common.ReadBulkLines(dataFile);
             if (lines.Length == 0) return;
-            int colCount = columnTypes.Count > 0 ? columnTypes.Count : lines[0].Split('\t').Length;
+            // The file's separator is the caller's -t; COPY's wire separator is always a tab,
+            // so the two only coincide by default.
+            var sep = new[] { fieldTerminator };
+            int colCount = columnTypes.Count > 0 ? columnTypes.Count : lines[0].Split(sep, StringSplitOptions.None).Length;
 
             int total = 0;
             // Text-format COPY: write tab-separated, PG-escaped rows straight to STDIN.
@@ -409,7 +412,7 @@ namespace ibsCompiler.Database
                 foreach (var line in lines)
                 {
                     if (string.IsNullOrEmpty(line)) continue;
-                    var cols = line.Split('\t');
+                    var cols = line.Split(sep, StringSplitOptions.None);
 
                     // Extra fields merge into the last column (native BCP behavior).
                     if (cols.Length > colCount && colCount > 0)
@@ -417,7 +420,7 @@ namespace ibsCompiler.Database
                         var merged = new string[colCount];
                         for (int i = 0; i < colCount - 1; i++)
                             merged[i] = cols[i];
-                        merged[colCount - 1] = string.Join("\t", cols.Skip(colCount - 1));
+                        merged[colCount - 1] = string.Join(fieldTerminator, cols.Skip(colCount - 1));
                         cols = merged;
                     }
 
@@ -446,21 +449,21 @@ namespace ibsCompiler.Database
             ibs_compiler_common.WriteLine($"{total} rows copied.");
         }
 
-        private int BulkCopyOut(string table, string dataFile)
+        private int BulkCopyOut(string table, string dataFile, string fieldTerminator)
         {
             using var conn = OpenBulkConnection();
             var target = ResolveCopyTarget(table);
 
             using var reader = conn.BeginTextExport($"COPY (SELECT * FROM {target}) TO STDOUT (FORMAT text)");
-            using var writer = ibs_compiler_common.OpenSourceWriter(dataFile);
+            using var writer = ibs_compiler_common.OpenBulkWriter(dataFile);
 
             int rowCount = 0;
             string? line;
             while ((line = reader.ReadLine()) != null)
             {
-                // Unescape PG text-format escapes so the file matches the raw tab-delimited
+                // Unescape PG text-format escapes so the file matches the raw delimited
                 // form the other executors write.
-                writer.WriteLine(UnescapeCopyLine(line));
+                writer.WriteLine(UnescapeCopyLine(line, fieldTerminator));
                 rowCount++;
                 if (rowCount % 1000 == 0)
                     ibs_compiler_common.WriteLine($"{rowCount} rows successfully extracted to {dataFile}");
@@ -487,13 +490,14 @@ namespace ibsCompiler.Database
         }
 
         // Field separators in COPY output are literal tabs; escaped tabs within data are "\t".
-        // Split on the literal tabs first, then unescape each field, then rejoin.
-        private static string UnescapeCopyLine(string line)
+        // Split on the literal tabs first, then unescape each field, then rejoin on the
+        // caller's terminator — with a non-tab terminator an unescaped tab is just data.
+        private static string UnescapeCopyLine(string line, string fieldTerminator)
         {
             var fields = line.Split('\t');
             for (int i = 0; i < fields.Length; i++)
                 fields[i] = UnescapeCopyField(fields[i]);
-            return string.Join("\t", fields);
+            return string.Join(fieldTerminator, fields);
         }
 
         private static string UnescapeCopyField(string f)

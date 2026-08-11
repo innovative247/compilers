@@ -37,7 +37,8 @@ namespace ibsCompiler.Database
         /// Bulk copy data between a file and a database table.
         /// Replaces F4.8's exec_bcp() which launched native bcp/obcp.
         /// </summary>
-        ExecReturn BulkCopy(string table, BcpDirection direction, string dataFile, string formatFile = "");
+        /// <param name="fieldTerminator">Field separator in the data file — bcp's -t. Tab unless a caller says otherwise.</param>
+        ExecReturn BulkCopy(string table, BcpDirection direction, string dataFile, string formatFile = "", string fieldTerminator = "\t");
     }
 
     /// <summary>

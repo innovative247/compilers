@@ -366,7 +366,7 @@ namespace ibsCompiler.Database
             emit(err.Message);
         }
 
-        public ExecReturn BulkCopy(string table, BcpDirection direction, string dataFile, string formatFile = "")
+        public ExecReturn BulkCopy(string table, BcpDirection direction, string dataFile, string formatFile = "", string fieldTerminator = "\t")
         {
             var result = new ExecReturn { Returncode = true, Output = "" };
 
@@ -374,11 +374,11 @@ namespace ibsCompiler.Database
             {
                 if (direction == BcpDirection.IN)
                 {
-                    BulkCopyIn(table, dataFile);
+                    BulkCopyIn(table, dataFile, fieldTerminator);
                 }
                 else
                 {
-                    var rows = BulkCopyOut(table, dataFile);
+                    var rows = BulkCopyOut(table, dataFile, fieldTerminator);
                     result.Output = rows.ToString();
                 }
             }
@@ -392,7 +392,11 @@ namespace ibsCompiler.Database
             return result;
         }
 
-        private void BulkCopyIn(string table, string dataFile)
+        // Server's configured charset, for callers that need to report what the data
+        // is being adhered to. Cached; the reinterpretation pair uses the same value.
+        public string ServerCharset => DetectServerCharset();
+
+        private void BulkCopyIn(string table, string dataFile, string fieldTerminator)
         {
             string database = "";
             string tableName = table;
@@ -419,13 +423,14 @@ namespace ibsCompiler.Database
                 ibs_compiler_common.WriteLine($"{e.RowsCopied} rows sent to the server.");
             };
 
-            // Read tab-delimited data file and load into DataTable (all string columns)
+            // Read the delimited data file and load into DataTable (all string columns)
             // Server handles type conversion during BCP insert
-            var lines = File.ReadAllLines(dataFile);
+            var lines = ibs_compiler_common.ReadBulkLines(dataFile);
             if (lines.Length == 0) return;
 
+            var sep = new[] { fieldTerminator };
             var dataTable = new DataTable();
-            var firstCols = lines[0].Split('\t');
+            var firstCols = lines[0].Split(sep, StringSplitOptions.None);
             int colCount = firstCols.Length;
             for (int i = 0; i < colCount; i++)
                 dataTable.Columns.Add($"col{i}", typeof(string));
@@ -433,7 +438,7 @@ namespace ibsCompiler.Database
             foreach (var line in lines)
             {
                 if (string.IsNullOrEmpty(line)) continue;
-                var cols = line.Split('\t');
+                var cols = line.Split(sep, StringSplitOptions.None);
 
                 // If data has more fields than table columns, merge extras into last column
                 if (cols.Length > colCount && colCount > 0)
@@ -441,7 +446,7 @@ namespace ibsCompiler.Database
                     var merged = new string[colCount];
                     for (int i = 0; i < colCount - 1; i++)
                         merged[i] = cols[i];
-                    merged[colCount - 1] = string.Join("\t", cols.Skip(colCount - 1));
+                    merged[colCount - 1] = string.Join(fieldTerminator, cols.Skip(colCount - 1));
                     cols = merged;
                 }
 
@@ -457,7 +462,7 @@ namespace ibsCompiler.Database
             ibs_compiler_common.WriteLine($"{dataTable.Rows.Count} rows copied.");
         }
 
-        private int BulkCopyOut(string table, string dataFile)
+        private int BulkCopyOut(string table, string dataFile, string fieldTerminator)
         {
             string database = "";
             string tableName = table;
@@ -474,7 +479,7 @@ namespace ibsCompiler.Database
 
             using var cmd = new AseCommand($"SELECT * FROM {tableName}", connection);
             using var reader = cmd.ExecuteReader();
-            using var writer = ibs_compiler_common.OpenSourceWriter(dataFile);
+            using var writer = ibs_compiler_common.OpenBulkWriter(dataFile);
 
             int rowCount = 0;
             while (reader.Read())
@@ -482,7 +487,7 @@ namespace ibsCompiler.Database
                 var values = new string[reader.FieldCount];
                 for (int i = 0; i < reader.FieldCount; i++)
                     values[i] = FromServer(reader.IsDBNull(i) ? "" : reader[i].ToString() ?? "");
-                writer.WriteLine(string.Join("\t", values));
+                writer.WriteLine(string.Join(fieldTerminator, values));
                 rowCount++;
                 if (rowCount % 1000 == 0)
                     ibs_compiler_common.WriteLine($"{rowCount} rows successfully extracted to {dataFile}");

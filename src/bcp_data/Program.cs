@@ -2,7 +2,7 @@ using ibsCompiler;
 using ibsCompiler.Configuration;
 using ibsCompiler.Database;
 
-const string Usage = "Usage: bcp_data <table...> <IN|OUT> <server/profile> [-U user] [-P pass] [-O outfile] [-MSSQL|-SYBASE|-POSTGRES]";
+const string Usage = "Usage: bcp_data <table...> <IN|OUT> [datafile] <server/profile> [-t field_terminator] [--truncate] [-U user] [-P pass] [-O outfile] [-MSSQL|-SYBASE|-POSTGRES]";
 if (!VersionCheck.CheckForUpdates("bcp_data", args, Usage)) return 0;
 
 var arguments = args.ToList();
@@ -23,13 +23,30 @@ if (cmdvars.Bcp != "IN" && cmdvars.Bcp != "OUT")
     return 1;
 }
 
-// bcp_data_variables consumed the last two positionals (direction + server) and
-// DefaultCommandVariables already stripped every flag — what is left in front is
-// the table list.
-var tables = arguments.GetRange(0, arguments.Count - 2);
+if (cmdvars.FieldTerminator.Length == 0)
+{
+    Console.Error.WriteLine("ERROR: -t requires a field terminator (e.g. -t\"|\" or -t\\t).");
+    Console.Error.WriteLine(Usage);
+    return 1;
+}
+
+// bcp_data_variables consumed the trailing positionals (direction + optional data
+// file + server) and DefaultCommandVariables already stripped every flag — what is
+// left in front is the table list.
+var trailing = string.IsNullOrEmpty(cmdvars.DataFile) ? 2 : 3;
+var tables = arguments.GetRange(0, arguments.Count - trailing);
 if (tables.Count == 0)
 {
     Console.Error.WriteLine("ERROR: at least one table name is required.");
+    Console.Error.WriteLine(Usage);
+    return 1;
+}
+
+// One data file cannot hold several tables' data, and native bcp is one table per
+// call anyway — so naming a file only makes sense with a single table.
+if (!string.IsNullOrEmpty(cmdvars.DataFile) && tables.Count != 1)
+{
+    Console.Error.WriteLine("ERROR: a data file requires exactly one table.");
     Console.Error.WriteLine(Usage);
     return 1;
 }
@@ -75,10 +92,11 @@ return failed == 0 ? 0 : 1;
 bool RunTable(string table)
 {
     var label = BareName(table).ToUpper();
-    // The data file is named after the table, in the current directory — same
-    // convention as the Unix export_sql_table_data / import_sql_table_data pair,
-    // with transfer_data's .bcp extension.
-    var dataFile = Path.Combine(Environment.CurrentDirectory, BareName(table) + ".bcp");
+    // Without the datafile positional the file is named after the table, in the
+    // current directory — same convention as the Unix export_sql_table_data /
+    // import_sql_table_data pair, with transfer_data's .bcp extension.
+    var dataFile = Path.Combine(Environment.CurrentDirectory,
+        string.IsNullOrEmpty(cmdvars.DataFile) ? BareName(table) + ".bcp" : cmdvars.DataFile);
 
     // Checked before anything else so a missing file never opens a connection.
     if (direction == BcpDirection.IN && !File.Exists(dataFile))
@@ -116,7 +134,9 @@ bool RunTable(string table)
 
     ibs_compiler_common.WriteLine(StatusLine("started"), cmdvars.OutFile);
 
-    if (direction == BcpDirection.IN)
+    // Native bcp appends; --truncate is the opt-in for the legacy
+    // import_sql_table_data behavior of emptying the table first.
+    if (direction == BcpDirection.IN && cmdvars.Truncate)
     {
         var truncate = executor.ExecuteSql($"truncate table {tableOnly}", database, false, cmdvars.OutFile);
         if (!truncate.Returncode)
@@ -126,7 +146,13 @@ bool RunTable(string table)
         }
     }
 
-    var result = executor.BulkCopy(resolved, direction, dataFile);
+    // Sybase stores char data in the server's charset and SybaseExecutor reinterprets
+    // against it (DATA_CHARSET); say which one an import is being written through so a
+    // mojibake result is diagnosable from the log alone.
+    if (direction == BcpDirection.IN && executor is SybaseExecutor sybase)
+        ibs_compiler_common.WriteLine($"server charset: {sybase.ServerCharset}", cmdvars.OutFile);
+
+    var result = executor.BulkCopy(resolved, direction, dataFile, fieldTerminator: cmdvars.FieldTerminator);
     if (!result.Returncode)
     {
         ibs_compiler_common.WriteLine($"ERROR! {verb} of {label} failed. {result.Output}", cmdvars.OutFile);

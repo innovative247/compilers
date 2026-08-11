@@ -332,15 +332,21 @@ Interactive main menu:
 ### `bcp_data` — bulk copy individual tables in or out
 
 Never had a menu — the managed port of the Unix `export_sql_table_data` /
-`import_sql_table_data` pair. One data file per table, named after the table,
-in the current directory. All BCP runs through `ISqlExecutor.BulkCopy`
-(ADO.NET/Npgsql) — no native `bcp` process is ever launched — so all three
-platforms are supported, POSTGRES included.
+`import_sql_table_data` pair. One data file per table, named after the table
+unless the datafile positional says otherwise. All BCP runs through
+`ISqlExecutor.BulkCopy` (ADO.NET/Npgsql) — no native `bcp` process is ever
+launched — so all three platforms are supported, POSTGRES included. The flag
+set follows native Sybase/MSSQL `bcp` so the muscle memory carries over:
+append by default, `-t` for the field terminator, datafile after the direction.
 
 | Outcome | Flags | Test ID | Status |
 |---|---|---|---|
 | BCP OUT each table → `<table>.bcp`, print start/end + row count | `bcp_data <table...> OUT <profile>` | `bcp_data.out` | SKIP (needs an SBN table on the test target — Atlas/SRM_LOCAL has no CSS tables; manual verification only) |
-| BCP IN each table: `truncate table` → BCP IN → `update statistics` | `bcp_data <table...> IN <profile>` | `bcp_data.in` | SKIP (same, plus it would truncate the table; manual verification only) |
+| BCP IN each table: BCP IN (**append** — no truncate, as native bcp) → `update statistics` | `bcp_data <table...> IN <profile>` | `bcp_data.in` | SKIP (same; manual verification only) |
+| Empty the table before loading (the legacy `import_sql_table_data` behavior, now opt-in) | `--truncate` (`--truncate:n` to negate) | `bcp_data.truncate_flag_usage` | COVERED (offline: usage + flag is accepted and not mistaken for a positional) |
+| Field terminator other than tab — bcp's own flag, with its `\t` / `\n` / `\\` / `\0` escapes plus literal strings (`-t"\|"`, `-t,`) | `-t <field_terminator>` | `bcp_data.terminator_flag_usage`, `bcp_data.error_empty_terminator` | COVERED (offline: usage, accepted as attached or separate value, empty rejected) |
+| Data file named explicitly, native-bcp style: `<table> in\|out <datafile> <profile>` (omitted → `<table>.bcp` in the current directory) | (positional) | `bcp_data.datafile_positional`, `bcp_data.error_datafile_multiple_tables` | COVERED (offline: the named file is the one reported missing on IN) |
+| Data files are UTF-8 — written without BOM and LF-terminated on OUT, read BOM-tolerant on IN; on Sybase IN the server's charset is detected and logged (`server charset: cp850`) so the DATA_CHARSET reinterpretation is visible | (no flag) | — | SKIP (needs a live Sybase server; manual verification only) |
 | Resolve a bare table name through `table_locations` — a name without `..` is looked up as `&name&` against the merged option set, exactly like `set_profile --test --what options`; a name that already contains `..` is used as-is | (no flag) | `bcp_data.error_unresolved_table` (resolution engaged + the unresolved diagnostic; the resolved `db..table` actually reaching the server rides on `bcp_data.out`/`.in`) | COVERED |
 | Run against a POSTGRES profile | (platform comes from the profile) | `bcp_data.postgres_offline` | COVERED (arg/resolution level — no live Postgres in the suite) |
 | Capture the run log to a file | `-O <file>` (log/output capture, as in `isqlline` — **not** the data file) | — | COVERED (shared `-O` plumbing, `isqlline.outfile`) |
@@ -356,25 +362,35 @@ platforms are supported, POSTGRES included.
 bcp_data TABLE [TABLE...]           # bare name → resolved via table_locations
                                     # db..table → used as-is
          ( IN | OUT )               # direction (case-insensitive)
+         [DATAFILE]                 # native-bcp slot; single table only
+                                    # omitted → <table>.bcp in the cwd
          PROFILE                    # server/profile — always last
+         [-t field_terminator]      # default tab; \t \n \\ \0 escapes honored
+         [--truncate]               # empty the table first (IN); off by default
          [-U user] [-P pass]        # credential override
-         [-O outfile]               # run log (data files are always <table>.bcp)
+         [-O outfile]               # run log — not the data file
          [-MSSQL | -SYBASE | -POSTGRES]
 ```
+
+The datafile slot is resolved positionally: `IN`/`OUT` second-to-last means no
+data file, third-to-last means the token between it and the profile is one.
 
 **Error surfaces (all exit 1, message on stderr):**
 - Fewer than two positionals / no server — plus usage.
 - Direction is not `IN` or `OUT` — plus usage.
 - No table names in front of the direction — plus usage.
+- `-t` with no value — plus usage.
+- A data file with more than one table (`a data file requires exactly one
+  table`) — plus usage.
 - Unknown profile (`ProfileManager.ValidateProfile`).
 - `IN` against `GONZO`/`G` — refused before the executor is created.
 
 **Per-table failures (message on the run log, loop continues, exit 1 at the end):**
-- `IN` with no `<table>.bcp` in the current directory (checked before anything
-  connects).
+- `IN` with no data file — `<table>.bcp` in the current directory, or the one
+  named positionally (checked before anything connects).
 - A bare name with no `table_locations` entry — reported as unresolved rather
   than sent to the server as a literal `&name&`.
-- `truncate` / `BulkCopy` failure.
+- `truncate` (only with `--truncate`) / `BulkCopy` failure.
 
 **Platform notes:**
 - `truncate` and the post-import stats call go out with the **bare** table name
@@ -388,6 +404,16 @@ bcp_data TABLE [TABLE...]           # bare name → resolved via table_locations
 - On IN the executors print their own `N rows copied.`; `bcp_data` adds the
   count line only for OUT (where `BulkCopyOut` prints just
   "rows successfully extracted").
+- Data files are UTF-8 on every platform (`ibs_compiler_common.OpenBulkWriter` /
+  `ReadBulkLines` — no BOM out, BOM tolerated in). MSSQL is collation-aware and
+  POSTGRES is UTF-8, so that is the whole story there; on Sybase the char data
+  still passes through `SybaseExecutor`'s DATA_CHARSET reinterpretation against
+  the server's own charset, which IN logs as `server charset: <name>`. No
+  charset is ever pinned in a connection string — the server declares it.
+- The `-t` terminator is bcp-faithful: the delimiter is never quoted or escaped
+  inside data. On POSTGRES the COPY wire format still separates fields with
+  tabs, so its tab escaping is unchanged for the default and a tab inside data
+  simply stays a tab when the terminator is something else.
 
 ---
 
