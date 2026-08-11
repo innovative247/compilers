@@ -366,7 +366,7 @@ namespace ibsCompiler.Database
             emit(err.Message);
         }
 
-        public ExecReturn BulkCopy(string table, BcpDirection direction, string dataFile, string formatFile = "")
+        public ExecReturn BulkCopy(string table, BcpDirection direction, string dataFile, string formatFile = "", string fieldTerminator = "\t", int batchSize = 0)
         {
             var result = new ExecReturn { Returncode = true, Output = "" };
 
@@ -374,11 +374,11 @@ namespace ibsCompiler.Database
             {
                 if (direction == BcpDirection.IN)
                 {
-                    BulkCopyIn(table, dataFile);
+                    BulkCopyIn(table, dataFile, fieldTerminator, batchSize);
                 }
                 else
                 {
-                    var rows = BulkCopyOut(table, dataFile);
+                    var rows = BulkCopyOut(table, dataFile, fieldTerminator);
                     result.Output = rows.ToString();
                 }
             }
@@ -392,7 +392,11 @@ namespace ibsCompiler.Database
             return result;
         }
 
-        private void BulkCopyIn(string table, string dataFile)
+        // Server's configured charset, for callers that need to report what the data
+        // is being adhered to. Cached; the reinterpretation pair uses the same value.
+        public string ServerCharset => DetectServerCharset();
+
+        private void BulkCopyIn(string table, string dataFile, string fieldTerminator, int batchSize)
         {
             string database = "";
             string tableName = table;
@@ -407,25 +411,14 @@ namespace ibsCompiler.Database
             using var connection = new AseConnection(connStr);
             connection.Open();
 
-            using var bulkCopy = new AseBulkCopy(connection)
-            {
-                DestinationTableName = tableName,
-                BatchSize = 0,
-                NotifyAfter = 1000
-            };
-
-            bulkCopy.AseRowsCopied += (sender, e) =>
-            {
-                ibs_compiler_common.WriteLine($"{e.RowsCopied} rows sent to the server.");
-            };
-
-            // Read tab-delimited data file and load into DataTable (all string columns)
+            // Read the delimited data file and load into DataTable (all string columns)
             // Server handles type conversion during BCP insert
-            var lines = File.ReadAllLines(dataFile);
+            var lines = ibs_compiler_common.ReadBulkLines(dataFile);
             if (lines.Length == 0) return;
 
+            var sep = new[] { fieldTerminator };
             var dataTable = new DataTable();
-            var firstCols = lines[0].Split('\t');
+            var firstCols = lines[0].Split(sep, StringSplitOptions.None);
             int colCount = firstCols.Length;
             for (int i = 0; i < colCount; i++)
                 dataTable.Columns.Add($"col{i}", typeof(string));
@@ -433,7 +426,7 @@ namespace ibsCompiler.Database
             foreach (var line in lines)
             {
                 if (string.IsNullOrEmpty(line)) continue;
-                var cols = line.Split('\t');
+                var cols = line.Split(sep, StringSplitOptions.None);
 
                 // If data has more fields than table columns, merge extras into last column
                 if (cols.Length > colCount && colCount > 0)
@@ -441,7 +434,7 @@ namespace ibsCompiler.Database
                     var merged = new string[colCount];
                     for (int i = 0; i < colCount - 1; i++)
                         merged[i] = cols[i];
-                    merged[colCount - 1] = string.Join("\t", cols.Skip(colCount - 1));
+                    merged[colCount - 1] = string.Join(fieldTerminator, cols.Skip(colCount - 1));
                     cols = merged;
                 }
 
@@ -451,13 +444,51 @@ namespace ibsCompiler.Database
                 dataTable.Rows.Add(row);
             }
 
-            bulkCopy.WriteToServer(dataTable);
+            // No transaction here, ever: ASE answers a bulk insert inside one with
+            // "BULK INSERT command not allowed within multi-statement transaction." (the
+            // AseBulkCopy(connection, transaction) overload exists but the server refuses it,
+            // surfacing as "Connection entered broken state"). The bulk BATCH is ASE's own
+            // unit of atomicity instead — a row the server rejects discards the whole batch
+            // in flight — so the default is one batch for the file, and -b N is N-row batches
+            // where the batches before a failure stay. That is what native bcp does too.
+            if (batchSize > 0)
+            {
+                int done = 0;
+                while (done < dataTable.Rows.Count)
+                {
+                    var slice = dataTable.Clone();
+                    for (int i = done; i < Math.Min(done + batchSize, dataTable.Rows.Count); i++)
+                        slice.ImportRow(dataTable.Rows[i]);
+                    WriteBatch(connection, tableName, slice, progress: false);
+                    done += slice.Rows.Count;
+                    ibs_compiler_common.WriteLine($"{done} rows sent to the server.");
+                }
+            }
+            else
+            {
+                WriteBatch(connection, tableName, dataTable, progress: true);
+            }
 
             ibs_compiler_common.WriteLine("");
             ibs_compiler_common.WriteLine($"{dataTable.Rows.Count} rows copied.");
         }
 
-        private int BulkCopyOut(string table, string dataFile)
+        private static void WriteBatch(AseConnection connection, string tableName, DataTable rows, bool progress)
+        {
+            using var bulkCopy = new AseBulkCopy(connection)
+            {
+                DestinationTableName = tableName,
+                // 0 = send these rows as a single bulk batch, which is also the rollback unit.
+                BatchSize = 0,
+                NotifyAfter = 1000
+            };
+            if (progress)
+                bulkCopy.AseRowsCopied += (sender, e) =>
+                    ibs_compiler_common.WriteLine($"{e.RowsCopied} rows sent to the server.");
+            bulkCopy.WriteToServer(rows);
+        }
+
+        private int BulkCopyOut(string table, string dataFile, string fieldTerminator)
         {
             string database = "";
             string tableName = table;
@@ -474,7 +505,7 @@ namespace ibsCompiler.Database
 
             using var cmd = new AseCommand($"SELECT * FROM {tableName}", connection);
             using var reader = cmd.ExecuteReader();
-            using var writer = ibs_compiler_common.OpenSourceWriter(dataFile);
+            using var writer = ibs_compiler_common.OpenBulkWriter(dataFile);
 
             int rowCount = 0;
             while (reader.Read())
@@ -482,7 +513,7 @@ namespace ibsCompiler.Database
                 var values = new string[reader.FieldCount];
                 for (int i = 0; i < reader.FieldCount; i++)
                     values[i] = FromServer(reader.IsDBNull(i) ? "" : reader[i].ToString() ?? "");
-                writer.WriteLine(string.Join("\t", values));
+                writer.WriteLine(string.Join(fieldTerminator, values));
                 rowCount++;
                 if (rowCount % 1000 == 0)
                     ibs_compiler_common.WriteLine($"{rowCount} rows successfully extracted to {dataFile}");

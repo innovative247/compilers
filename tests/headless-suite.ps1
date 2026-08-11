@@ -2389,6 +2389,72 @@ function Test-BulkCopy {
         Assert-ExitCode $r
         if ($r.StdOut -notmatch '<table\.\.\.>') { throw "usage should document the table list. stdout: $($r.StdOut)" }
         if ($r.StdOut -notmatch '<IN\|OUT>')     { throw "usage should document the direction. stdout: $($r.StdOut)" }
+        if ($r.StdOut -notmatch '\[datafile\]')  { throw "usage should document the datafile positional. stdout: $($r.StdOut)" }
+    }
+    Test-Case 'bcp_data.truncate_flag_usage' {
+        # --truncate is documented, and it is a flag rather than a positional:
+        # if it were counted as one, the direction would no longer be found and
+        # the run would die on 'IN or OUT' instead of the missing data file.
+        $r = Invoke-Cli bcp_data 'help'
+        if ($r.StdOut -notmatch '--truncate') { throw "usage should document --truncate. stdout: $($r.StdOut)" }
+        $r = Invoke-Cli bcp_data 'no_such_table_xyz' 'IN' $script:TestProfile '--truncate'
+        if ($r.ExitCode -eq 0) { throw 'IN with no data file must exit non-zero' }
+        $combined = "$($r.StdOut)`n$($r.StdErr)"
+        if ($combined -notmatch 'Data file not found') { throw "--truncate should be stripped as a flag. output: $combined" }
+    }
+    Test-Case 'bcp_data.terminator_flag_usage' {
+        # -t takes its value attached (-t"|") or as the next argument, same as the
+        # other value flags. Both forms must leave the positionals untouched.
+        $r = Invoke-Cli bcp_data 'help'
+        if ($r.StdOut -notmatch '-t field_terminator') { throw "usage should document -t. stdout: $($r.StdOut)" }
+        foreach ($form in @(@('-t|'), @('-t','|'), @('-t\t'))) {
+            $r = Invoke-Cli -Exe bcp_data -Args (@('no_such_table_xyz','IN',$script:TestProfile) + $form)
+            if ($r.ExitCode -eq 0) { throw "IN with no data file must exit non-zero (-t form: $($form -join ' '))" }
+            $combined = "$($r.StdOut)`n$($r.StdErr)"
+            if ($combined -notmatch 'Data file not found') { throw "-t $($form -join ' ') should be stripped as a flag. output: $combined" }
+        }
+    }
+    Test-Case 'bcp_data.batchsize_flag_usage' {
+        # -b is documented and, like the other value flags, must not be counted as a
+        # positional in either the attached or the separate form.
+        $r = Invoke-Cli bcp_data 'help'
+        if ($r.StdOut -notmatch '-b batchsize') { throw "usage should document -b. stdout: $($r.StdOut)" }
+        foreach ($form in @(@('-b','100'), @('-b100'))) {
+            $r = Invoke-Cli -Exe bcp_data -Args (@('no_such_table_xyz','IN',$script:TestProfile) + $form)
+            if ($r.ExitCode -eq 0) { throw "IN with no data file must exit non-zero (-b form: $($form -join ' '))" }
+            $combined = "$($r.StdOut)`n$($r.StdErr)"
+            if ($combined -notmatch 'Data file not found') { throw "-b $($form -join ' ') should be stripped as a flag. output: $combined" }
+        }
+    }
+    Test-Case 'bcp_data.error_bad_batchsize' {
+        # A batch size that is not a positive row count is rejected before anything
+        # connects - 0 would mean "no batching", which is what omitting -b already says.
+        foreach ($bad in @('0','-5','x')) {
+            $r = Invoke-Cli bcp_data 'ba_options' 'IN' $script:TestProfile '-b' $bad
+            if ($r.ExitCode -eq 0) { throw "-b $bad must be rejected" }
+            if ($r.StdErr -notmatch 'positive number of rows') { throw "stderr should explain the -b rule for '$bad'. stderr: $($r.StdErr)" }
+        }
+    }
+    Test-Case 'bcp_data.error_empty_terminator' {
+        # A terminator of nothing would split every line into one field - reject it
+        # rather than silently loading the whole row into column 1.
+        $r = Invoke-Cli bcp_data 'ba_options' 'OUT' $script:TestProfile '-t'
+        if ($r.ExitCode -eq 0) { throw '-t with no value must be rejected' }
+        if ($r.StdErr -notmatch 'field terminator') { throw "stderr should name the missing terminator. stderr: $($r.StdErr)" }
+    }
+    Test-Case 'bcp_data.datafile_positional' {
+        # Native bcp shape: <table> in|out <datafile> <profile>. The precheck names
+        # the file that was actually asked for, not <table>.bcp.
+        $r = Invoke-Cli bcp_data 'no_such_table_xyz' 'IN' 'no_such_file_xyz.dat' $script:TestProfile
+        if ($r.ExitCode -eq 0) { throw 'IN with no data file must exit non-zero' }
+        $combined = "$($r.StdOut)`n$($r.StdErr)"
+        if ($combined -notmatch 'no_such_file_xyz\.dat') { throw "the named data file should be the one reported missing. output: $combined" }
+    }
+    Test-Case 'bcp_data.error_datafile_multiple_tables' {
+        # One file cannot hold two tables' data - refuse instead of overwriting.
+        $r = Invoke-Cli bcp_data 'tbl_one_xyz' 'tbl_two_xyz' 'OUT' 'shared_xyz.dat' $script:TestProfile
+        if ($r.ExitCode -eq 0) { throw 'a data file with several tables must be rejected' }
+        if ($r.StdErr -notmatch 'exactly one table') { throw "stderr should explain the one-table rule. stderr: $($r.StdErr)" }
     }
     Test-Case 'bcp_data.error_missing_server' {
         # Fewer than two positionals - no server to run against.

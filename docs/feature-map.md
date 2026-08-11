@@ -332,15 +332,23 @@ Interactive main menu:
 ### `bcp_data` — bulk copy individual tables in or out
 
 Never had a menu — the managed port of the Unix `export_sql_table_data` /
-`import_sql_table_data` pair. One data file per table, named after the table,
-in the current directory. All BCP runs through `ISqlExecutor.BulkCopy`
-(ADO.NET/Npgsql) — no native `bcp` process is ever launched — so all three
-platforms are supported, POSTGRES included.
+`import_sql_table_data` pair. One data file per table, named after the table
+unless the datafile positional says otherwise. All BCP runs through
+`ISqlExecutor.BulkCopy` (ADO.NET/Npgsql) — no native `bcp` process is ever
+launched — so all three platforms are supported, POSTGRES included. The flag
+set follows native Sybase/MSSQL `bcp` so the muscle memory carries over:
+append by default, `-t` for the field terminator, datafile after the direction.
 
 | Outcome | Flags | Test ID | Status |
 |---|---|---|---|
 | BCP OUT each table → `<table>.bcp`, print start/end + row count | `bcp_data <table...> OUT <profile>` | `bcp_data.out` | SKIP (needs an SBN table on the test target — Atlas/SRM_LOCAL has no CSS tables; manual verification only) |
-| BCP IN each table: `truncate table` → BCP IN → `update statistics` | `bcp_data <table...> IN <profile>` | `bcp_data.in` | SKIP (same, plus it would truncate the table; manual verification only) |
+| BCP IN each table: BCP IN (**append** — no truncate, as native bcp) as **one all-or-nothing unit** (or `-b` batches) → `update statistics` | `bcp_data <table...> IN <profile>` | `bcp_data.in` | SKIP (same; manual verification only) |
+| Whole load is all-or-nothing by default — a row the server rejects leaves the table exactly as before the run (a transaction on MSSQL/POSTGRES, the bulk batch on Sybase) | (no flag) | — | SKIP (needs a live server + a row that fails; manual verification only) |
+| Batch every N rows, traditional bcp style — a failure keeps the batches already landed | `-b <batchsize>` | `bcp_data.batchsize_flag_usage`, `bcp_data.error_bad_batchsize` | COVERED (offline: usage, `-b 0`/`-b x`/`-b -5` rejected, valid `-b` stripped as a flag) |
+| Empty the table before loading (the legacy `import_sql_table_data` behavior, now opt-in) | `--truncate` (`--truncate:n` to negate) | `bcp_data.truncate_flag_usage` | COVERED (offline: usage + flag is accepted and not mistaken for a positional) |
+| Field terminator other than tab — bcp's own flag, with its `\t` / `\n` / `\\` / `\0` escapes plus literal strings (`-t"\|"`, `-t,`) | `-t <field_terminator>` | `bcp_data.terminator_flag_usage`, `bcp_data.error_empty_terminator` | COVERED (offline: usage, accepted as attached or separate value, empty rejected) |
+| Data file named explicitly, native-bcp style: `<table> in\|out <datafile> <profile>` (omitted → `<table>.bcp` in the current directory) | (positional) | `bcp_data.datafile_positional`, `bcp_data.error_datafile_multiple_tables` | COVERED (offline: the named file is the one reported missing on IN) |
+| Data files are UTF-8 — written without BOM and LF-terminated on OUT, read BOM-tolerant on IN; on Sybase IN the server's charset is detected and logged (`server charset: cp850`) so the DATA_CHARSET reinterpretation is visible | (no flag) | — | SKIP (needs a live Sybase server; manual verification only) |
 | Resolve a bare table name through `table_locations` — a name without `..` is looked up as `&name&` against the merged option set, exactly like `set_profile --test --what options`; a name that already contains `..` is used as-is | (no flag) | `bcp_data.error_unresolved_table` (resolution engaged + the unresolved diagnostic; the resolved `db..table` actually reaching the server rides on `bcp_data.out`/`.in`) | COVERED |
 | Run against a POSTGRES profile | (platform comes from the profile) | `bcp_data.postgres_offline` | COVERED (arg/resolution level — no live Postgres in the suite) |
 | Capture the run log to a file | `-O <file>` (log/output capture, as in `isqlline` — **not** the data file) | — | COVERED (shared `-O` plumbing, `isqlline.outfile`) |
@@ -356,25 +364,70 @@ platforms are supported, POSTGRES included.
 bcp_data TABLE [TABLE...]           # bare name → resolved via table_locations
                                     # db..table → used as-is
          ( IN | OUT )               # direction (case-insensitive)
+         [DATAFILE]                 # native-bcp slot; single table only
+                                    # omitted → <table>.bcp in the cwd
          PROFILE                    # server/profile — always last
+         [-t field_terminator]      # default tab; \t \n \\ \0 escapes honored
+         [-b batchsize]             # commit every N rows (IN)
+                                    # omitted → the whole load is one unit
+         [--truncate]               # empty the table first (IN); off by default
          [-U user] [-P pass]        # credential override
-         [-O outfile]               # run log (data files are always <table>.bcp)
+         [-O outfile]               # run log — not the data file
          [-MSSQL | -SYBASE | -POSTGRES]
 ```
+
+The datafile slot is resolved positionally: `IN`/`OUT` second-to-last means no
+data file, third-to-last means the token between it and the profile is one.
 
 **Error surfaces (all exit 1, message on stderr):**
 - Fewer than two positionals / no server — plus usage.
 - Direction is not `IN` or `OUT` — plus usage.
 - No table names in front of the direction — plus usage.
+- `-t` with no value — plus usage.
+- `-b` with anything but a positive row count (`0`, `-5`, `x`) — plus usage.
+- A data file with more than one table (`a data file requires exactly one
+  table`) — plus usage.
 - Unknown profile (`ProfileManager.ValidateProfile`).
 - `IN` against `GONZO`/`G` — refused before the executor is created.
 
 **Per-table failures (message on the run log, loop continues, exit 1 at the end):**
-- `IN` with no `<table>.bcp` in the current directory (checked before anything
-  connects).
+- `IN` with no data file — `<table>.bcp` in the current directory, or the one
+  named positionally (checked before anything connects).
 - A bare name with no `table_locations` entry — reported as unresolved rather
   than sent to the server as a literal `&name&`.
-- `truncate` / `BulkCopy` failure.
+- `truncate` (only with `--truncate`) / `BulkCopy` failure.
+
+**Atomicity notes:**
+- **A load is all-or-nothing; an export is not.** No `-b`: the whole file lands
+  or none of it does, so a table is never left half-loaded. With `-b N`: the
+  boundary moves to every N rows, exactly like traditional bcp — a failure
+  discards only the batch it happened in and everything before it stays. OUT
+  opens nothing: a single `SELECT` / `COPY TO STDOUT` is already
+  statement-consistent, and native `bcp out` has no transaction either.
+- **MSSQL** — an external `SqlTransaction` passed to `SqlBulkCopy`, whose
+  `BatchSize` then only controls how often rows go over the wire;
+  `SqlBulkCopyOptions.UseInternalTransaction` with `BatchSize = N` for `-b`.
+- **POSTGRES** — an `NpgsqlTransaction` around the `COPY` (COPY joins the
+  connection's open transaction); `-b` is one transaction + one COPY per chunk.
+- **Sybase — the bulk batch, not a transaction.** ASE refuses a bulk insert
+  inside one: `BULK INSERT command not allowed within multi-statement
+  transaction.` The `AseBulkCopy(AseConnection, AseTransaction)` overload exists
+  but the server rejects it and the driver reports `Connection entered broken
+  state`, so **no transaction is ever opened for a Sybase load**. ASE's own unit
+  of atomicity does the job: a row the server rejects discards the entire
+  in-flight batch. Measured on ASE 16 with a 1500-row load whose 1200th row
+  violates a unique index — one batch: 0 rows landed; 500-row batches: the
+  first 1000 rows stayed and the failing batch was discarded whole. So `-b N`
+  is N-row bulk batches, and the guarantee matches the other two platforms by a
+  different mechanism. Do not "fix" this by adding a transaction.
+- The status line each import prints says which one is in play — `Loading in a
+  single transaction …` on MSSQL/POSTGRES, `Loading as one bulk batch — the
+  server discards it on failure.` on Sybase.
+- `--truncate` runs as its own statement **outside** the load transaction, and
+  `update statistics` / `analyze` runs after it has committed. Neither is
+  transaction-safe on Sybase ASE: ASE refuses `truncate table` inside a user
+  transaction unless the database has `ddl in tran` set. Do not reason about
+  this from MSSQL behavior — the two servers differ here.
 
 **Platform notes:**
 - `truncate` and the post-import stats call go out with the **bare** table name
@@ -388,6 +441,16 @@ bcp_data TABLE [TABLE...]           # bare name → resolved via table_locations
 - On IN the executors print their own `N rows copied.`; `bcp_data` adds the
   count line only for OUT (where `BulkCopyOut` prints just
   "rows successfully extracted").
+- Data files are UTF-8 on every platform (`ibs_compiler_common.OpenBulkWriter` /
+  `ReadBulkLines` — no BOM out, BOM tolerated in). MSSQL is collation-aware and
+  POSTGRES is UTF-8, so that is the whole story there; on Sybase the char data
+  still passes through `SybaseExecutor`'s DATA_CHARSET reinterpretation against
+  the server's own charset, which IN logs as `server charset: <name>`. No
+  charset is ever pinned in a connection string — the server declares it.
+- The `-t` terminator is bcp-faithful: the delimiter is never quoted or escaped
+  inside data. On POSTGRES the COPY wire format still separates fields with
+  tabs, so its tab escaping is unchanged for the default and a tab inside data
+  simply stays a tab when the terminator is something else.
 
 ---
 

@@ -37,7 +37,16 @@ namespace ibsCompiler.Database
         /// Bulk copy data between a file and a database table.
         /// Replaces F4.8's exec_bcp() which launched native bcp/obcp.
         /// </summary>
-        ExecReturn BulkCopy(string table, BcpDirection direction, string dataFile, string formatFile = "");
+        /// <param name="fieldTerminator">Field separator in the data file — bcp's -t. Tab unless a caller says otherwise.</param>
+        /// <param name="batchSize">
+        /// IN only — bcp's -b. 0 loads the whole file as one unit (a failure leaves the table
+        /// untouched); N draws the boundary every N rows, so a failure keeps everything before
+        /// it. On MSSQL and POSTGRES that unit is a transaction; on Sybase it is the bulk
+        /// BATCH, because ASE refuses "BULK INSERT ... within multi-statement transaction" —
+        /// the server discards the in-flight batch instead, which is the same guarantee by a
+        /// different mechanism. OUT is a single statement-consistent read and ignores this.
+        /// </param>
+        ExecReturn BulkCopy(string table, BcpDirection direction, string dataFile, string formatFile = "", string fieldTerminator = "\t", int batchSize = 0);
     }
 
     /// <summary>
