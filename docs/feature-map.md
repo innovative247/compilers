@@ -342,9 +342,9 @@ append by default, `-t` for the field terminator, datafile after the direction.
 | Outcome | Flags | Test ID | Status |
 |---|---|---|---|
 | BCP OUT each table → `<table>.bcp`, print start/end + row count | `bcp_data <table...> OUT <profile>` | `bcp_data.out` | SKIP (needs an SBN table on the test target — Atlas/SRM_LOCAL has no CSS tables; manual verification only) |
-| BCP IN each table: BCP IN (**append** — no truncate, as native bcp) in **one transaction** (or `-b` batches) → `update statistics` | `bcp_data <table...> IN <profile>` | `bcp_data.in` | SKIP (same; manual verification only) |
-| Whole load is atomic by default — a row the server rejects rolls back everything, table left exactly as before the run | (no flag) | — | SKIP (needs a live server + a row that fails; manual verification only) |
-| Commit every N rows, traditional bcp style — a failure keeps the batches already committed | `-b <batchsize>` | `bcp_data.batchsize_flag_usage`, `bcp_data.error_bad_batchsize` | COVERED (offline: usage, `-b 0`/`-b x`/`-b -5` rejected, valid `-b` stripped as a flag) |
+| BCP IN each table: BCP IN (**append** — no truncate, as native bcp) as **one all-or-nothing unit** (or `-b` batches) → `update statistics` | `bcp_data <table...> IN <profile>` | `bcp_data.in` | SKIP (same; manual verification only) |
+| Whole load is all-or-nothing by default — a row the server rejects leaves the table exactly as before the run (a transaction on MSSQL/POSTGRES, the bulk batch on Sybase) | (no flag) | — | SKIP (needs a live server + a row that fails; manual verification only) |
+| Batch every N rows, traditional bcp style — a failure keeps the batches already landed | `-b <batchsize>` | `bcp_data.batchsize_flag_usage`, `bcp_data.error_bad_batchsize` | COVERED (offline: usage, `-b 0`/`-b x`/`-b -5` rejected, valid `-b` stripped as a flag) |
 | Empty the table before loading (the legacy `import_sql_table_data` behavior, now opt-in) | `--truncate` (`--truncate:n` to negate) | `bcp_data.truncate_flag_usage` | COVERED (offline: usage + flag is accepted and not mistaken for a positional) |
 | Field terminator other than tab — bcp's own flag, with its `\t` / `\n` / `\\` / `\0` escapes plus literal strings (`-t"\|"`, `-t,`) | `-t <field_terminator>` | `bcp_data.terminator_flag_usage`, `bcp_data.error_empty_terminator` | COVERED (offline: usage, accepted as attached or separate value, empty rejected) |
 | Data file named explicitly, native-bcp style: `<table> in\|out <datafile> <profile>` (omitted → `<table>.bcp` in the current directory) | (positional) | `bcp_data.datafile_positional`, `bcp_data.error_datafile_multiple_tables` | COVERED (offline: the named file is the one reported missing on IN) |
@@ -369,7 +369,7 @@ bcp_data TABLE [TABLE...]           # bare name → resolved via table_locations
          PROFILE                    # server/profile — always last
          [-t field_terminator]      # default tab; \t \n \\ \0 escapes honored
          [-b batchsize]             # commit every N rows (IN)
-                                    # omitted → the whole load is one transaction
+                                    # omitted → the whole load is one unit
          [--truncate]               # empty the table first (IN); off by default
          [-U user] [-P pass]        # credential override
          [-O outfile]               # run log — not the data file
@@ -397,23 +397,32 @@ data file, third-to-last means the token between it and the profile is one.
   than sent to the server as a literal `&name&`.
 - `truncate` (only with `--truncate`) / `BulkCopy` failure.
 
-**Transaction notes:**
-- **IN is transactional; OUT is not.** An export is a single `SELECT` / `COPY TO
-  STDOUT` — already statement-consistent, and native `bcp out` has no
-  transaction either, so none is opened.
-- No `-b`: one transaction around the whole file. Any failure rolls the entire
-  load back, so a table is never left half-loaded. With `-b N`: a transaction
-  per N rows, exactly like traditional bcp — a failure rolls back only the
-  batch it happened in and every earlier batch stays committed.
-- Per platform: **MSSQL** uses an external `SqlTransaction` passed to
-  `SqlBulkCopy` (its `BatchSize` then only controls how often rows go over the
-  wire), and `SqlBulkCopyOptions.UseInternalTransaction` with `BatchSize = N`
-  for `-b`. **Sybase** passes an `AseTransaction` to the
-  `AseBulkCopy(AseConnection, AseTransaction)` overload — this driver exposes no
-  bulk-copy options enum, so `-b` slices the rows and gives each slice its own
-  transaction. **POSTGRES** wraps the `COPY` in an `NpgsqlTransaction` (COPY
-  joins the connection's open transaction); `-b` is one transaction + one COPY
-  per chunk.
+**Atomicity notes:**
+- **A load is all-or-nothing; an export is not.** No `-b`: the whole file lands
+  or none of it does, so a table is never left half-loaded. With `-b N`: the
+  boundary moves to every N rows, exactly like traditional bcp — a failure
+  discards only the batch it happened in and everything before it stays. OUT
+  opens nothing: a single `SELECT` / `COPY TO STDOUT` is already
+  statement-consistent, and native `bcp out` has no transaction either.
+- **MSSQL** — an external `SqlTransaction` passed to `SqlBulkCopy`, whose
+  `BatchSize` then only controls how often rows go over the wire;
+  `SqlBulkCopyOptions.UseInternalTransaction` with `BatchSize = N` for `-b`.
+- **POSTGRES** — an `NpgsqlTransaction` around the `COPY` (COPY joins the
+  connection's open transaction); `-b` is one transaction + one COPY per chunk.
+- **Sybase — the bulk batch, not a transaction.** ASE refuses a bulk insert
+  inside one: `BULK INSERT command not allowed within multi-statement
+  transaction.` The `AseBulkCopy(AseConnection, AseTransaction)` overload exists
+  but the server rejects it and the driver reports `Connection entered broken
+  state`, so **no transaction is ever opened for a Sybase load**. ASE's own unit
+  of atomicity does the job: a row the server rejects discards the entire
+  in-flight batch. Measured on ASE 16 with a 1500-row load whose 1200th row
+  violates a unique index — one batch: 0 rows landed; 500-row batches: the
+  first 1000 rows stayed and the failing batch was discarded whole. So `-b N`
+  is N-row bulk batches, and the guarantee matches the other two platforms by a
+  different mechanism. Do not "fix" this by adding a transaction.
+- The status line each import prints says which one is in play — `Loading in a
+  single transaction …` on MSSQL/POSTGRES, `Loading as one bulk batch — the
+  server discards it on failure.` on Sybase.
 - `--truncate` runs as its own statement **outside** the load transaction, and
   `update statistics` / `analyze` runs after it has committed. Neither is
   transaction-safe on Sybase ASE: ASE refuses `truncate table` inside a user

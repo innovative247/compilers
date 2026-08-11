@@ -444,12 +444,13 @@ namespace ibsCompiler.Database
                 dataTable.Rows.Add(row);
             }
 
-            // AseBulkCopy has no options enum in this driver (its only knobs are
-            // DestinationTableName/BatchSize/NotifyAfter/ColumnMappings), but it does take an
-            // external AseTransaction — so both modes are driven by explicit transactions:
-            // one around the whole table by default, one per N-row slice under -b. Slicing
-            // rather than leaning on BatchSize keeps the commit boundary something we own
-            // rather than something the driver decides.
+            // No transaction here, ever: ASE answers a bulk insert inside one with
+            // "BULK INSERT command not allowed within multi-statement transaction." (the
+            // AseBulkCopy(connection, transaction) overload exists but the server refuses it,
+            // surfacing as "Connection entered broken state"). The bulk BATCH is ASE's own
+            // unit of atomicity instead — a row the server rejects discards the whole batch
+            // in flight — so the default is one batch for the file, and -b N is N-row batches
+            // where the batches before a failure stay. That is what native bcp does too.
             if (batchSize > 0)
             {
                 int done = 0;
@@ -458,42 +459,33 @@ namespace ibsCompiler.Database
                     var slice = dataTable.Clone();
                     for (int i = done; i < Math.Min(done + batchSize, dataTable.Rows.Count); i++)
                         slice.ImportRow(dataTable.Rows[i]);
-                    WriteInTransaction(connection, tableName, slice, progress: false);
+                    WriteBatch(connection, tableName, slice, progress: false);
                     done += slice.Rows.Count;
                     ibs_compiler_common.WriteLine($"{done} rows sent to the server.");
                 }
             }
             else
             {
-                WriteInTransaction(connection, tableName, dataTable, progress: true);
+                WriteBatch(connection, tableName, dataTable, progress: true);
             }
 
             ibs_compiler_common.WriteLine("");
             ibs_compiler_common.WriteLine($"{dataTable.Rows.Count} rows copied.");
         }
 
-        private static void WriteInTransaction(AseConnection connection, string tableName, DataTable rows, bool progress)
+        private static void WriteBatch(AseConnection connection, string tableName, DataTable rows, bool progress)
         {
-            using var tran = (AseTransaction)connection.BeginTransaction();
-            try
+            using var bulkCopy = new AseBulkCopy(connection)
             {
-                using var bulkCopy = new AseBulkCopy(connection, tran)
-                {
-                    DestinationTableName = tableName,
-                    BatchSize = 0,
-                    NotifyAfter = 1000
-                };
-                if (progress)
-                    bulkCopy.AseRowsCopied += (sender, e) =>
-                        ibs_compiler_common.WriteLine($"{e.RowsCopied} rows sent to the server.");
-                bulkCopy.WriteToServer(rows);
-                tran.Commit();
-            }
-            catch
-            {
-                tran.Rollback();
-                throw;
-            }
+                DestinationTableName = tableName,
+                // 0 = send these rows as a single bulk batch, which is also the rollback unit.
+                BatchSize = 0,
+                NotifyAfter = 1000
+            };
+            if (progress)
+                bulkCopy.AseRowsCopied += (sender, e) =>
+                    ibs_compiler_common.WriteLine($"{e.RowsCopied} rows sent to the server.");
+            bulkCopy.WriteToServer(rows);
         }
 
         private int BulkCopyOut(string table, string dataFile, string fieldTerminator)

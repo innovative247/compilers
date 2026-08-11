@@ -161,10 +161,21 @@ bool RunTable(string table)
     if (direction == BcpDirection.IN && executor is SybaseExecutor sybase)
         ibs_compiler_common.WriteLine($"server charset: {sybase.ServerCharset}", cmdvars.OutFile);
 
+    // Sybase gets its own wording because it gets its own mechanism: ASE forbids bulk
+    // insert inside a user transaction, so the bulk batch — not a transaction — is what
+    // the server discards on failure. Saying "transaction" there would be a lie.
     if (direction == BcpDirection.IN)
-        ibs_compiler_common.WriteLine(cmdvars.BatchSize > 0
-            ? $"Loading in batches of {cmdvars.BatchSize} rows — a failure keeps the batches already committed."
-            : "Loading in a single transaction — a failure leaves the table unchanged.", cmdvars.OutFile);
+    {
+        var isSybase = profile.ServerType == SQLServerTypes.SYBASE;
+        var mode = cmdvars.BatchSize > 0
+            ? (isSybase
+                ? $"Loading in bulk batches of {cmdvars.BatchSize} rows — a failure discards only the batch it happens in."
+                : $"Loading in batches of {cmdvars.BatchSize} rows — a failure keeps the batches already committed.")
+            : (isSybase
+                ? "Loading as one bulk batch — the server discards it on failure."
+                : "Loading in a single transaction — a failure leaves the table unchanged.");
+        ibs_compiler_common.WriteLine(mode, cmdvars.OutFile);
+    }
 
     var result = executor.BulkCopy(resolved, direction, dataFile,
         fieldTerminator: cmdvars.FieldTerminator, batchSize: cmdvars.BatchSize);

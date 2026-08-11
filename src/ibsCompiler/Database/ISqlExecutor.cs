@@ -39,9 +39,12 @@ namespace ibsCompiler.Database
         /// </summary>
         /// <param name="fieldTerminator">Field separator in the data file — bcp's -t. Tab unless a caller says otherwise.</param>
         /// <param name="batchSize">
-        /// IN only — bcp's -b. 0 loads the whole file in one transaction (a failure leaves the
-        /// table untouched); N commits every N rows, so a failure keeps the batches before it.
-        /// OUT is a single statement-consistent read and ignores this.
+        /// IN only — bcp's -b. 0 loads the whole file as one unit (a failure leaves the table
+        /// untouched); N draws the boundary every N rows, so a failure keeps everything before
+        /// it. On MSSQL and POSTGRES that unit is a transaction; on Sybase it is the bulk
+        /// BATCH, because ASE refuses "BULK INSERT ... within multi-statement transaction" —
+        /// the server discards the in-flight batch instead, which is the same guarantee by a
+        /// different mechanism. OUT is a single statement-consistent read and ignores this.
         /// </param>
         ExecReturn BulkCopy(string table, BcpDirection direction, string dataFile, string formatFile = "", string fieldTerminator = "\t", int batchSize = 0);
     }
