@@ -2414,6 +2414,27 @@ function Test-BulkCopy {
             if ($combined -notmatch 'Data file not found') { throw "-t $($form -join ' ') should be stripped as a flag. output: $combined" }
         }
     }
+    Test-Case 'bcp_data.batchsize_flag_usage' {
+        # -b is documented and, like the other value flags, must not be counted as a
+        # positional in either the attached or the separate form.
+        $r = Invoke-Cli bcp_data 'help'
+        if ($r.StdOut -notmatch '-b batchsize') { throw "usage should document -b. stdout: $($r.StdOut)" }
+        foreach ($form in @(@('-b','100'), @('-b100'))) {
+            $r = Invoke-Cli -Exe bcp_data -Args (@('no_such_table_xyz','IN',$script:TestProfile) + $form)
+            if ($r.ExitCode -eq 0) { throw "IN with no data file must exit non-zero (-b form: $($form -join ' '))" }
+            $combined = "$($r.StdOut)`n$($r.StdErr)"
+            if ($combined -notmatch 'Data file not found') { throw "-b $($form -join ' ') should be stripped as a flag. output: $combined" }
+        }
+    }
+    Test-Case 'bcp_data.error_bad_batchsize' {
+        # A batch size that is not a positive row count is rejected before anything
+        # connects - 0 would mean "no batching", which is what omitting -b already says.
+        foreach ($bad in @('0','-5','x')) {
+            $r = Invoke-Cli bcp_data 'ba_options' 'IN' $script:TestProfile '-b' $bad
+            if ($r.ExitCode -eq 0) { throw "-b $bad must be rejected" }
+            if ($r.StdErr -notmatch 'positive number of rows') { throw "stderr should explain the -b rule for '$bad'. stderr: $($r.StdErr)" }
+        }
+    }
     Test-Case 'bcp_data.error_empty_terminator' {
         # A terminator of nothing would split every line into one field - reject it
         # rather than silently loading the whole row into column 1.

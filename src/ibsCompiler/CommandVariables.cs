@@ -77,6 +77,9 @@ namespace ibsCompiler
         public string DataFile;
         public bool Truncate;
         public string FieldTerminator;
+        // 0 = whole load in one transaction, >0 = commit every N rows, -1 = -b was
+        // given with a value that is not a positive row count.
+        public int BatchSize;
         public bool ChangeLog;
         public string CommandName;
         public bool Preview;

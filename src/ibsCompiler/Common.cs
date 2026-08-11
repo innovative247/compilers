@@ -1047,6 +1047,12 @@ namespace ibsCompiler
             var term = FindAndRemove("-t", ref arguments);
             myargs.FieldTerminator = hasTerm ? UnescapeTerminator(term) : "\t";
 
+            // FindAndRemove_Int reports 0 for both "absent" and "unparseable", so the
+            // probe is what separates "no -b" (one transaction) from "-b nonsense".
+            bool hasBatch = arguments.Exists(a => a.Length > 1 && a.Substring(0, 2).ToUpper() == "-B");
+            var batch = FindAndRemove_Int("-b", ref arguments);
+            myargs.BatchSize = hasBatch ? (batch > 0 ? batch : -1) : 0;
+
             if (arguments.Count >= 2)
             {
                 foreach (var arg in arguments)

@@ -342,7 +342,9 @@ append by default, `-t` for the field terminator, datafile after the direction.
 | Outcome | Flags | Test ID | Status |
 |---|---|---|---|
 | BCP OUT each table → `<table>.bcp`, print start/end + row count | `bcp_data <table...> OUT <profile>` | `bcp_data.out` | SKIP (needs an SBN table on the test target — Atlas/SRM_LOCAL has no CSS tables; manual verification only) |
-| BCP IN each table: BCP IN (**append** — no truncate, as native bcp) → `update statistics` | `bcp_data <table...> IN <profile>` | `bcp_data.in` | SKIP (same; manual verification only) |
+| BCP IN each table: BCP IN (**append** — no truncate, as native bcp) in **one transaction** (or `-b` batches) → `update statistics` | `bcp_data <table...> IN <profile>` | `bcp_data.in` | SKIP (same; manual verification only) |
+| Whole load is atomic by default — a row the server rejects rolls back everything, table left exactly as before the run | (no flag) | — | SKIP (needs a live server + a row that fails; manual verification only) |
+| Commit every N rows, traditional bcp style — a failure keeps the batches already committed | `-b <batchsize>` | `bcp_data.batchsize_flag_usage`, `bcp_data.error_bad_batchsize` | COVERED (offline: usage, `-b 0`/`-b x`/`-b -5` rejected, valid `-b` stripped as a flag) |
 | Empty the table before loading (the legacy `import_sql_table_data` behavior, now opt-in) | `--truncate` (`--truncate:n` to negate) | `bcp_data.truncate_flag_usage` | COVERED (offline: usage + flag is accepted and not mistaken for a positional) |
 | Field terminator other than tab — bcp's own flag, with its `\t` / `\n` / `\\` / `\0` escapes plus literal strings (`-t"\|"`, `-t,`) | `-t <field_terminator>` | `bcp_data.terminator_flag_usage`, `bcp_data.error_empty_terminator` | COVERED (offline: usage, accepted as attached or separate value, empty rejected) |
 | Data file named explicitly, native-bcp style: `<table> in\|out <datafile> <profile>` (omitted → `<table>.bcp` in the current directory) | (positional) | `bcp_data.datafile_positional`, `bcp_data.error_datafile_multiple_tables` | COVERED (offline: the named file is the one reported missing on IN) |
@@ -366,6 +368,8 @@ bcp_data TABLE [TABLE...]           # bare name → resolved via table_locations
                                     # omitted → <table>.bcp in the cwd
          PROFILE                    # server/profile — always last
          [-t field_terminator]      # default tab; \t \n \\ \0 escapes honored
+         [-b batchsize]             # commit every N rows (IN)
+                                    # omitted → the whole load is one transaction
          [--truncate]               # empty the table first (IN); off by default
          [-U user] [-P pass]        # credential override
          [-O outfile]               # run log — not the data file
@@ -380,6 +384,7 @@ data file, third-to-last means the token between it and the profile is one.
 - Direction is not `IN` or `OUT` — plus usage.
 - No table names in front of the direction — plus usage.
 - `-t` with no value — plus usage.
+- `-b` with anything but a positive row count (`0`, `-5`, `x`) — plus usage.
 - A data file with more than one table (`a data file requires exactly one
   table`) — plus usage.
 - Unknown profile (`ProfileManager.ValidateProfile`).
@@ -391,6 +396,29 @@ data file, third-to-last means the token between it and the profile is one.
 - A bare name with no `table_locations` entry — reported as unresolved rather
   than sent to the server as a literal `&name&`.
 - `truncate` (only with `--truncate`) / `BulkCopy` failure.
+
+**Transaction notes:**
+- **IN is transactional; OUT is not.** An export is a single `SELECT` / `COPY TO
+  STDOUT` — already statement-consistent, and native `bcp out` has no
+  transaction either, so none is opened.
+- No `-b`: one transaction around the whole file. Any failure rolls the entire
+  load back, so a table is never left half-loaded. With `-b N`: a transaction
+  per N rows, exactly like traditional bcp — a failure rolls back only the
+  batch it happened in and every earlier batch stays committed.
+- Per platform: **MSSQL** uses an external `SqlTransaction` passed to
+  `SqlBulkCopy` (its `BatchSize` then only controls how often rows go over the
+  wire), and `SqlBulkCopyOptions.UseInternalTransaction` with `BatchSize = N`
+  for `-b`. **Sybase** passes an `AseTransaction` to the
+  `AseBulkCopy(AseConnection, AseTransaction)` overload — this driver exposes no
+  bulk-copy options enum, so `-b` slices the rows and gives each slice its own
+  transaction. **POSTGRES** wraps the `COPY` in an `NpgsqlTransaction` (COPY
+  joins the connection's open transaction); `-b` is one transaction + one COPY
+  per chunk.
+- `--truncate` runs as its own statement **outside** the load transaction, and
+  `update statistics` / `analyze` runs after it has committed. Neither is
+  transaction-safe on Sybase ASE: ASE refuses `truncate table` inside a user
+  transaction unless the database has `ddl in tran` set. Do not reason about
+  this from MSSQL behavior — the two servers differ here.
 
 **Platform notes:**
 - `truncate` and the post-import stats call go out with the **bare** table name

@@ -38,7 +38,12 @@ namespace ibsCompiler.Database
         /// Replaces F4.8's exec_bcp() which launched native bcp/obcp.
         /// </summary>
         /// <param name="fieldTerminator">Field separator in the data file — bcp's -t. Tab unless a caller says otherwise.</param>
-        ExecReturn BulkCopy(string table, BcpDirection direction, string dataFile, string formatFile = "", string fieldTerminator = "\t");
+        /// <param name="batchSize">
+        /// IN only — bcp's -b. 0 loads the whole file in one transaction (a failure leaves the
+        /// table untouched); N commits every N rows, so a failure keeps the batches before it.
+        /// OUT is a single statement-consistent read and ignores this.
+        /// </param>
+        ExecReturn BulkCopy(string table, BcpDirection direction, string dataFile, string formatFile = "", string fieldTerminator = "\t", int batchSize = 0);
     }
 
     /// <summary>

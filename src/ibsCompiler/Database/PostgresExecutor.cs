@@ -322,7 +322,7 @@ namespace ibsCompiler.Database
             if (!string.IsNullOrEmpty(ex.Where)) emit(ex.Where);
         }
 
-        public ExecReturn BulkCopy(string table, BcpDirection direction, string dataFile, string formatFile = "", string fieldTerminator = "\t")
+        public ExecReturn BulkCopy(string table, BcpDirection direction, string dataFile, string formatFile = "", string fieldTerminator = "\t", int batchSize = 0)
         {
             var result = new ExecReturn { Returncode = true, Output = "" };
 
@@ -330,7 +330,7 @@ namespace ibsCompiler.Database
             {
                 if (direction == BcpDirection.IN)
                 {
-                    BulkCopyIn(table, dataFile, fieldTerminator);
+                    BulkCopyIn(table, dataFile, fieldTerminator, batchSize);
                 }
                 else
                 {
@@ -384,7 +384,7 @@ namespace ibsCompiler.Database
             return needs ? "\"" + ident.Replace("\"", "\"\"") + "\"" : ident;
         }
 
-        private void BulkCopyIn(string table, string dataFile, string fieldTerminator)
+        private void BulkCopyIn(string table, string dataFile, string fieldTerminator, int batchSize)
         {
             using var conn = OpenBulkConnection();
             var target = ResolveCopyTarget(table);
@@ -405,45 +405,60 @@ namespace ibsCompiler.Database
             var sep = new[] { fieldTerminator };
             int colCount = columnTypes.Count > 0 ? columnTypes.Count : lines[0].Split(sep, StringSplitOptions.None).Length;
 
-            int total = 0;
-            // Text-format COPY: write tab-separated, PG-escaped rows straight to STDIN.
-            using (var writer = conn.BeginTextImport($"COPY {target} FROM STDIN (FORMAT text)"))
+            // Text-format COPY: tab-separated, PG-escaped rows straight to STDIN.
+            string CopyLine(string line)
             {
-                foreach (var line in lines)
+                var cols = line.Split(sep, StringSplitOptions.None);
+
+                // Extra fields merge into the last column (native BCP behavior).
+                if (cols.Length > colCount && colCount > 0)
                 {
-                    if (string.IsNullOrEmpty(line)) continue;
-                    var cols = line.Split(sep, StringSplitOptions.None);
-
-                    // Extra fields merge into the last column (native BCP behavior).
-                    if (cols.Length > colCount && colCount > 0)
-                    {
-                        var merged = new string[colCount];
-                        for (int i = 0; i < colCount - 1; i++)
-                            merged[i] = cols[i];
-                        merged[colCount - 1] = string.Join(fieldTerminator, cols.Skip(colCount - 1));
-                        cols = merged;
-                    }
-
-                    var sb = new StringBuilder();
-                    for (int i = 0; i < colCount; i++)
-                    {
-                        if (i > 0) sb.Append('\t');
-                        string val = i < cols.Length ? cols[i] : "";
-                        bool isNum = i < columnTypes.Count && IsNumericType(columnTypes[i]);
-                        if (isNum && string.IsNullOrEmpty(val)) val = "0"; // empty numeric → 0
-                        // empty string stays empty (not NULL) for text columns
-                        sb.Append(EscapeCopyText(val));
-                    }
-                    // Explicit \n — the STDIN writer's WriteLine would emit CRLF on Windows,
-                    // injecting a stray \r into the final column.
-                    sb.Append('\n');
-                    writer.Write(sb.ToString());
-
-                    total++;
-                    if (total % 1000 == 0)
-                        ibs_compiler_common.WriteLine($"{total} rows sent to the server.");
+                    var merged = new string[colCount];
+                    for (int i = 0; i < colCount - 1; i++)
+                        merged[i] = cols[i];
+                    merged[colCount - 1] = string.Join(fieldTerminator, cols.Skip(colCount - 1));
+                    cols = merged;
                 }
-            } // dispose completes the COPY
+
+                var sb = new StringBuilder();
+                for (int i = 0; i < colCount; i++)
+                {
+                    if (i > 0) sb.Append('\t');
+                    string val = i < cols.Length ? cols[i] : "";
+                    bool isNum = i < columnTypes.Count && IsNumericType(columnTypes[i]);
+                    if (isNum && string.IsNullOrEmpty(val)) val = "0"; // empty numeric → 0
+                    // empty string stays empty (not NULL) for text columns
+                    sb.Append(EscapeCopyText(val));
+                }
+                // Explicit \n — the STDIN writer's WriteLine would emit CRLF on Windows,
+                // injecting a stray \r into the final column.
+                sb.Append('\n');
+                return sb.ToString();
+            }
+
+            // COPY runs inside whatever transaction the connection has open, so the default is
+            // one explicit transaction around one COPY: a row PG rejects takes the whole load
+            // down with it and the table is left as it was. -b N is the traditional bcp deal —
+            // a transaction and a COPY per N rows, so the chunks before a failure stay.
+            // NpgsqlTransaction.Dispose rolls back anything not committed.
+            var rows = lines.Where(l => !string.IsNullOrEmpty(l)).ToList();
+            int chunk = batchSize > 0 ? batchSize : rows.Count;
+            int total = 0;
+            for (int start = 0; start < rows.Count; start += chunk)
+            {
+                using var tran = conn.BeginTransaction();
+                using (var writer = conn.BeginTextImport($"COPY {target} FROM STDIN (FORMAT text)"))
+                {
+                    for (int i = start; i < Math.Min(start + chunk, rows.Count); i++)
+                    {
+                        writer.Write(CopyLine(rows[i]));
+                        total++;
+                        if (total % 1000 == 0)
+                            ibs_compiler_common.WriteLine($"{total} rows sent to the server.");
+                    }
+                } // dispose completes the COPY
+                tran.Commit();
+            }
 
             ibs_compiler_common.WriteLine("");
             ibs_compiler_common.WriteLine($"{total} rows copied.");

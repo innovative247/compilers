@@ -366,7 +366,7 @@ namespace ibsCompiler.Database
             emit(err.Message);
         }
 
-        public ExecReturn BulkCopy(string table, BcpDirection direction, string dataFile, string formatFile = "", string fieldTerminator = "\t")
+        public ExecReturn BulkCopy(string table, BcpDirection direction, string dataFile, string formatFile = "", string fieldTerminator = "\t", int batchSize = 0)
         {
             var result = new ExecReturn { Returncode = true, Output = "" };
 
@@ -374,7 +374,7 @@ namespace ibsCompiler.Database
             {
                 if (direction == BcpDirection.IN)
                 {
-                    BulkCopyIn(table, dataFile, fieldTerminator);
+                    BulkCopyIn(table, dataFile, fieldTerminator, batchSize);
                 }
                 else
                 {
@@ -396,7 +396,7 @@ namespace ibsCompiler.Database
         // is being adhered to. Cached; the reinterpretation pair uses the same value.
         public string ServerCharset => DetectServerCharset();
 
-        private void BulkCopyIn(string table, string dataFile, string fieldTerminator)
+        private void BulkCopyIn(string table, string dataFile, string fieldTerminator, int batchSize)
         {
             string database = "";
             string tableName = table;
@@ -410,18 +410,6 @@ namespace ibsCompiler.Database
             var connStr = BuildConnectionString(database);
             using var connection = new AseConnection(connStr);
             connection.Open();
-
-            using var bulkCopy = new AseBulkCopy(connection)
-            {
-                DestinationTableName = tableName,
-                BatchSize = 0,
-                NotifyAfter = 1000
-            };
-
-            bulkCopy.AseRowsCopied += (sender, e) =>
-            {
-                ibs_compiler_common.WriteLine($"{e.RowsCopied} rows sent to the server.");
-            };
 
             // Read the delimited data file and load into DataTable (all string columns)
             // Server handles type conversion during BCP insert
@@ -456,10 +444,56 @@ namespace ibsCompiler.Database
                 dataTable.Rows.Add(row);
             }
 
-            bulkCopy.WriteToServer(dataTable);
+            // AseBulkCopy has no options enum in this driver (its only knobs are
+            // DestinationTableName/BatchSize/NotifyAfter/ColumnMappings), but it does take an
+            // external AseTransaction — so both modes are driven by explicit transactions:
+            // one around the whole table by default, one per N-row slice under -b. Slicing
+            // rather than leaning on BatchSize keeps the commit boundary something we own
+            // rather than something the driver decides.
+            if (batchSize > 0)
+            {
+                int done = 0;
+                while (done < dataTable.Rows.Count)
+                {
+                    var slice = dataTable.Clone();
+                    for (int i = done; i < Math.Min(done + batchSize, dataTable.Rows.Count); i++)
+                        slice.ImportRow(dataTable.Rows[i]);
+                    WriteInTransaction(connection, tableName, slice, progress: false);
+                    done += slice.Rows.Count;
+                    ibs_compiler_common.WriteLine($"{done} rows sent to the server.");
+                }
+            }
+            else
+            {
+                WriteInTransaction(connection, tableName, dataTable, progress: true);
+            }
 
             ibs_compiler_common.WriteLine("");
             ibs_compiler_common.WriteLine($"{dataTable.Rows.Count} rows copied.");
+        }
+
+        private static void WriteInTransaction(AseConnection connection, string tableName, DataTable rows, bool progress)
+        {
+            using var tran = (AseTransaction)connection.BeginTransaction();
+            try
+            {
+                using var bulkCopy = new AseBulkCopy(connection, tran)
+                {
+                    DestinationTableName = tableName,
+                    BatchSize = 0,
+                    NotifyAfter = 1000
+                };
+                if (progress)
+                    bulkCopy.AseRowsCopied += (sender, e) =>
+                        ibs_compiler_common.WriteLine($"{e.RowsCopied} rows sent to the server.");
+                bulkCopy.WriteToServer(rows);
+                tran.Commit();
+            }
+            catch
+            {
+                tran.Rollback();
+                throw;
+            }
         }
 
         private int BulkCopyOut(string table, string dataFile, string fieldTerminator)

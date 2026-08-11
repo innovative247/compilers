@@ -2,7 +2,7 @@ using ibsCompiler;
 using ibsCompiler.Configuration;
 using ibsCompiler.Database;
 
-const string Usage = "Usage: bcp_data <table...> <IN|OUT> [datafile] <server/profile> [-t field_terminator] [--truncate] [-U user] [-P pass] [-O outfile] [-MSSQL|-SYBASE|-POSTGRES]";
+const string Usage = "Usage: bcp_data <table...> <IN|OUT> [datafile] <server/profile> [-t field_terminator] [-b batchsize] [--truncate] [-U user] [-P pass] [-O outfile] [-MSSQL|-SYBASE|-POSTGRES]";
 if (!VersionCheck.CheckForUpdates("bcp_data", args, Usage)) return 0;
 
 var arguments = args.ToList();
@@ -26,6 +26,13 @@ if (cmdvars.Bcp != "IN" && cmdvars.Bcp != "OUT")
 if (cmdvars.FieldTerminator.Length == 0)
 {
     Console.Error.WriteLine("ERROR: -t requires a field terminator (e.g. -t\"|\" or -t\\t).");
+    Console.Error.WriteLine(Usage);
+    return 1;
+}
+
+if (cmdvars.BatchSize < 0)
+{
+    Console.Error.WriteLine("ERROR: -b requires a positive number of rows per batch.");
     Console.Error.WriteLine(Usage);
     return 1;
 }
@@ -135,7 +142,9 @@ bool RunTable(string table)
     ibs_compiler_common.WriteLine(StatusLine("started"), cmdvars.OutFile);
 
     // Native bcp appends; --truncate is the opt-in for the legacy
-    // import_sql_table_data behavior of emptying the table first.
+    // import_sql_table_data behavior of emptying the table first. It stays outside
+    // the load transaction on purpose: Sybase ASE refuses `truncate table` inside a
+    // user transaction unless the database has `ddl in tran` set.
     if (direction == BcpDirection.IN && cmdvars.Truncate)
     {
         var truncate = executor.ExecuteSql($"truncate table {tableOnly}", database, false, cmdvars.OutFile);
@@ -152,7 +161,13 @@ bool RunTable(string table)
     if (direction == BcpDirection.IN && executor is SybaseExecutor sybase)
         ibs_compiler_common.WriteLine($"server charset: {sybase.ServerCharset}", cmdvars.OutFile);
 
-    var result = executor.BulkCopy(resolved, direction, dataFile, fieldTerminator: cmdvars.FieldTerminator);
+    if (direction == BcpDirection.IN)
+        ibs_compiler_common.WriteLine(cmdvars.BatchSize > 0
+            ? $"Loading in batches of {cmdvars.BatchSize} rows — a failure keeps the batches already committed."
+            : "Loading in a single transaction — a failure leaves the table unchanged.", cmdvars.OutFile);
+
+    var result = executor.BulkCopy(resolved, direction, dataFile,
+        fieldTerminator: cmdvars.FieldTerminator, batchSize: cmdvars.BatchSize);
     if (!result.Returncode)
     {
         ibs_compiler_common.WriteLine($"ERROR! {verb} of {label} failed. {result.Output}", cmdvars.OutFile);
@@ -169,8 +184,9 @@ bool RunTable(string table)
     {
         // Legacy import_sql_table_data ran this after every table. "update
         // statistics" is Sybase/MSSQL syntax; ANALYZE is the POSTGRES equivalent.
-        // Either way the rows are already in, so a refusal is a warning, not a
-        // failed import.
+        // Runs after the load transaction has committed — neither statement is
+        // transaction-safe on ASE — so the rows are already in and a refusal is a
+        // warning, not a failed import.
         var statsSql = profile.ServerType == SQLServerTypes.POSTGRES
             ? $"analyze {tableOnly}"
             : $"update statistics {tableOnly}";

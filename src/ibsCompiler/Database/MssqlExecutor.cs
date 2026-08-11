@@ -234,7 +234,7 @@ namespace ibsCompiler.Database
             }
         }
 
-        public ExecReturn BulkCopy(string table, BcpDirection direction, string dataFile, string formatFile = "", string fieldTerminator = "\t")
+        public ExecReturn BulkCopy(string table, BcpDirection direction, string dataFile, string formatFile = "", string fieldTerminator = "\t", int batchSize = 0)
         {
             var result = new ExecReturn { Returncode = true, Output = "" };
 
@@ -242,7 +242,7 @@ namespace ibsCompiler.Database
             {
                 if (direction == BcpDirection.IN)
                 {
-                    BulkCopyIn(table, dataFile, formatFile, fieldTerminator);
+                    BulkCopyIn(table, dataFile, formatFile, fieldTerminator, batchSize);
                 }
                 else
                 {
@@ -260,7 +260,7 @@ namespace ibsCompiler.Database
             return result;
         }
 
-        private void BulkCopyIn(string table, string dataFile, string formatFile, string fieldTerminator)
+        private void BulkCopyIn(string table, string dataFile, string formatFile, string fieldTerminator, int batchSize)
         {
             // Parse database from table name (e.g., "sbnmaster..w#actions" → db=sbnmaster, table=w#actions)
             string database = "";
@@ -294,19 +294,6 @@ namespace ibsCompiler.Database
                 }
             }
 
-            using var bulkCopy = new SqlBulkCopy(connection)
-            {
-                DestinationTableName = tableName,
-                BulkCopyTimeout = 0,
-                BatchSize = 1000,
-                NotifyAfter = 1000
-            };
-
-            bulkCopy.SqlRowsCopied += (sender, e) =>
-            {
-                ibs_compiler_common.WriteLine($"{e.RowsCopied} rows sent to the server.");
-            };
-
             // Read the delimited data file and load into table
             var lines = ibs_compiler_common.ReadBulkLines(dataFile);
             if (lines.Length == 0) return;
@@ -322,10 +309,6 @@ namespace ibsCompiler.Database
                 var colType = i < columnTypes.Count ? columnTypes[i] : typeof(string);
                 dataTable.Columns.Add(colName, colType);
             }
-
-            // Map column ordinals for SqlBulkCopy
-            for (int i = 0; i < colCount; i++)
-                bulkCopy.ColumnMappings.Add(i, i);
 
             foreach (var line in lines)
             {
@@ -368,7 +351,42 @@ namespace ibsCompiler.Database
                 dataTable.Rows.Add(row);
             }
 
-            bulkCopy.WriteToServer(dataTable);
+            // All-or-nothing by default: the file goes in under one transaction, so a row
+            // the server rejects halfway leaves the table exactly as it was. -b N buys the
+            // traditional bcp deal instead — UseInternalTransaction makes each batch of N
+            // its own commit, and the batches before the failure stay.
+            using SqlTransaction? tran = batchSize > 0 ? null : connection.BeginTransaction();
+            using var bulkCopy = new SqlBulkCopy(connection,
+                batchSize > 0 ? SqlBulkCopyOptions.UseInternalTransaction : SqlBulkCopyOptions.Default,
+                tran)
+            {
+                DestinationTableName = tableName,
+                BulkCopyTimeout = 0,
+                // Under the external transaction this is only how often rows go over the
+                // wire; with -b it is the commit boundary.
+                BatchSize = batchSize > 0 ? batchSize : 1000,
+                NotifyAfter = 1000
+            };
+
+            bulkCopy.SqlRowsCopied += (sender, e) =>
+            {
+                ibs_compiler_common.WriteLine($"{e.RowsCopied} rows sent to the server.");
+            };
+
+            // Map column ordinals for SqlBulkCopy
+            for (int i = 0; i < colCount; i++)
+                bulkCopy.ColumnMappings.Add(i, i);
+
+            try
+            {
+                bulkCopy.WriteToServer(dataTable);
+                tran?.Commit();
+            }
+            catch
+            {
+                tran?.Rollback();
+                throw;
+            }
 
             ibs_compiler_common.WriteLine("");
             ibs_compiler_common.WriteLine($"{dataTable.Rows.Count} rows copied.");
