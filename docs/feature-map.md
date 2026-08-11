@@ -327,7 +327,71 @@ Interactive main menu:
 
 ---
 
-## 6. Self-management (all CLI-only — present on every binary)
+## 6. Bulk data copy
+
+### `bcp_data` — bulk copy individual tables in or out
+
+Never had a menu — the managed port of the Unix `export_sql_table_data` /
+`import_sql_table_data` pair. One data file per table, named after the table,
+in the current directory. All BCP runs through `ISqlExecutor.BulkCopy`
+(ADO.NET/Npgsql) — no native `bcp` process is ever launched — so all three
+platforms are supported, POSTGRES included.
+
+| Outcome | Flags | Test ID | Status |
+|---|---|---|---|
+| BCP OUT each table → `<table>.bcp`, print start/end + row count | `bcp_data <table...> OUT <profile>` | `bcp_data.out` | SKIP (needs an SBN table on the test target — Atlas/SRM_LOCAL has no CSS tables; manual verification only) |
+| BCP IN each table: `truncate table` → BCP IN → `update statistics` | `bcp_data <table...> IN <profile>` | `bcp_data.in` | SKIP (same, plus it would truncate the table; manual verification only) |
+| Resolve a bare table name through `table_locations` — a name without `..` is looked up as `&name&` against the merged option set, exactly like `set_profile --test --what options`; a name that already contains `..` is used as-is | (no flag) | `bcp_data.error_unresolved_table` (resolution engaged + the unresolved diagnostic; the resolved `db..table` actually reaching the server rides on `bcp_data.out`/`.in`) | COVERED |
+| Run against a POSTGRES profile | (platform comes from the profile) | `bcp_data.postgres_offline` | COVERED (arg/resolution level — no live Postgres in the suite) |
+| Capture the run log to a file | `-O <file>` (log/output capture, as in `isqlline` — **not** the data file) | — | COVERED (shared `-O` plumbing, `isqlline.outfile`) |
+| Credentials / platform override | `-U user` / `-P pass` / `-MSSQL` / `-SYBASE` / `-POSTGRES` | — | COVERED (shared `DefaultCommandVariables` plumbing) |
+| Print usage | `bcp_data help` | `bcp_data.usage` | COVERED |
+| Multiple tables: keep going after a per-table failure, exit 1 if any failed | (legacy loop behavior) | `bcp_data.error_missing_data_file` | COVERED |
+| GONZO + `IN` → refuse and exit 1 before any connection (production safety) | (no flag; name-based auto-detect `GONZO`/`G`, same rule as `set_messages --import`) | `bcp_data.gonzo_in_blocked` | COVERED |
+| (error) Every validation surface — missing server, bad direction, no tables, unknown profile, missing data file, unresolvable table | (n/a) | `bcp_data.error_*` (6 tests) | COVERED |
+
+**CLI surface:**
+
+```
+bcp_data TABLE [TABLE...]           # bare name → resolved via table_locations
+                                    # db..table → used as-is
+         ( IN | OUT )               # direction (case-insensitive)
+         PROFILE                    # server/profile — always last
+         [-U user] [-P pass]        # credential override
+         [-O outfile]               # run log (data files are always <table>.bcp)
+         [-MSSQL | -SYBASE | -POSTGRES]
+```
+
+**Error surfaces (all exit 1, message on stderr):**
+- Fewer than two positionals / no server — plus usage.
+- Direction is not `IN` or `OUT` — plus usage.
+- No table names in front of the direction — plus usage.
+- Unknown profile (`ProfileManager.ValidateProfile`).
+- `IN` against `GONZO`/`G` — refused before the executor is created.
+
+**Per-table failures (message on the run log, loop continues, exit 1 at the end):**
+- `IN` with no `<table>.bcp` in the current directory (checked before anything
+  connects).
+- A bare name with no `table_locations` entry — reported as unresolved rather
+  than sent to the server as a literal `&name&`.
+- `truncate` / `BulkCopy` failure.
+
+**Platform notes:**
+- `truncate` and the post-import stats call go out with the **bare** table name
+  plus the database handed to the executor — initial catalog on MSSQL/Sybase,
+  `search_path` on POSTGRES (where the `db..table` db part is a schema). There
+  is no portable `db..table` form in plain SQL; `BulkCopy` still gets the
+  qualified name and each executor splits it itself.
+- The post-import stats call is `update statistics <table>` on Sybase/MSSQL and
+  `analyze <table>` on POSTGRES. Either way the rows are already in, so a
+  refusal is logged as a warning and the table still counts as imported.
+- On IN the executors print their own `N rows copied.`; `bcp_data` adds the
+  count line only for OUT (where `BulkCopyOut` prints just
+  "rows successfully extracted").
+
+---
+
+## 7. Self-management (all CLI-only — present on every binary)
 
 | Outcome | Flags | Test ID | Status |
 |---|---|---|---|
@@ -337,7 +401,7 @@ Interactive main menu:
 
 ---
 
-## 7. Out-of-scope (explicitly never exposed to agents)
+## 8. Out-of-scope (explicitly never exposed to agents)
 
 ### `transfer_data`
 
@@ -360,7 +424,7 @@ no useful headless equivalent — an agent that needs VSCode tasks should write
 COVERED by the test suite or SKIP-by-design with a documented rationale.
 Suite tally after PG-support wave 4: **139 PASS / 5 SKIP / 0 FAIL / 0 GAP**.
 
-The five skips:
+The skips:
 - `iwho.timer` — polling blocks indefinitely.
 - `version.update_dryrun` — would trigger real GitHub self-update.
 - `runcreate.bg` — `-bg` is a wrapper concept, not a source-level flag.
@@ -370,6 +434,11 @@ The five skips:
 - `runcreate.platform_lines_postgres` — `#NT`/`#UNIX` create-file prefixes are OS
   dispatch lines, not DB-platform lines; there is no Postgres-specific create-file
   directive to mirror.
+- `bcp_data.out` / `bcp_data.in` — need a real SBN table on the test target
+  (Atlas/SRM_LOCAL has no CSS tables), and `in` would truncate it. Every
+  `bcp_data` validation surface, the GONZO guard, the POSTGRES platform path,
+  and table resolution are covered offline; the BCP round-trip itself is
+  manual only.
 
 The five SKIP-AGENT rows (`--edit-*` flags across the three setup-compile
 commands plus set_options menu items 2 and 4..N) are not gaps either — they

@@ -2377,8 +2377,85 @@ function Test-ProfileManagement {
     }
 }
 
+function Test-BulkCopy {
+    Write-Host "`n--- 6. Bulk copy (bcp_data) ---" -ForegroundColor Cyan
+
+    # bcp_data has no menu - it was always CLI-only. Every test below is offline:
+    # each one is rejected before a connection is opened, so the suite never needs
+    # the SBN tables (which the Atlas test target does not have) or a live server.
+
+    Test-Case 'bcp_data.usage' {
+        $r = Invoke-Cli bcp_data 'help'
+        Assert-ExitCode $r
+        if ($r.StdOut -notmatch '<table\.\.\.>') { throw "usage should document the table list. stdout: $($r.StdOut)" }
+        if ($r.StdOut -notmatch '<IN\|OUT>')     { throw "usage should document the direction. stdout: $($r.StdOut)" }
+    }
+    Test-Case 'bcp_data.error_missing_server' {
+        # Fewer than two positionals - no server to run against.
+        $r = Invoke-Cli bcp_data 'OUT'
+        if ($r.ExitCode -eq 0) { throw 'bcp_data without a server must be rejected' }
+        if ($r.StdErr -notmatch 'Usage') { throw "stderr should print usage. stderr: $($r.StdErr)" }
+    }
+    Test-Case 'bcp_data.error_bad_direction' {
+        $r = Invoke-Cli bcp_data 'ba_options' 'SIDEWAYS' $script:TestProfile
+        if ($r.ExitCode -eq 0) { throw 'a direction other than IN/OUT must be rejected' }
+        if ($r.StdErr -notmatch 'IN or OUT') { throw "stderr should name the valid directions. stderr: $($r.StdErr)" }
+    }
+    Test-Case 'bcp_data.error_no_tables' {
+        # Direction + server only: the table list is empty.
+        $r = Invoke-Cli bcp_data 'OUT' $script:TestProfile
+        if ($r.ExitCode -eq 0) { throw 'bcp_data without a table must be rejected' }
+        if ($r.StdErr -notmatch 'table name is required') { throw "stderr should ask for a table. stderr: $($r.StdErr)" }
+    }
+    Test-Case 'bcp_data.error_bad_profile' {
+        $r = Invoke-Cli bcp_data 'ba_options' 'OUT' 'NO_SUCH_PROFILE_XYZ'
+        if ($r.ExitCode -eq 0) { throw 'unknown profile should exit non-zero' }
+    }
+    Test-Case 'bcp_data.error_missing_data_file' {
+        # IN checks the data file before resolving anything, so this never opens
+        # a connection. The table name is unique enough that no stray .bcp file
+        # in the suite's working directory can satisfy it.
+        $r = Invoke-Cli bcp_data 'no_such_table_xyz' 'IN' $script:TestProfile
+        if ($r.ExitCode -eq 0) { throw 'IN with no data file must exit non-zero' }
+        $combined = "$($r.StdOut)`n$($r.StdErr)"
+        if ($combined -notmatch 'Data file not found') { throw "expected the missing-data-file diagnostic. output: $combined" }
+    }
+    Test-Case 'bcp_data.error_unresolved_table' {
+        # A bare name is looked up as &name& against the merged option set. The
+        # scratch table_locations has no entry for this one, so bcp_data says so
+        # instead of sending a literal &name& to the server - and never connects.
+        $r = Invoke-Cli bcp_data 'no_such_table_xyz' 'OUT' $script:TestProfile
+        if ($r.ExitCode -eq 0) { throw 'an unresolvable table name must exit non-zero' }
+        $combined = "$($r.StdOut)`n$($r.StdErr)"
+        if ($combined -notmatch 'Cannot resolve table') { throw "expected the unresolved-table diagnostic. output: $combined" }
+        if ($combined -notmatch '&no_such_table_xyz&') { throw "diagnostic should show the &token& form that was looked up. output: $combined" }
+    }
+    Test-Case 'bcp_data.postgres_offline' {
+        # POSTGRES profiles are accepted end-to-end: SqlExecutorFactory builds a
+        # PostgresExecutor, the option set is merged off the scratch source, and
+        # the per-table precheck fires - all without a live Postgres server.
+        $r = Invoke-Cli bcp_data 'no_such_table_xyz' 'IN' $script:PgProfile
+        if ($r.ExitCode -eq 0) { throw 'IN with no data file must exit non-zero on POSTGRES too' }
+        $combined = "$($r.StdOut)`n$($r.StdErr)"
+        if ($combined -notmatch 'Data file not found') { throw "expected the missing-data-file diagnostic. output: $combined" }
+        if ($combined -match 'Unknown server type') { throw "POSTGRES must be a supported bcp_data platform. output: $combined" }
+    }
+    Test-Case 'bcp_data.gonzo_in_blocked' {
+        # GONZO IN must be rejected BEFORE any DB call. Uses the real GONZO
+        # profile (name-based detection), same rule set_messages --import enforces.
+        $r = Invoke-Cli bcp_data 'ba_options' 'IN' 'GONZO'
+        if ($r.ExitCode -eq 0) { throw 'IN against GONZO must be rejected' }
+        $combined = "$($r.StdOut)`n$($r.StdErr)"
+        if ($combined -notmatch 'GONZO|not allowed|canonical') {
+            throw "stderr should explain the GONZO rejection. output: $combined"
+        }
+    }
+    Skip-Case 'bcp_data.out' 'needs an SBN table on the test target - Atlas/SRM_LOCAL has no CSS tables to BCP OUT; manual verification only'
+    Skip-Case 'bcp_data.in'  'needs an SBN table on the test target plus a real data file; would truncate it - manual verification only'
+}
+
 function Test-SelfMgmt {
-    Write-Host "`n--- 6. Self-management ---" -ForegroundColor Cyan
+    Write-Host "`n--- 7. Self-management ---" -ForegroundColor Cyan
     Test-Case 'version.print' {
         $r = Invoke-Cli runsql 'version'
         Assert-ExitCode $r
@@ -2418,7 +2495,7 @@ function Test-SelfMgmt {
 }
 
 function Test-ExclusionGuard {
-    Write-Host "`n--- 7. Exclusion guard (transfer_data MUST stay out) ---" -ForegroundColor Cyan
+    Write-Host "`n--- 8. Exclusion guard (transfer_data MUST stay out) ---" -ForegroundColor Cyan
     # Active check: scan this script for any non-comment, non-string mention
     # of transfer_data. If anyone ever wires it in, the suite fails loudly.
     Test-Case 'transfer_data.excluded' {
@@ -2461,6 +2538,7 @@ try {
     Test-SetupCompile
     Test-Messages
     Test-ProfileManagement
+    Test-BulkCopy
     Test-SelfMgmt
     Test-ExclusionGuard
 
