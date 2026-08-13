@@ -121,7 +121,7 @@ namespace ibsCompiler
 
                     // Same picker as the group screen: Up/Down highlight plus a deferred
                     // numbered choice. Falls back to a plain list on a small terminal.
-                    bool tooSmall = Console.WindowHeight < 10 || Console.WindowWidth < 40;
+                    bool tooSmall = !ConsoleMenu.TryEnsureWindow(10, 40);
                     int selected;
                     string extra;
                     if (tooSmall)
@@ -153,7 +153,7 @@ namespace ibsCompiler
                     .OrderBy(g => g.MinMsg).ThenBy(g => g.Group, StringComparer.Ordinal).ToList();
 
                 // Small-terminal fallback: plain (non-scrolling) numbered list.
-                bool tooSmall = Console.WindowHeight < 10 || Console.WindowWidth < 40;
+                bool tooSmall = !ConsoleMenu.TryEnsureWindow(10, 40);
                 int selected;
                 string extra;
                 if (tooSmall)
@@ -662,7 +662,7 @@ namespace ibsCompiler
             var filter = new StringBuilder();
 
             // Small-terminal fallback: a single-shot prompt search.
-            if (Console.WindowHeight < 12 || Console.WindowWidth < 40)
+            if (!ConsoleMenu.TryEnsureWindow(12, 40))
                 return FindFallback(profile, lt, file);
 
             int w = Math.Max(40, Console.WindowWidth) - 1;

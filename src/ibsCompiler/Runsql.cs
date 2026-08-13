@@ -31,6 +31,21 @@ namespace ibsCompiler
             string? line;
             while ((line = reader.ReadLine()) != null)
             {
+                // isql OS-command escape: a line beginning with `!!` (column 0, like
+                // isql) runs the rest of the line as a shell command at this point in
+                // the script — legacy runsql piped into isql, which honored these
+                // in-stream (e.g. `!!runsql tbl_dealers.sql &db& &sv&`, options already
+                // substituted). Emit it as its own pseudo-batch so the batch loop can
+                // dispatch it to the shell instead of the server. isql runs the command
+                // as soon as the line is read WITHOUT flushing its batch buffer — SQL
+                // accumulated since the last `go` still runs at the NEXT `go`, after
+                // the command — so the buffer is left untouched here.
+                if (!inBlockComment && !(dollar?.InDollarBody ?? false) && line.StartsWith("!!"))
+                {
+                    batches.Add(line);
+                    continue;
+                }
+
                 bool lineStartedInBlockComment = inBlockComment;
                 bool inDollarBody = dollar?.InDollarBody ?? false;
                 char inString = '\0'; // reset per-line; tracks ' or " delimiter
@@ -96,6 +111,48 @@ namespace ibsCompiler
                 batches.Add(remaining);
 
             return batches.ToArray();
+        }
+
+        /// <summary>
+        /// Executes an isql `!!` OS-command escape through the platform shell
+        /// (cmd on Windows, sh elsewhere), streaming its stdout/stderr to the
+        /// normal output sink. Returns true when the command exits 0.
+        /// </summary>
+        private static bool RunShellEscape(string command, string outFile)
+        {
+            if (string.IsNullOrWhiteSpace(command)) return true;
+            try
+            {
+                var psi = new System.Diagnostics.ProcessStartInfo
+                {
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                };
+                if (OperatingSystem.IsWindows())
+                {
+                    psi.FileName = "cmd.exe";
+                    psi.Arguments = "/c " + command;
+                }
+                else
+                {
+                    psi.FileName = "/bin/sh";
+                    psi.ArgumentList.Add("-c");
+                    psi.ArgumentList.Add(command);
+                }
+                using var proc = System.Diagnostics.Process.Start(psi)!;
+                proc.OutputDataReceived += (_, e) => { if (e.Data != null) ibs_compiler_common.WriteLine(e.Data, outFile); };
+                proc.ErrorDataReceived += (_, e) => { if (e.Data != null) ibs_compiler_common.WriteLine(e.Data, outFile); };
+                proc.BeginOutputReadLine();
+                proc.BeginErrorReadLine();
+                proc.WaitForExit();
+                return proc.ExitCode == 0;
+            }
+            catch (Exception ex)
+            {
+                ibs_compiler_common.WriteLine($"ERROR! !!{command}: {ex.Message}", outFile);
+                return false;
+            }
         }
 
         public bool Run(CommandVariables cmdvars, ResolvedProfile profile, ISqlExecutor executor,
@@ -226,6 +283,21 @@ namespace ibsCompiler
                         for (int batchIndex = 0; batchIndex < batches.Length; batchIndex++)
                         {
                             var batch = batches[batchIndex];
+
+                            // Shell pseudo-batch from a `!!` line — run it on the OS,
+                            // not the server. A failed command fails the run, matching
+                            // how server errors are treated (isql itself ignored the
+                            // exit code, but silently swallowing a failed nested
+                            // runsql hides real breakage).
+                            if (batch.StartsWith("!!"))
+                            {
+                                if (cmdvars.EchoInput)
+                                    ibs_compiler_common.WriteLine("1> " + batch, cmdvars.OutFile);
+                                if (!RunShellEscape(batch.Substring(2).Trim(), cmdvars.OutFile))
+                                    anyFailed = true;
+                                continue;
+                            }
+
                             var trimmedBatch = batch.Trim('\r', '\n');
 
                             // Echo mode: print batch lines with per-batch line numbers

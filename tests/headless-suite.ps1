@@ -535,6 +535,35 @@ function Test-ScriptExecution {
         $runs = ([regex]::Matches($r.StdOut, 'Running \d+ of 3')).Count
         if ($runs -ne 3) { throw "expected 3 sequenced runs, saw $runs. stdout: $($r.StdOut)" }
     }
+    Test-Case 'runsql.shell_escape' {
+        # isql `!!` OS-command escape: a line starting with !! runs on the shell,
+        # in stream order, without disturbing the surrounding batches.
+        $sh = Join-Path $script:Scratch 'shellesc.sql'
+        @('SELECT 1', 'go', '!!echo SHELL-ESCAPE-OK', 'SELECT 2') | Set-Content $sh -Encoding ASCII
+        $r = Invoke-Cli runsql $sh 'master' $script:SourceProfile '--changelog:n'
+        Assert-ExitCode $r
+        if ($r.StdOut -notmatch 'SHELL-ESCAPE-OK') { throw "!! command output missing. stdout: $($r.StdOut)" }
+        $statuses = ([regex]::Matches($r.StdOut, 'return status = 0')).Count
+        if ($statuses -ne 2) { throw "expected both SELECT batches to run (saw $statuses statuses). stdout: $($r.StdOut)" }
+    }
+    Test-Case 'runsql.shell_escape_fail' {
+        # A !! command with a non-zero exit code fails the run.
+        $sh = Join-Path $script:Scratch 'shellesc-fail.sql'
+        @('!!exit 5', 'SELECT 1') | Set-Content $sh -Encoding ASCII
+        $r = Invoke-Cli runsql $sh 'master' $script:SourceProfile '--changelog:n'
+        if ($r.ExitCode -eq 0) { throw 'failed !! command should exit non-zero' }
+    }
+    Test-Case 'runsql.shell_escape_preview' {
+        # --preview must not execute !! commands.
+        $marker = Join-Path $script:Scratch 'shellesc-preview.marker'
+        Remove-Item $marker -Force -ErrorAction SilentlyContinue
+        $sh = Join-Path $script:Scratch 'shellesc-preview.sql'
+        @("!!echo ran > `"$marker`"", 'SELECT 1') | Set-Content $sh -Encoding ASCII
+        $r = Invoke-Cli runsql $sh 'master' $script:SourceProfile '--preview' '--changelog:n'
+        Assert-ExitCode $r
+        if (Test-Path $marker) { throw 'preview executed the !! command' }
+    }
+
     Test-Case 'runsql.error_bad_script' {
         $r = Invoke-Cli runsql 'no-such-file.sql' 'master' $script:SourceProfile '--changelog:n'
         if ($r.ExitCode -eq 0) { throw 'missing script should exit non-zero' }

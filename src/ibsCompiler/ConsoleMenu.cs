@@ -21,6 +21,45 @@ namespace ibsCompiler
     internal static class ConsoleMenu
     {
         /// <summary>
+        /// Ensures the console window is at least <paramref name="rows"/> x
+        /// <paramref name="cols"/> before a full-screen widget draws, growing it
+        /// where the host allows: classic conhost (Windows PowerShell / cmd) honors
+        /// <c>Console.SetWindowSize</c>, while Windows Terminal and Unix terminals
+        /// ignore or refuse it — the attempt is best-effort and any refusal is
+        /// swallowed. Returns true when the window meets the minimum afterwards;
+        /// on false the caller falls back (see <see cref="ExplainTooSmall"/>).
+        /// </summary>
+        internal static bool TryEnsureWindow(int rows, int cols)
+        {
+            try
+            {
+                if (Console.WindowHeight >= rows && Console.WindowWidth >= cols) return true;
+                if (!OperatingSystem.IsWindows()) return false;
+                int w = Math.Min(Math.Max(Console.WindowWidth, cols), Console.LargestWindowWidth);
+                int h = Math.Min(Math.Max(Console.WindowHeight, rows), Console.LargestWindowHeight);
+                // Grow the buffer first — SetWindowSize refuses a window larger than
+                // the buffer. Only ever grow; shrinking the buffer clips scrollback.
+                if (Console.BufferWidth < w) Console.BufferWidth = w;
+                if (Console.BufferHeight < h) Console.BufferHeight = h;
+                Console.SetWindowSize(w, h);
+                return Console.WindowHeight >= rows && Console.WindowWidth >= cols;
+            }
+            catch { return false; }
+        }
+
+        /// <summary>
+        /// Actionable companion to a failed <see cref="TryEnsureWindow"/>: tells the
+        /// user the exact size the widget needs, what this window is, and how to get
+        /// the full-screen experience next time.
+        /// </summary>
+        internal static void ExplainTooSmall(string what, int rows, int cols)
+        {
+            Console.WriteLine();
+            Console.WriteLine($"  Terminal too small for {what} — it needs {cols} cols x {rows} rows; this window is {Console.WindowWidth}x{Console.WindowHeight}.");
+            Console.WriteLine("  Falling back to sequential prompts. Enlarge or maximize the window and rerun the command for the full-screen editor.");
+        }
+
+        /// <summary>
         /// Builds the rendered label text: <c>"Choice: "</c>, or <c>"Choice [x]: "</c>
         /// when <paramref name="defaultChoice"/> is supplied.
         /// </summary>

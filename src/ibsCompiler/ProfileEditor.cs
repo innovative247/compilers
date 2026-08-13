@@ -252,10 +252,10 @@ namespace ibsCompiler
             // Layout needs (top→bottom): blank + title + blank + N field rows + blank +
             // footer + blank + maxMenuRows menu rows + message row. Width must clear the
             // widest fixed-column cursor move (the Discard prompt).
-            if (Console.WindowHeight < fields.Length + maxMenuRows + 7 || Console.WindowWidth < 40)
+            int minRows = fields.Length + maxMenuRows + 7;
+            if (!ConsoleMenu.TryEnsureWindow(minRows, 40))
             {
-                Console.WriteLine();
-                Console.WriteLine("  Terminal too small for the profile editor — using sequential prompts.");
+                ConsoleMenu.ExplainTooSmall("the profile editor", minRows, 40);
                 return ProfileEditorOutcome.TooSmall;
             }
             var snapshot = JsonSerializer.Deserialize<ProfileData>(JsonSerializer.Serialize(profile))!;

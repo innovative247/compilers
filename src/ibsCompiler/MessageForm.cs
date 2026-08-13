@@ -87,8 +87,12 @@ namespace ibsCompiler
             // Layout (top→bottom): blank + title + blank + field rows + blank + footer +
             // blank + menu rows + prompt row + one spare row so the final newline never
             // scrolls the cached row numbers out from under us.
-            if (Console.WindowHeight < totalFieldRows + MenuRows + 8 || Console.WindowWidth < 40)
+            int minRows = totalFieldRows + MenuRows + 8;
+            if (!ConsoleMenu.TryEnsureWindow(minRows, 40))
+            {
+                ConsoleMenu.ExplainTooSmall("the message form", minRows, 40);
                 return RunSequential(title, fields, validate);
+            }
 
             int startRow = 0, menuRow0 = 0, promptRow = 0;
 
