@@ -175,15 +175,26 @@ namespace ibsCompiler
             {
                 Console.Error.WriteLine();
                 Console.Error.WriteLine($"  A new version is available: v{latestVersion} (current: v{currentVersion})");
-                Console.Error.Write("  Update now? [y/N]: ");
-                var answer = Console.ReadLine()?.Trim().ToLowerInvariant() ?? "";
-                if (answer.StartsWith("y"))
+                // Only prompt on a real TTY. Bare Enter defaults to YES, so a
+                // redirected stdin (suite runs, piped scripts, !! escapes) must never
+                // reach the prompt — a null/stray ReadLine would self-update binaries
+                // out from under whatever is driving the process.
+                if (Console.IsInputRedirected)
                 {
-                    RunSelfUpdate().GetAwaiter().GetResult();
+                    Console.Error.WriteLine("  Run any command with 'update' to install.");
                 }
                 else
                 {
-                    Console.Error.WriteLine("  Run any command with 'update' to install later.");
+                    Console.Error.Write("  Update now? [Y/n]: ");
+                    var answer = Console.ReadLine()?.Trim().ToLowerInvariant() ?? "";
+                    if (answer == "" || answer.StartsWith("y"))
+                    {
+                        RunSelfUpdate().GetAwaiter().GetResult();
+                    }
+                    else
+                    {
+                        Console.Error.WriteLine("  Run any command with 'update' to install later.");
+                    }
                 }
                 Console.Error.WriteLine();
             }
