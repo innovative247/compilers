@@ -1801,25 +1801,29 @@ function Test-Messages {
     # ===== set_messages --find (search rows) =====
     Test-Case 'set_messages.find_headless' {
         Reset-MsgFixture
-        # Bare term is EXACT (no implied wildcard) -> 'menu' is nobody's whole text.
+        # Wildcards are implied: a bare term is a case-insensitive CONTAINS over the
+        # msgno and the text, so 'menu' hits all three MENU rows.
         $r0 = Invoke-Cli set_messages '--find' 'menu' '--type' 'gui' $script:TestProfile
         Assert-ExitCode $r0
-        if ($r0.StdOut.Trim() -ne 'FOUND 0') { throw "bare term must be exact, expected 'FOUND 0', got: $($r0.StdOut)" }
-        # *term* = contains (case-insensitive) -> the three 'menu' rows.
-        $r = Invoke-Cli set_messages '--find' '*menu*' '--type' 'gui' $script:TestProfile
-        Assert-ExitCode $r
-        if ($r.StdOut -notmatch '(?m)^FOUND 3\r?$') { throw "'*menu*' expected 'FOUND 3', got: $($r.StdOut)" }
-        if ($r.StdOut -notmatch '(?m)^MATCH 100\t0\t1\tMENU\t') { throw "expected a MATCH row for msgno 100: $($r.StdOut)" }
-        # trailing wildcard = starts-with -> 'First menu message' only.
+        if ($r0.StdOut -notmatch '(?m)^FOUND 3\r?$') { throw "bare term is contains, expected 'FOUND 3', got: $($r0.StdOut)" }
+        if ($r0.StdOut -notmatch '(?m)^MATCH 100\t0\t1\tMENU\t') { throw "expected a MATCH row for msgno 100: $($r0.StdOut)" }
+        # Case never matters and a typed '*' is a no-op wherever it lands - every one of
+        # these searches for 'menu' and returns the same three rows.
+        foreach ($variant in @('*menu*', 'MENU', '*MENU*', 'me*nu', 'menu*', '*menu')) {
+            $rv = Invoke-Cli set_messages '--find' $variant '--type' 'gui' $script:TestProfile
+            Assert-ExitCode $rv
+            if ($rv.StdOut -notmatch '(?m)^FOUND 3\r?$') { throw "'$variant' expected 'FOUND 3', got: $($rv.StdOut)" }
+        }
+        # Still a substring test, not a prefix one -> 'First' is inside one text only.
         $rp = Invoke-Cli set_messages '--find' 'First*' '--type' 'gui' $script:TestProfile
         Assert-ExitCode $rp
         if ($rp.StdOut -notmatch '(?m)^FOUND 1\r?$') { throw "'First*' expected 'FOUND 1', got: $($rp.StdOut)" }
-        # leading wildcard = ends-with -> only the 'fr' translation row.
+        # 'fr' appears inside one text only (the lang-2 translation row).
         $rs = Invoke-Cli set_messages '--find' '*fr' '--type' 'gui' $script:TestProfile
         Assert-ExitCode $rs
         if ($rs.StdOut -notmatch '(?m)^FOUND 1\r?$') { throw "'*fr' expected 'FOUND 1', got: $($rs.StdOut)" }
         if ($rs.StdOut -notmatch '(?m)^MATCH 101\t0\t2\tMENU\t') { throw "'*fr' should hit 101/lang2: $($rs.StdOut)" }
-        # exact numeric term -> msgno hits (101 appears on two languages).
+        # numeric term -> msgno hits (101 appears on two languages).
         $r2 = Invoke-Cli set_messages '--find' '101' '--type' 'gui' $script:TestProfile
         Assert-ExitCode $r2
         if ($r2.StdOut -notmatch '(?m)^FOUND 2\r?$') { throw "numeric term expected 'FOUND 2', got: $($r2.StdOut)" }
@@ -1832,6 +1836,10 @@ function Test-Messages {
         $r4 = Invoke-Cli set_messages $script:TestProfile '--type' 'gui' '--find'
         Assert-ExitCode $r4
         if ($r4.StdOut -notmatch '(?m)^FOUND 8\r?$') { throw "empty term expected 'FOUND 8', got: $($r4.StdOut)" }
+        # a term of nothing but wildcards strips to empty -> every row too.
+        $r4b = Invoke-Cli set_messages '--find' '***' '--type' 'gui' $script:TestProfile
+        Assert-ExitCode $r4b
+        if ($r4b.StdOut -notmatch '(?m)^FOUND 8\r?$') { throw "'***' expected 'FOUND 8', got: $($r4b.StdOut)" }
         # zero matches still exits 0.
         $r5 = Invoke-Cli set_messages '--find' 'zzznomatchzzz' '--type' 'gui' $script:TestProfile
         Assert-ExitCode $r5

@@ -48,6 +48,28 @@ namespace ibsCompiler
         }
 
         /// <summary>
+        /// Resize-safe replacement for <c>Console.SetCursorPosition</c>. Every full-screen
+        /// widget caches absolute row numbers at scaffold time; shrinking the window makes
+        /// those rows fall outside the (now smaller) buffer, and the raw call throws an
+        /// <see cref="ArgumentOutOfRangeException"/> mid-render. Clamp into the current
+        /// buffer instead and swallow anything the host still refuses — the widget's
+        /// resize-aware key loop re-scaffolds on the next keystroke, so a clamped frame is
+        /// at worst one stale redraw, never a crash.
+        /// </summary>
+        internal static void MoveTo(int left, int top)
+        {
+            try
+            {
+                int maxLeft = Math.Max(0, Console.BufferWidth - 1);
+                int maxTop = Math.Max(0, Console.BufferHeight - 1);
+                Console.SetCursorPosition(
+                    Math.Clamp(left, 0, maxLeft),
+                    Math.Clamp(top, 0, maxTop));
+            }
+            catch { }
+        }
+
+        /// <summary>
         /// Actionable companion to a failed <see cref="TryEnsureWindow"/>: tells the
         /// user the exact size the widget needs, what this window is, and how to get
         /// the full-screen experience next time.
@@ -76,7 +98,7 @@ namespace ibsCompiler
         internal static void DrawChoiceBuffer(int row, string label, string buf, string? defaultChoice = null)
         {
             int w = Math.Max(1, Console.WindowWidth - 1);
-            Console.SetCursorPosition(0, row);
+            MoveTo(0, row);
             var labelText = BuildLabel(label, defaultChoice);
             var line = "  " + labelText + buf;
             line = line.Length < w ? line.PadRight(w) : line.Substring(0, w);
@@ -86,7 +108,7 @@ namespace ibsCompiler
             Console.ForegroundColor = prev;
             Console.CursorVisible = true;
             int col = 2 + labelText.Length + buf.Length;
-            Console.SetCursorPosition(Math.Min(col, w), row);
+            MoveTo(Math.Min(col, w), row);
         }
 
         /// <summary>
@@ -111,18 +133,38 @@ namespace ibsCompiler
         {
             var buf = new StringBuilder();
             int row = Console.CursorTop;
-            int w = Math.Max(1, Console.WindowWidth - 1);
+            int lastW = Console.WindowWidth, lastH = Console.WindowHeight;
+
+            // Never cache the width — a resize between keystrokes changes it under us.
+            int W() => Math.Max(1, Console.WindowWidth - 1);
 
             void ClearLine()
             {
-                Console.SetCursorPosition(0, row);
-                Console.Write(new string(' ', w));
-                Console.SetCursorPosition(0, row);
+                MoveTo(0, row);
+                Console.Write(new string(' ', W()));
+                MoveTo(0, row);
             }
 
             void Redraw() => DrawChoiceBuffer(row, label, buf.ToString(), defaultChoice);
 
             bool IsBufChar(char c) => allowText ? (char.IsLetterOrDigit(c) || c == '_') : char.IsDigit(c);
+
+            // This primitive owns ONE line layered over a plain scrolling menu the CALLER
+            // printed with WriteLine — it has no scaffold of its own to rebuild, and
+            // clearing the screen would wipe the caller's menu. On a resize the prompt
+            // line may have moved: a same-buffer terminal reflows and scrolls the menu
+            // text (so the absolute row is stale), while conhost leaves it where it was.
+            // The hardware caret is the one thing that tracks the line through either —
+            // DrawChoiceBuffer parks it on the prompt row after every draw — so re-home
+            // `row` from the LIVE cursor position, then redraw the prompt there.
+            void SyncOnResize()
+            {
+                if (Console.WindowWidth == lastW && Console.WindowHeight == lastH) return;
+                lastW = Console.WindowWidth; lastH = Console.WindowHeight;
+                try { row = Console.CursorTop; } catch { }
+                row = Math.Clamp(row, 0, Math.Max(0, Console.BufferHeight - 1));
+                Redraw();
+            }
 
             try
             {
@@ -130,6 +172,7 @@ namespace ibsCompiler
                 while (true)
                 {
                     var key = Console.ReadKey(intercept: true);
+                    SyncOnResize();
                     switch (key.Key)
                     {
                         case ConsoleKey.Enter:

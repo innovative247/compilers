@@ -266,9 +266,16 @@ namespace ibsCompiler
             int startRow = 0;   // first field row
             int menuRow0 = 0;   // first action-menu row
             int messageRow = 0; // transient message / choice-buffer line (below the menu)
+            int lastW = 0, lastH = 0;   // window size this layout was built for
+            // Set when a resize left the window too small to host the editor at all; the
+            // key loop drops out and the caller falls back to the sequential prompts.
+            bool fellBack = false;
+            var menuBuf = new StringBuilder();
+
 
             void Scaffold()
             {
+                lastW = Console.WindowWidth; lastH = Console.WindowHeight;
                 Console.WriteLine();
                 var prev = Console.ForegroundColor;
                 Console.ForegroundColor = ConsoleColor.Cyan;
@@ -306,7 +313,7 @@ namespace ibsCompiler
             {
                 var f = fields[fieldIdx];
                 bool applicable = IsApplicable(fieldIdx);
-                Console.SetCursorPosition(0, startRow + fieldIdx);
+                ConsoleMenu.MoveTo(0, startRow + fieldIdx);
                 var pointer = isCursor ? ">" : " ";
                 string line;
                 if (!applicable)
@@ -369,7 +376,7 @@ namespace ibsCompiler
                 var items = BuildMenu();
                 for (int j = 0; j < maxMenuRows; j++)
                 {
-                    Console.SetCursorPosition(0, menuRow0 + j);
+                    ConsoleMenu.MoveTo(0, menuRow0 + j);
                     string line = j < items.Count ? $"  {items[j].Num,2}. {items[j].Label}" : "";
                     if (line.Length < Console.WindowWidth - 1) line = line.PadRight(Console.WindowWidth - 1);
                     else line = line.Substring(0, Console.WindowWidth - 1);
@@ -384,13 +391,13 @@ namespace ibsCompiler
                 for (int i = 0; i < fields.Length; i++)
                     DrawRow(i, i == cursor);
                 RenderMenu();
-                Console.SetCursorPosition(0, startRow + cursor);
+                ConsoleMenu.MoveTo(0, startRow + cursor);
             }
 
             // A transient message line just below the action menu.
             void Message(string text, ConsoleColor color)
             {
-                Console.SetCursorPosition(0, messageRow);
+                ConsoleMenu.MoveTo(0, messageRow);
                 var prev = Console.ForegroundColor;
                 Console.ForegroundColor = color;
                 var line = "  " + text;
@@ -436,12 +443,12 @@ namespace ibsCompiler
 
                 void Draw()
                 {
-                    Console.SetCursorPosition(0, row);
+                    ConsoleMenu.MoveTo(0, row);
                     var text = $"  > {f.Label,-16}: {buf}";
                     if (text.Length < Console.WindowWidth - 1) text = text.PadRight(Console.WindowWidth - 1);
                     else text = text.Substring(0, Console.WindowWidth - 1);
                     Console.Write(text);
-                    Console.SetCursorPosition(Math.Min(labelCol + buf.Length, Console.WindowWidth - 1), row);
+                    ConsoleMenu.MoveTo(Math.Min(labelCol + buf.Length, Console.WindowWidth - 1), row);
                 }
 
                 Console.CursorVisible = true;
@@ -449,6 +456,17 @@ namespace ibsCompiler
                 while (true)
                 {
                     var key = Console.ReadKey(intercept: true);
+                    if (Console.WindowWidth != lastW || Console.WindowHeight != lastH)
+                    {
+                        // Mid-edit resize: rebuild the editor, then re-home this edit row.
+                        // If the window no longer fits, commit what has been typed and let
+                        // the key loop hand over to the sequential prompts.
+                        RescaffoldIfResized();
+                        if (fellBack) { Console.CursorVisible = false; return buf.ToString(); }
+                        row = startRow + fieldIdx;
+                        Console.CursorVisible = true;
+                        Draw();
+                    }
                     if (key.Key == ConsoleKey.Enter) { Console.CursorVisible = false; return buf.ToString(); }
                     if (key.Key == ConsoleKey.Escape) { Console.CursorVisible = false; return null; }
                     if (key.Key == ConsoleKey.Backspace)
@@ -491,7 +509,7 @@ namespace ibsCompiler
                 // Land on the message row (guaranteed to exist — see Scaffold), then
                 // WriteLine from there so the buffer scrolls as needed instead of
                 // SetCursorPosition-ing to a row that may not exist yet.
-                Console.SetCursorPosition(0, messageRow);
+                ConsoleMenu.MoveTo(0, messageRow);
                 Console.WriteLine();
                 Console.WriteLine();
                 var prevTestColor = Console.ForegroundColor;
@@ -540,7 +558,7 @@ namespace ibsCompiler
             {
                 if (!fields.Any(FieldDirty)) return true;
                 Message("Discard changes? (y/N) ", ConsoleColor.Yellow);
-                Console.SetCursorPosition(
+                ConsoleMenu.MoveTo(
                     Math.Min(2 + "Discard changes? (y/N) ".Length, Console.WindowWidth - 1),
                     messageRow);
                 Console.CursorVisible = true;
@@ -552,6 +570,29 @@ namespace ibsCompiler
                 return false;
             }
 
+            // A resize moves every cached row out from under the widget — rebuild the whole
+            // editor before the keystroke that noticed it is handled. A shrink below the
+            // widget's minimum would drive startRow negative, so the minimum is re-checked
+            // on every resize rather than only on entry.
+            void RescaffoldIfResized()
+            {
+                if (Console.WindowWidth == lastW && Console.WindowHeight == lastH) return;
+                if (!ConsoleMenu.TryEnsureWindow(minRows, 40))
+                {
+                    // Too small to draw without corrupting the layout — leave the screen as
+                    // it is and hand over to the sequential prompts.
+                    fellBack = true;
+                    return;
+                }
+                try { Console.Clear(); } catch { }
+                Scaffold();
+                ClearMessage();
+                Render();
+                // A choice half-typed before the resize is still pending — put it back on
+                // the prompt line instead of blanking it to the idle label.
+                if (menuBuf.Length > 0) ShowMenuBuffer(menuBuf.ToString());
+            }
+
             try
             {
                 Console.CursorVisible = false;
@@ -559,11 +600,11 @@ namespace ibsCompiler
                 ClearMessage(); // idle Choice: label — visible before the first keystroke
                 Render();
 
-                var menuBuf = new StringBuilder();
-
-                while (true)
+                while (!fellBack)
                 {
                     var key = Console.ReadKey(intercept: true);
+                    RescaffoldIfResized();
+                    if (fellBack) break;
 
                     // Digits build the menu-choice buffer, echoed on the prompt line.
                     if (char.IsDigit(key.KeyChar))
@@ -687,9 +728,9 @@ namespace ibsCompiler
                             }
                             else if (f.Kind == FieldKind.Password)
                             {
-                                Console.SetCursorPosition(0, startRow + cursor);
+                                ConsoleMenu.MoveTo(0, startRow + cursor);
                                 Console.Write(new string(' ', Console.WindowWidth - 1));
-                                Console.SetCursorPosition(0, startRow + cursor);
+                                ConsoleMenu.MoveTo(0, startRow + cursor);
                                 Console.Write($"  > {f.Label,-16}: ");
                                 Console.CursorVisible = true;
                                 var pw = set_profile_main.ReadPassword();
@@ -725,6 +766,7 @@ namespace ibsCompiler
                                     f.Set(profile, input);
                                     break;
                                 }
+                                if (fellBack) break;   // window shrank mid-edit
                                 Render();
                             }
                             break;
@@ -756,15 +798,26 @@ namespace ibsCompiler
                 // Park the cursor below the whole widget so subsequent output is clean.
                 // Land on the message row (guaranteed to exist), then WriteLine from
                 // there so the buffer scrolls as needed instead of risking a
-                // SetCursorPosition to a row that was never written.
-                try
+                // SetCursorPosition to a row that was never written. After a fall-back
+                // the cached rows are meaningless — leave the cursor where it is.
+                if (!fellBack)
                 {
-                    Console.SetCursorPosition(0, messageRow);
-                    Console.WriteLine();
-                    Console.WriteLine();
+                    try
+                    {
+                        ConsoleMenu.MoveTo(0, messageRow);
+                        Console.WriteLine();
+                        Console.WriteLine();
+                    }
+                    catch { }
                 }
-                catch { }
             }
+
+            // Only reachable when a resize shrank the window below the editor's minimum:
+            // same contract as the entry-time check, so the caller runs its sequential
+            // prompt flow over the working copy this editor has been mutating.
+            Console.WriteLine();
+            ConsoleMenu.ExplainTooSmall("the profile editor", minRows, 40);
+            return ProfileEditorOutcome.TooSmall;
         }
     }
 }

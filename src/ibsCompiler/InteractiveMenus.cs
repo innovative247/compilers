@@ -2309,9 +2309,10 @@ namespace ibsCompiler
         /// <summary>
         /// Headless message search:
         ///   set_messages PROFILE --find &lt;term&gt; --type T [--group G] [--cmpy N] [--lang N]
-        /// An empty term matches every row. Wildcards are explicit — a term with no <c>*</c>
-        /// matches the whole msgno/text only, <c>*or*</c> matches "or" anywhere and <c>*or</c>
-        /// matches values ending in "or". Prints one "MATCH msgno\tcmpy\tlang\tgrp\ttext"
+        /// An empty term matches every row. Wildcards are implied and never typed — the term is
+        /// a case-insensitive substring test against the msgno or the text, so <c>menu</c>,
+        /// <c>MENU</c> and <c>*menu*</c> all find the same rows and a typed <c>*</c> is simply
+        /// stripped. Prints one "MATCH msgno\tcmpy\tlang\tgrp\ttext"
         /// line per hit followed by "FOUND &lt;count&gt;". Zero matches still exit 0 with "FOUND 0".
         /// The optional --group filter narrows by (trimmed, upper) group after the term match.
         /// </summary>

@@ -1,5 +1,4 @@
 using System.Text;
-using System.Text.RegularExpressions;
 using ibsCompiler.Configuration;
 
 namespace ibsCompiler
@@ -482,12 +481,13 @@ namespace ibsCompiler
         }
 
         /// <summary>
-        /// Search a type's rows. Wildcards are explicit, never implied: an empty term matches
-        /// everything, a term with no <c>*</c> must equal the whole msgno or the whole text
-        /// (case-insensitive), and each <c>*</c> matches any run of characters — so <c>or</c>
-        /// finds only the message "or", <c>*or*</c> finds "or" anywhere inside a message, and
-        /// <c>*or</c> finds messages ending in "or". Exact cmpy/lang equality filters apply only
-        /// when supplied.
+        /// Search a type's rows. Wildcards are implied, never typed: the term is a
+        /// case-insensitive substring test against the msgno or the message text, so
+        /// <c>cycle</c>, <c>Cycle</c> and <c>CYcle</c> all find every message containing
+        /// "cycle" anywhere. A literal <c>*</c> is a no-op — every <c>*</c> is stripped from
+        /// the term before matching, so <c>*menu*</c>, <c>menu*</c> and <c>*menu</c> all search
+        /// for "menu". An empty term (or one that is only <c>*</c>s) matches everything. Exact
+        /// cmpy/lang equality filters apply only when supplied.
         /// </summary>
         public static List<MsgRow> FindMessages(ResolvedProfile profile, string type, string term, int? cmpy = null, int? lang = null)
             => FindMessages(LoadFile(profile, type), type, term, cmpy, lang);
@@ -495,34 +495,21 @@ namespace ibsCompiler
         /// <summary>Overload that searches an already-loaded <see cref="MsgFile"/>.</summary>
         public static List<MsgRow> FindMessages(MsgFile file, string type, string term, int? cmpy = null, int? lang = null)
         {
-            term ??= "";
-            var pattern = term.Length == 0 ? null : BuildTermPattern(term);
+            // Wildcards are implied, so a typed '*' carries no meaning — drop every one of
+            // them and match what is left as a plain case-insensitive substring.
+            var needle = (term ?? "").Replace("*", "");
             var results = new List<MsgRow>();
             foreach (var row in file.Rows)
             {
-                bool match = pattern == null
-                    || pattern.IsMatch(row.Msgno.ToString())
-                    || pattern.IsMatch(row.Text);
+                bool match = needle.Length == 0
+                    || row.Msgno.ToString().IndexOf(needle, StringComparison.OrdinalIgnoreCase) >= 0
+                    || row.Text.IndexOf(needle, StringComparison.OrdinalIgnoreCase) >= 0;
                 if (!match) continue;
                 if (cmpy.HasValue && row.Cmpy != cmpy.Value) continue;
                 if (lang.HasValue && row.Lang != lang.Value) continue;
                 results.Add(row);
             }
             return results;
-        }
-
-        /// <summary>
-        /// Compile a search term into an anchored, case-insensitive pattern. Every character is
-        /// taken literally except <c>*</c>, which becomes "any run of characters". A term with no
-        /// <c>*</c> therefore matches the whole value and nothing else.
-        /// </summary>
-        private static Regex BuildTermPattern(string term)
-        {
-            var sb = new StringBuilder("^");
-            foreach (var ch in term)
-                sb.Append(ch == '*' ? ".*" : Regex.Escape(ch.ToString()));
-            sb.Append('$');
-            return new Regex(sb.ToString(), RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
         }
 
         /// <summary>

@@ -17,17 +17,34 @@ namespace ibsCompiler.TransferData
             var selected = new HashSet<string>(preSelected ?? new HashSet<string>());
             int cursor = 0;
             int scrollOffset = 0;
-            int visibleRows = Math.Min(items.Count, Math.Max(Console.WindowHeight - 4, 5));
 
-            Console.WriteLine(prompt);
-            Console.WriteLine("  [Space]=toggle  [A]=all  [N]=none  [Enter]=confirm  [Esc]=cancel");
-            Console.WriteLine();
+            // Recomputed on every resize: the row count and the absolute start row both
+            // move when the window changes size, and a stale startRow is what makes an
+            // absolute-positioned widget throw (or draw off-screen) after a shrink.
+            int visibleRows = 1, startRow = 0;
+            int lastW = 0, lastH = 0;
 
-            int startRow = Console.CursorTop;
+            void Scaffold()
+            {
+                lastW = Console.WindowWidth; lastH = Console.WindowHeight;
+                visibleRows = Math.Max(1, Math.Min(items.Count, Math.Max(Console.WindowHeight - 4, 5)));
+
+                Console.WriteLine(prompt);
+                Console.WriteLine("  [Space]=toggle  [A]=all  [N]=none  [Enter]=confirm  [Esc]=cancel");
+                Console.WriteLine();
+
+                startRow = Console.CursorTop;
+
+                // A shrink can leave the highlight outside the new window - pull it back in.
+                cursor = Math.Clamp(cursor, 0, Math.Max(0, items.Count - 1));
+                if (scrollOffset > cursor) scrollOffset = cursor;
+                if (cursor >= scrollOffset + visibleRows) scrollOffset = cursor - visibleRows + 1;
+                if (scrollOffset < 0) scrollOffset = 0;
+            }
 
             void Render()
             {
-                Console.SetCursorPosition(0, startRow);
+                ConsoleMenu.MoveTo(0, startRow);
                 for (int i = 0; i < visibleRows; i++)
                 {
                     int idx = scrollOffset + i;
@@ -45,17 +62,29 @@ namespace ibsCompiler.TransferData
                     if (i < visibleRows - 1)
                         Console.WriteLine();
                 }
-                Console.SetCursorPosition(0, startRow + (cursor - scrollOffset));
+                ConsoleMenu.MoveTo(0, startRow + (cursor - scrollOffset));
+            }
+
+            // A resize invalidates visibleRows and startRow - rebuild the list before the
+            // keystroke that noticed it is handled.
+            void RescaffoldIfResized()
+            {
+                if (Console.WindowWidth == lastW && Console.WindowHeight == lastH) return;
+                try { Console.Clear(); } catch { }
+                Scaffold();
+                Render();
             }
 
             try
             {
                 Console.CursorVisible = false;
+                Scaffold();
                 Render();
 
                 while (true)
                 {
                     var key = Console.ReadKey(intercept: true);
+                    RescaffoldIfResized();
 
                     switch (key.Key)
                     {
@@ -93,7 +122,7 @@ namespace ibsCompiler.TransferData
                             break;
 
                         case ConsoleKey.Enter:
-                            Console.SetCursorPosition(0, startRow + visibleRows);
+                            ConsoleMenu.MoveTo(0, startRow + visibleRows);
                             Console.WriteLine();
                             var count = selected.Count;
                             Console.WriteLine($"  Selected {count} of {items.Count} items.");
@@ -101,7 +130,7 @@ namespace ibsCompiler.TransferData
 
                         case ConsoleKey.Escape:
                         case ConsoleKey.Q:
-                            Console.SetCursorPosition(0, startRow + visibleRows);
+                            ConsoleMenu.MoveTo(0, startRow + visibleRows);
                             Console.WriteLine();
                             Console.WriteLine("  Cancelled.");
                             return null;
@@ -150,25 +179,42 @@ namespace ibsCompiler.TransferData
 
             int cursorPos = 0; // index into selectableIndices
             int scrollOffset = 0;
-            // Reserve lines for footer (blank + instructions)
-            int visibleRows = Math.Min(rows.Count, Math.Max(Console.WindowHeight - 6, 5));
 
-            Console.WriteLine(prompt);
-            Console.WriteLine();
+            // Recomputed on every resize: row count, footer row and start row all move
+            // when the window changes size.
+            int visibleRows = 1, footerEnd = 0, startRow = 0;
+            int lastW = 0, lastH = 0;
 
-            // Pre-write all lines (list + footer) so the console buffer scrolls as needed
-            for (int i = 0; i < visibleRows; i++)
+            void Scaffold()
+            {
+                lastW = Console.WindowWidth; lastH = Console.WindowHeight;
+                // Reserve lines for footer (blank + instructions)
+                visibleRows = Math.Max(1, Math.Min(rows.Count, Math.Max(Console.WindowHeight - 6, 5)));
+
+                Console.WriteLine(prompt);
                 Console.WriteLine();
-            Console.WriteLine();
-            Console.WriteLine("  [Space]=toggle  [A]=all  [N]=none  [Enter]=confirm  [Esc]=cancel");
-            int footerEnd = Console.CursorTop;
 
-            // Calculate startRow now that all lines are in the buffer
-            int startRow = footerEnd - 2 - visibleRows;
+                // Pre-write all lines (list + footer) so the console buffer scrolls as needed
+                for (int i = 0; i < visibleRows; i++)
+                    Console.WriteLine();
+                Console.WriteLine();
+                Console.WriteLine("  [Space]=toggle  [A]=all  [N]=none  [Enter]=confirm  [Esc]=cancel");
+                footerEnd = Console.CursorTop;
+
+                // Calculate startRow now that all lines are in the buffer
+                startRow = footerEnd - 2 - visibleRows;
+
+                // A shrink can leave the highlighted row outside the new window.
+                cursorPos = Math.Clamp(cursorPos, 0, Math.Max(0, selectableIndices.Count - 1));
+                int cur = selectableIndices[cursorPos];
+                if (scrollOffset > cur) scrollOffset = cur;
+                if (cur >= scrollOffset + visibleRows) scrollOffset = cur - visibleRows + 1;
+                if (scrollOffset < 0) scrollOffset = 0;
+            }
 
             void Render()
             {
-                Console.SetCursorPosition(0, startRow);
+                ConsoleMenu.MoveTo(0, startRow);
                 for (int i = 0; i < visibleRows; i++)
                 {
                     int rowIdx = scrollOffset + i;
@@ -198,17 +244,29 @@ namespace ibsCompiler.TransferData
 
                 // Position cursor on the current selectable row
                 int cursorRowIdx = selectableIndices[cursorPos];
-                Console.SetCursorPosition(0, startRow + (cursorRowIdx - scrollOffset));
+                ConsoleMenu.MoveTo(0, startRow + (cursorRowIdx - scrollOffset));
+            }
+
+            // A resize invalidates visibleRows, footerEnd and startRow - rebuild the list
+            // before the keystroke that noticed it is handled.
+            void RescaffoldIfResized()
+            {
+                if (Console.WindowWidth == lastW && Console.WindowHeight == lastH) return;
+                try { Console.Clear(); } catch { }
+                Scaffold();
+                Render();
             }
 
             try
             {
                 Console.CursorVisible = false;
+                Scaffold();
                 Render();
 
                 while (true)
                 {
                     var key = Console.ReadKey(intercept: true);
+                    RescaffoldIfResized();
 
                     switch (key.Key)
                     {
@@ -251,7 +309,7 @@ namespace ibsCompiler.TransferData
                             break;
 
                         case ConsoleKey.Enter:
-                            Console.SetCursorPosition(0, footerEnd);
+                            ConsoleMenu.MoveTo(0, footerEnd);
                             Console.WriteLine();
                             return selectableIndices
                                 .Where(i => selected.Contains(i))
@@ -260,7 +318,7 @@ namespace ibsCompiler.TransferData
 
                         case ConsoleKey.Escape:
                         case ConsoleKey.Q:
-                            Console.SetCursorPosition(0, footerEnd);
+                            ConsoleMenu.MoveTo(0, footerEnd);
                             Console.WriteLine();
                             Console.WriteLine("  Cancelled.");
                             return null;

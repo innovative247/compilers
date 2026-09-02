@@ -192,30 +192,49 @@ namespace ibsCompiler
         {
             int cursor = 0, scroll = 0;
             var buf = new StringBuilder();
-            int w = Math.Max(40, Console.WindowWidth) - 1;
 
-            Console.WriteLine();
-            Cyan($"  Messages — {profileName}");
-            Dim($"  Source: {setupDir}");
-            Console.WriteLine();
-            Console.WriteLine("  " + Fit($"{"",4}{"TYPE",-8}SOURCE FILE", w - 2));
+            // The window can be resized between any two keystrokes, so the render width is
+            // read live and every cached row is recomputed by Scaffold().
+            int W() => Math.Max(40, Console.WindowWidth) - 1;
 
-            int visibleRows = Math.Max(3, Console.WindowHeight - 8);
-            visibleRows = Math.Min(visibleRows, Math.Max(1, types.Count));
+            int visibleRows = 1, footerRow = 0, startRow = 0, promptRow = 0;
+            int lastW = 0, lastH = 0;
 
-            // Reserve the window + footer rows so the buffer scrolls if we are near the bottom.
-            for (int i = 0; i < visibleRows; i++) Console.WriteLine();
-            Console.WriteLine();
-            Console.WriteLine("  [Up/Down] move  [Enter] open  99 Exit");
-            int footerRow = Console.CursorTop;
-            int startRow = footerRow - 2 - visibleRows;
-            int promptRow = footerRow;
+            void Scaffold()
+            {
+                lastW = Console.WindowWidth; lastH = Console.WindowHeight;
+                int w = W();
+
+                Console.WriteLine();
+                Cyan($"  Messages — {profileName}");
+                Dim($"  Source: {setupDir}");
+                Console.WriteLine();
+                Console.WriteLine("  " + Fit($"{"",4}{"TYPE",-8}SOURCE FILE", w - 2));
+
+                visibleRows = Math.Max(3, Console.WindowHeight - 8);
+                visibleRows = Math.Max(1, Math.Min(visibleRows, Math.Max(1, types.Count)));
+
+                // Reserve the window + footer rows so the buffer scrolls if we are near the bottom.
+                for (int i = 0; i < visibleRows; i++) Console.WriteLine();
+                Console.WriteLine();
+                Console.WriteLine("  [Up/Down] move  [Enter] open  99 Exit");
+                footerRow = Console.CursorTop;
+                startRow = footerRow - 2 - visibleRows;
+                promptRow = footerRow;
+
+                // A shrink can leave the highlight outside the new window — pull it back in.
+                cursor = Math.Clamp(cursor, 0, Math.Max(0, types.Count - 1));
+                if (scroll > cursor) scroll = cursor;
+                if (cursor >= scroll + visibleRows) scroll = cursor - visibleRows + 1;
+                if (scroll < 0) scroll = 0;
+            }
 
             void RenderWindow()
             {
+                int w = W();
                 for (int i = 0; i < visibleRows; i++)
                 {
-                    Console.SetCursorPosition(0, startRow + i);
+                    ConsoleMenu.MoveTo(0, startRow + i);
                     int idx = scroll + i;
                     string line;
                     if (idx >= types.Count) line = "";
@@ -227,7 +246,7 @@ namespace ibsCompiler
                     }
                     Console.Write(Fit(line, w));
                 }
-                Console.SetCursorPosition(0, startRow + (cursor - scroll));
+                ConsoleMenu.MoveTo(0, startRow + (cursor - scroll));
             }
 
             void ClearPrompt()
@@ -236,6 +255,21 @@ namespace ibsCompiler
                 Console.CursorVisible = false;
             }
 
+            // A resize invalidates every cached row (and the width) — rebuild the screen
+            // from scratch before the keystroke that noticed it is handled.
+            void RescaffoldIfResized()
+            {
+                if (Console.WindowWidth == lastW && Console.WindowHeight == lastH) return;
+                try { Console.Clear(); } catch { }
+                Scaffold();
+                RenderWindow();
+                // Redraw whatever was typed so far; the caret stays visible exactly as
+                // it was before the resize (DrawChoiceBuffer parks it after the buffer).
+                ConsoleMenu.DrawChoiceBuffer(promptRow, "Choice", buf.ToString());
+                if (buf.Length == 0) Console.CursorVisible = false;
+            }
+
+            Scaffold();
             RenderWindow();
 
             try
@@ -245,6 +279,7 @@ namespace ibsCompiler
                 while (true)
                 {
                     var key = Console.ReadKey(intercept: true);
+                    RescaffoldIfResized();
 
                     if (char.IsDigit(key.KeyChar))
                     {
@@ -288,8 +323,8 @@ namespace ibsCompiler
                                 if (c == "99") { EndPicker(footerRow); return (-1, "exit"); }
                                 if (int.TryParse(c, out var num) && num >= 1 && num <= types.Count)
                                 { EndPicker(footerRow); return (num - 1, ""); }
-                                Console.SetCursorPosition(0, promptRow);
-                                Red(Fit($"  No type {c}.", w));
+                                ConsoleMenu.MoveTo(0, promptRow);
+                                Red(Fit($"  No type {c}.", W()));
                                 break;
                             }
                             if (types.Count > 0) { EndPicker(footerRow); return (cursor, ""); }
@@ -334,36 +369,52 @@ namespace ibsCompiler
             int cursor = 0, scroll = 0;
             var buf = new StringBuilder();
 
-            int w = Math.Max(40, Console.WindowWidth) - 1;
-            // Column layout: num(4) group(8) start(8) rows(7) desc(rest)
-            int descCol = Math.Max(10, w - (2 + 4 + 8 + 8 + 7));
+            // Width is read live (a resize changes it) and every cached row is recomputed
+            // by Scaffold().
+            int W() => Math.Max(40, Console.WindowWidth) - 1;
 
-            Console.WriteLine();
-            Cyan($"  {lt.Label} message groups  ({groups.Count})");
-            Dim($"  Source: {setupDir}");
-            Console.WriteLine();
-            Console.WriteLine("  " + Fit($"{"",5}{"GROUP",-8}{"START#",-8}{"ROWS",-7}DESCRIPTION", w - 2));
-            int headerRow = Console.CursorTop; // first data row lands here
-            int visibleRows = Math.Max(3, Console.WindowHeight - (headerRow - Console.CursorTop) - 12);
-            visibleRows = Math.Min(visibleRows, Math.Max(1, groups.Count));
+            int visibleRows = 1, footerRow = 0, startRow = 0, promptRow = 0;
+            int lastW = 0, lastH = 0;
 
-            // Reserve the window + footer rows so the buffer scrolls if we are near the bottom.
-            for (int i = 0; i < visibleRows; i++) Console.WriteLine();
-            Console.WriteLine();
-            Console.WriteLine("  [Up/Down] move  [Enter] open");
-            Console.WriteLine("   N. New Group");
-            Console.WriteLine("   I. Install");
-            Console.WriteLine("  98. Back");
-            Console.WriteLine("  99. Exit");
-            int footerRow = Console.CursorTop;
-            int startRow = footerRow - 6 - visibleRows;
-            int promptRow = footerRow; // deferred Choice buffer + messages land here
+            void Scaffold()
+            {
+                lastW = Console.WindowWidth; lastH = Console.WindowHeight;
+                int w = W();
+
+                Console.WriteLine();
+                Cyan($"  {lt.Label} message groups  ({groups.Count})");
+                Dim($"  Source: {setupDir}");
+                Console.WriteLine();
+                Console.WriteLine("  " + Fit($"{"",5}{"GROUP",-8}{"START#",-8}{"ROWS",-7}DESCRIPTION", w - 2));
+                int headerRow = Console.CursorTop; // first data row lands here
+                visibleRows = Math.Max(3, Console.WindowHeight - (headerRow - Console.CursorTop) - 12);
+                visibleRows = Math.Max(1, Math.Min(visibleRows, Math.Max(1, groups.Count)));
+
+                // Reserve the window + footer rows so the buffer scrolls if we are near the bottom.
+                for (int i = 0; i < visibleRows; i++) Console.WriteLine();
+                Console.WriteLine();
+                Console.WriteLine("  [Up/Down] move  [Enter] open");
+                Console.WriteLine("   N. New Group");
+                Console.WriteLine("   I. Install");
+                Console.WriteLine("  98. Back");
+                Console.WriteLine("  99. Exit");
+                footerRow = Console.CursorTop;
+                startRow = footerRow - 6 - visibleRows;
+                promptRow = footerRow; // deferred Choice buffer + messages land here
+
+                // A shrink can leave the highlight outside the new window — pull it back in.
+                cursor = Math.Clamp(cursor, 0, Math.Max(0, groups.Count - 1));
+                if (scroll > cursor) scroll = cursor;
+                if (cursor >= scroll + visibleRows) scroll = cursor - visibleRows + 1;
+                if (scroll < 0) scroll = 0;
+            }
 
             void RenderWindow()
             {
+                int w = W();
                 for (int i = 0; i < visibleRows; i++)
                 {
-                    Console.SetCursorPosition(0, startRow + i);
+                    ConsoleMenu.MoveTo(0, startRow + i);
                     int idx = scroll + i;
                     string line;
                     if (idx >= groups.Count) line = "";
@@ -375,7 +426,7 @@ namespace ibsCompiler
                     }
                     Console.Write(Fit(line, w));
                 }
-                Console.SetCursorPosition(0, startRow + (cursor - scroll));
+                ConsoleMenu.MoveTo(0, startRow + (cursor - scroll));
             }
 
             // Always-visible idle state: the bare `Choice: ` label rather than a blank
@@ -388,12 +439,32 @@ namespace ibsCompiler
                 Console.CursorVisible = false;
             }
 
-            if (groups.Count == 0)
+            void RenderBody()
             {
-                Console.SetCursorPosition(0, startRow);
-                Dim("  (no groups yet — press N to create one)");
+                if (groups.Count == 0)
+                {
+                    ConsoleMenu.MoveTo(0, startRow);
+                    Dim("  (no groups yet — press N to create one)");
+                }
+                else RenderWindow();
             }
-            else RenderWindow();
+
+            // A resize invalidates every cached row (and the width) — rebuild the screen
+            // from scratch before the keystroke that noticed it is handled.
+            void RescaffoldIfResized()
+            {
+                if (Console.WindowWidth == lastW && Console.WindowHeight == lastH) return;
+                try { Console.Clear(); } catch { }
+                Scaffold();
+                RenderBody();
+                // Redraw whatever was typed so far; the caret stays visible exactly as
+                // it was before the resize (DrawChoiceBuffer parks it after the buffer).
+                ConsoleMenu.DrawChoiceBuffer(promptRow, "Choice", buf.ToString());
+                if (buf.Length == 0) Console.CursorVisible = false;
+            }
+
+            Scaffold();
+            RenderBody();
 
             try
             {
@@ -402,6 +473,7 @@ namespace ibsCompiler
                 while (true)
                 {
                     var key = Console.ReadKey(intercept: true);
+                    RescaffoldIfResized();
 
                     // Digits build a deferred numbered choice.
                     if (char.IsDigit(key.KeyChar))
@@ -448,8 +520,8 @@ namespace ibsCompiler
                                 if (c == "98") { EndPicker(footerRow); return (-1, "back"); }
                                 if (int.TryParse(c, out var num) && num >= 1 && num <= groups.Count)
                                 { EndPicker(footerRow); return (num - 1, ""); }
-                                Console.SetCursorPosition(0, promptRow);
-                                Red(Fit($"  No group {c}.", w));
+                                ConsoleMenu.MoveTo(0, promptRow);
+                                Red(Fit($"  No group {c}.", W()));
                                 break;
                             }
                             if (groups.Count > 0) { EndPicker(footerRow); return (cursor, ""); }
@@ -471,7 +543,7 @@ namespace ibsCompiler
         private static void EndPicker(int footerRow)
         {
             Console.CursorVisible = true;
-            try { Console.SetCursorPosition(0, footerRow); Console.WriteLine(); }
+            try { ConsoleMenu.MoveTo(0, footerRow); Console.WriteLine(); }
             catch { }
         }
 
@@ -665,40 +737,62 @@ namespace ibsCompiler
             if (!ConsoleMenu.TryEnsureWindow(12, 40))
                 return FindFallback(profile, lt, file);
 
-            int w = Math.Max(40, Console.WindowWidth) - 1;
+            const string FindFooter = "  [Up/Down] select  [Enter] open  [Tab] cmpy/lang refine  [Backspace] trim  [Esc] back";
+
+            // Width is read live (a resize changes it) and every cached row is recomputed
+            // by Scaffold() — the one place the screen is laid out: on entry, after the
+            // leaf detail view, and after a resize.
+            int W() => Math.Max(40, Console.WindowWidth) - 1;
+
             var results = MessageFileEditor.FindMessages(file, lt.Type, "", cmpy, lang);
             int sel = 0, scroll = 0;
 
-            // Scaffold: title + blank + header + blank + window + blank + footer.
-            Console.WriteLine();
-            Cyan($"  Find in {lt.Label} messages");
-            Console.WriteLine();
-            Console.WriteLine(); // header row (filled by RenderHeader)
-            Console.WriteLine();
-            int headerRow = Console.CursorTop - 2;
-            int visibleRows = Math.Max(3, Console.WindowHeight - 10);
-            for (int i = 0; i < visibleRows; i++) Console.WriteLine();
-            Console.WriteLine();
-            Console.WriteLine("  [Up/Down] select  [Enter] open  [Tab] cmpy/lang refine  [Backspace] trim  [Esc] back");
-            int footerRow = Console.CursorTop;
-            int startRow = footerRow - 2 - visibleRows;
+            int headerRow = 0, visibleRows = 1, footerRow = 0, startRow = 0;
+            int lastW = 0, lastH = 0;
+
+            void Scaffold()
+            {
+                lastW = Console.WindowWidth; lastH = Console.WindowHeight;
+
+                // Scaffold: title + blank + header + blank + window + blank + footer.
+                Console.WriteLine();
+                Cyan($"  Find in {lt.Label} messages");
+                Console.WriteLine();
+                Console.WriteLine(); // header row (filled by RenderHeader)
+                Console.WriteLine();
+                headerRow = Console.CursorTop - 2;
+                visibleRows = Math.Max(1, Math.Max(3, Console.WindowHeight - 10));
+                for (int i = 0; i < visibleRows; i++) Console.WriteLine();
+                Console.WriteLine();
+                Console.WriteLine(FindFooter);
+                footerRow = Console.CursorTop;
+                startRow = footerRow - 2 - visibleRows;
+
+                // A shrink can leave the selection outside the new window — pull it back in.
+                sel = Math.Clamp(sel, 0, Math.Max(0, results.Count - 1));
+                if (scroll > sel) scroll = sel;
+                if (sel >= scroll + visibleRows) scroll = sel - visibleRows + 1;
+                if (scroll < 0) scroll = 0;
+            }
 
             void RenderHeader()
             {
-                Console.SetCursorPosition(0, headerRow);
+                int w = W();
+                ConsoleMenu.MoveTo(0, headerRow);
                 var chips = "";
                 if (cmpy.HasValue) chips += $"  [cmpy={cmpy}]";
                 if (lang.HasValue) chips += $"  [lang={lang}]";
                 Console.Write(Fit($"  Filter: {filter}_" + chips, w));
-                Console.SetCursorPosition(0, headerRow + 1);
-                Console.Write(Fit($"  showing {results.Count} of {file.Rows.Count}   (* = wildcard: or | *or* | *or)", w));
+                ConsoleMenu.MoveTo(0, headerRow + 1);
+                Console.Write(Fit($"  showing {results.Count} of {file.Rows.Count}   (type to filter, case-insensitive)", w));
             }
 
             void RenderWindow()
             {
+                int w = W();
                 for (int i = 0; i < visibleRows; i++)
                 {
-                    Console.SetCursorPosition(0, startRow + i);
+                    ConsoleMenu.MoveTo(0, startRow + i);
                     int idx = scroll + i;
                     string line;
                     if (idx >= results.Count) line = "";
@@ -720,13 +814,25 @@ namespace ibsCompiler
 
             void RenderAll() { RenderHeader(); RenderWindow(); }
 
+            // A resize invalidates every cached row (and the width) — rebuild the screen
+            // from scratch before the keystroke that noticed it is handled.
+            void RescaffoldIfResized()
+            {
+                if (Console.WindowWidth == lastW && Console.WindowHeight == lastH) return;
+                try { Console.Clear(); } catch { }
+                Scaffold();
+                RenderAll();
+            }
+
             try
             {
                 Console.CursorVisible = false;
+                Scaffold();
                 RenderAll();
                 while (true)
                 {
                     var key = Console.ReadKey(intercept: true);
+                    RescaffoldIfResized();
                     switch (key.Key)
                     {
                         case ConsoleKey.Escape:
@@ -750,8 +856,8 @@ namespace ibsCompiler
                             (cmpy, lang) = RefineCmpyLang(footerRow, cmpy, lang);
                             Refilter();
                             // The refine prompt scribbled over the footer — redraw scaffold labels.
-                            Console.SetCursorPosition(0, footerRow - 1);
-                            Console.Write(Fit("  [Up/Down] select  [Enter] open  [Tab] cmpy/lang refine  [Backspace] trim  [Esc] back", w));
+                            ConsoleMenu.MoveTo(0, footerRow - 1);
+                            Console.Write(Fit(FindFooter, W()));
                             RenderAll();
                             break;
                         case ConsoleKey.Enter:
@@ -759,28 +865,21 @@ namespace ibsCompiler
                             {
                                 var chosen = results[sel];
                                 Console.CursorVisible = true;
-                                Console.SetCursorPosition(0, footerRow);
+                                ConsoleMenu.MoveTo(0, footerRow);
                                 Console.WriteLine();
                                 var changed = DetailScreen(profile, lt, chosen);
                                 if (changed) file = MessageFileEditor.LoadFile(profile, lt.Type);
                                 Refilter();
                                 // Re-scaffold the whole screen after the leaf detail view.
-                                Console.WriteLine();
-                                Cyan($"  Find in {lt.Label} messages");
-                                Console.WriteLine();
-                                Console.WriteLine();
-                                Console.WriteLine();
-                                headerRow = Console.CursorTop - 2;
-                                for (int i = 0; i < visibleRows; i++) Console.WriteLine();
-                                Console.WriteLine();
-                                Console.WriteLine("  [Up/Down] select  [Enter] open  [Tab] cmpy/lang refine  [Backspace] trim  [Esc] back");
-                                footerRow = Console.CursorTop;
-                                startRow = footerRow - 2 - visibleRows;
+                                Scaffold();
                                 Console.CursorVisible = false;
                                 RenderAll();
                             }
                             break;
                         default:
+                            // '*' is stripped before matching, so accepting it would put a
+                            // character on the filter line that changes nothing - ignore it.
+                            if (key.KeyChar == '*') break;
                             if (!char.IsControl(key.KeyChar) && key.KeyChar != '\0')
                             {
                                 filter.Append(key.KeyChar);
@@ -798,18 +897,18 @@ namespace ibsCompiler
         private static (int?, int?) RefineCmpyLang(int promptRow, int? cmpy, int? lang)
         {
             Console.CursorVisible = true;
-            Console.SetCursorPosition(0, promptRow);
+            ConsoleMenu.MoveTo(0, promptRow);
             Console.Write(new string(' ', Math.Max(1, Console.WindowWidth - 1)));
-            Console.SetCursorPosition(0, promptRow);
+            ConsoleMenu.MoveTo(0, promptRow);
             Console.Write($"  cmpy [{(cmpy?.ToString() ?? "any")}] (blank=any): ");
             var cs = (Console.ReadLine() ?? "").Trim();
             int? newCmpy = cmpy;
             if (cs.Length == 0) newCmpy = null;
             else if (int.TryParse(cs, out var c)) newCmpy = c;
 
-            Console.SetCursorPosition(0, promptRow);
+            ConsoleMenu.MoveTo(0, promptRow);
             Console.Write(new string(' ', Math.Max(1, Console.WindowWidth - 1)));
-            Console.SetCursorPosition(0, promptRow);
+            ConsoleMenu.MoveTo(0, promptRow);
             Console.Write($"  lang [{(lang?.ToString() ?? "any")}] (blank=any): ");
             var ls = (Console.ReadLine() ?? "").Trim();
             int? newLang = lang;
@@ -825,7 +924,7 @@ namespace ibsCompiler
         {
             Console.WriteLine();
             Cyan($"  Find in {lt.Label} messages (compact)");
-            Console.Write("  Search term (blank = all, * = wildcard, e.g. *or*): ");
+            Console.Write("  Search term (blank = all): ");
             var term = Console.ReadLine() ?? "";
             var results = MessageFileEditor.FindMessages(file, lt.Type, term);
             if (results.Count == 0) { Console.WriteLine("  No matches."); return Nav.Back; }

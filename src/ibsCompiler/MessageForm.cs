@@ -66,7 +66,8 @@ namespace ibsCompiler
             const string Footer = "  [Up/Down] move  [Enter] edit  (in an edit: Left/Right/Home/End, Esc cancels)";
 
             // Characters that fit on one row after the label column. Fixed for the life of
-            // the form so the reserved height and the caret arithmetic always agree.
+            // one layout so the reserved height and the caret arithmetic always agree —
+            // recomputed (with everything derived from it) whenever the window is resized.
             int room = Math.Max(8, Console.WindowWidth - 1 - ValueCol);
 
             // Rows reserved per field. A wrapping field reserves what its ceiling needs
@@ -79,10 +80,20 @@ namespace ibsCompiler
                 if (cap <= 0) cap = 1;
                 return Math.Max(1, (cap + room - 1) / room);
             }
-            var heights = fields.Select(RowsFor).ToArray();
-            int totalFieldRows = heights.Sum();
-            var offsets = new int[fields.Count];       // row offset of each field within the block
-            for (int i = 1; i < fields.Count; i++) offsets[i] = offsets[i - 1] + heights[i - 1];
+
+            var heights = Array.Empty<int>();
+            int totalFieldRows = 0;
+            var offsets = Array.Empty<int>();         // row offset of each field within the block
+
+            void Layout()
+            {
+                room = Math.Max(8, Console.WindowWidth - 1 - ValueCol);
+                heights = fields.Select(RowsFor).ToArray();
+                totalFieldRows = heights.Sum();
+                offsets = new int[fields.Count];
+                for (int i = 1; i < fields.Count; i++) offsets[i] = offsets[i - 1] + heights[i - 1];
+            }
+            Layout();
 
             // Layout (top→bottom): blank + title + blank + field rows + blank + footer +
             // blank + menu rows + prompt row + one spare row so the final newline never
@@ -95,9 +106,17 @@ namespace ibsCompiler
             }
 
             int startRow = 0, menuRow0 = 0, promptRow = 0;
+            int lastW = 0, lastH = 0;
+            // Set when a resize left the window too small to host the form at all; the
+            // key loop then drops out and the caller-visible sequential prompts take over.
+            bool fellBack = false;
+            var menuBuf = new StringBuilder();
+
 
             void Scaffold()
             {
+                lastW = Console.WindowWidth; lastH = Console.WindowHeight;
+                Layout();   // a resize changes `room`, and with it every reserved height
                 Console.WriteLine();
                 var prev = Console.ForegroundColor;
                 Console.ForegroundColor = ConsoleColor.Cyan;
@@ -147,7 +166,7 @@ namespace ibsCompiler
                     var text = r == 0
                         ? $"  {(isCursor ? ">" : " ")} {f.Label,-16}: {chunk}{tail}"
                         : $"{pad}{chunk}{tail}";
-                    Console.SetCursorPosition(0, startRow + offsets[idx] + r);
+                    ConsoleMenu.MoveTo(0, startRow + offsets[idx] + r);
                     var line = Fit(text);
                     if (f.ReadOnly)
                     {
@@ -172,7 +191,7 @@ namespace ibsCompiler
                 var items = BuildMenu();
                 for (int j = 0; j < MenuRows; j++)
                 {
-                    Console.SetCursorPosition(0, menuRow0 + j);
+                    ConsoleMenu.MoveTo(0, menuRow0 + j);
                     Console.Write(Fit(j < items.Count ? $"  {items[j].Num,2}. {items[j].Label}" : ""));
                 }
             }
@@ -181,12 +200,12 @@ namespace ibsCompiler
             {
                 for (int i = 0; i < fields.Count; i++) DrawField(i, i == cursor);
                 RenderMenu();
-                Console.SetCursorPosition(0, startRow + offsets[cursor]);
+                ConsoleMenu.MoveTo(0, startRow + offsets[cursor]);
             }
 
             void Message(string text, ConsoleColor color)
             {
-                Console.SetCursorPosition(0, promptRow);
+                ConsoleMenu.MoveTo(0, promptRow);
                 var p = Console.ForegroundColor;
                 Console.ForegroundColor = color;
                 Console.Write(Fit("  " + text));
@@ -214,7 +233,7 @@ namespace ibsCompiler
                 void Draw()
                 {
                     DrawField(fieldIdx, isCursor: true, overrideValue: buf.ToString());
-                    Console.SetCursorPosition(
+                    ConsoleMenu.MoveTo(
                         Math.Min(ValueCol + caret % room, Console.WindowWidth - 1),
                         startRow + offsets[fieldIdx] + Math.Min(caret / room, heights[fieldIdx] - 1));
                 }
@@ -224,6 +243,18 @@ namespace ibsCompiler
                 while (true)
                 {
                     var key = Console.ReadKey(intercept: true);
+                    if (Console.WindowWidth != lastW || Console.WindowHeight != lastH)
+                    {
+                        // Mid-edit resize: rebuild the form (the edit keeps its buffer,
+                        // re-wrapped to the new width) and carry on. If the window no
+                        // longer fits the form, commit what has been typed and let the
+                        // key loop hand over to the sequential prompts.
+                        RescaffoldIfResized();
+                        if (fellBack) { Console.CursorVisible = false; return buf.ToString(); }
+                        caret = Math.Clamp(caret, 0, buf.Length);
+                        Console.CursorVisible = true;
+                        Draw();
+                    }
                     switch (key.Key)
                     {
                         case ConsoleKey.Enter:
@@ -282,7 +313,7 @@ namespace ibsCompiler
                 if (!fields.Any(f => !f.ReadOnly && f.Value != f.Original)) return true;
                 const string q = "Discard changes? (y/N) ";
                 Message(q, ConsoleColor.Yellow);
-                Console.SetCursorPosition(Math.Min(2 + q.Length, Console.WindowWidth - 1), promptRow);
+                ConsoleMenu.MoveTo(Math.Min(2 + q.Length, Console.WindowWidth - 1), promptRow);
                 Console.CursorVisible = true;
                 var ans = Console.ReadKey(intercept: true);
                 Console.CursorVisible = false;
@@ -292,6 +323,32 @@ namespace ibsCompiler
                 return false;
             }
 
+            // A resize invalidates `room`, every reserved height and every cached row —
+            // rebuild the whole form before the keystroke that noticed it is handled. A
+            // shrink can also make the form no longer fit (fewer rows, or a narrower
+            // window that wraps the message field across MORE rows than before), so the
+            // minimum is re-checked against the RECOMPUTED height every time.
+            void RescaffoldIfResized()
+            {
+                if (Console.WindowWidth == lastW && Console.WindowHeight == lastH) return;
+                Layout();
+                int need = totalFieldRows + MenuRows + 8;
+                if (!ConsoleMenu.TryEnsureWindow(need, 40))
+                {
+                    // Too small to draw without corrupting the layout — leave the screen
+                    // as it is and hand over to the sequential prompts.
+                    fellBack = true;
+                    return;
+                }
+                try { Console.Clear(); } catch { }
+                Scaffold();
+                ClearMessage();
+                Render();
+                // A choice half-typed before the resize is still pending — put it back on
+                // the prompt line instead of blanking it to the idle label.
+                if (menuBuf.Length > 0) ShowMenuBuffer(menuBuf.ToString());
+            }
+
             try
             {
                 Console.CursorVisible = false;
@@ -299,11 +356,11 @@ namespace ibsCompiler
                 ClearMessage();
                 Render();
 
-                var menuBuf = new StringBuilder();
-
-                while (true)
+                while (!fellBack)
                 {
                     var key = Console.ReadKey(intercept: true);
+                    RescaffoldIfResized();
+                    if (fellBack) break;
 
                     // Digits build the menu-choice buffer, echoed on the prompt line.
                     if (char.IsDigit(key.KeyChar))
@@ -391,6 +448,7 @@ namespace ibsCompiler
                                     f.Value = f.Numeric ? input.Trim() : input;
                                     break;
                                 }
+                                if (fellBack) break;   // window shrank mid-edit
                                 ClearMessage();
                                 Render();
                             }
@@ -419,14 +477,24 @@ namespace ibsCompiler
             {
                 Console.CursorVisible = true;
                 // Park the cursor below the widget so subsequent output is clean. Land on
-                // the prompt row (guaranteed to exist) and WriteLine from there.
-                try
+                // the prompt row (guaranteed to exist) and WriteLine from there. After a
+                // fall-back the cached rows are meaningless — leave the cursor alone so
+                // the sequential prompts start on a clean line.
+                if (!fellBack)
                 {
-                    Console.SetCursorPosition(0, promptRow);
-                    Console.WriteLine();
+                    try
+                    {
+                        ConsoleMenu.MoveTo(0, promptRow);
+                        Console.WriteLine();
+                    }
+                    catch { }
                 }
-                catch { }
             }
+
+            // Only reachable when a resize shrank the window below the form's minimum.
+            Console.WriteLine();
+            ConsoleMenu.ExplainTooSmall("the message form", totalFieldRows + MenuRows + 8, 40);
+            return RunSequential(title, fields, validate);
         }
 
         /// <summary>Split a single-line value into fixed-width display chunks (never fewer than one).</summary>
