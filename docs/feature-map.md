@@ -315,6 +315,11 @@ Interactive main menu:
 | `2` → Test → all | Run all six in order | `--test NAME --what all` | `set_profile.test_all` | COVERED |
 | `3` Add to IDE | Write VSCode `tasks.json` | (TTY-only — explicit project decision) | — | SKIP |
 | `4` Open settings.json | Launch editor on `settings.json` | (TTY-only — same reason) | — | SKIP |
+| `5` Shared profiles → List | Show what other developers have published (never merged into `settings.json`, never in alias resolution) | `--shared [--refresh]` | `set_profile.shared_list` | COVERED |
+| `5` → Share one of mine | Publish the password-free record to the private `innovative247/compiler-profiles` repo; GitHub push access is the gate | `--share NAME [--note "..."] [--dry-run]` | `set_profile.share_payload_has_no_secrets` / `.share_dry_run_publishes_nothing` / `.share_unknown_profile` | COVERED |
+| `5` → Withdraw | Remove a published record (warns when it is not yours) | `--unshare NAME [--yes]` | (manual - a suite run must not mutate the shared store) | SKIP |
+| `5` → Fetch (new name) | Copy a shared record into `settings.json`; password and SQL source are resolved on arrival, never fetched | `--fetch NAME [--as LOCAL] [--sql-source PATH] [--password PW \| --no-password]` | `set_profile.fetch_new` | COVERED |
+| `5` → Fetch (existing profile) | Per-field merge. TTY prompts per differing field with keep-local as the default; headless demands an explicit choice and never blind-overwrites | `--fetch NAME --as EXISTING (--accept-all \| --accept-none \| --accept FIELD[,FIELD...])` | `set_profile.fetch_existing_needs_choice` | COVERED |
 | `99` Exit | exit 0 | (default with no flags + no positional) | — | COVERED |
 
 **Validation surfaces (still enforced in headless):**
@@ -324,6 +329,16 @@ Interactive main menu:
   optional (Postgres schema-as-database target); omitted defaults to `postgres`.
 - `--delete` without `--yes` errors out.
 - Aliases must not collide with existing profile names or other aliases.
+- Shared records carry only `NAME`, `ALIASES`, `PLATFORM`, `RAW_MODE`, `HOST`,
+  `PORT`, `DATABASE`, `COMPANY`, `DEFAULT_LANGUAGE`, `DATA_CHARSET`, `USERNAME`,
+  `OWNER`, `UPDATED`, `NOTE`. `PASSWORD` and `SQL_SOURCE` are refused by name on
+  every publish, which FAILS rather than scrubbing them. `--accept` only recognizes
+  shareable fields. A fetched raw target skips the SQL-source step — it has no
+  source tree to point at.
+- `--share`, `--unshare`, `--shared` and `--fetch` are mutually exclusive with each
+  other and with `--create`/`--edit`/`--view`/`--copy`/`--delete`/`--test`.
+- No git, no network, or no access to the private store: the shared actions report
+  one line and do nothing. Every local profile operation still works.
 
 ---
 

@@ -702,6 +702,36 @@ namespace ibsCompiler
         }
 
         /// <summary>
+        /// Read a password from the console without echoing it. TTY only — the caller
+        /// must check for redirected input first, because <c>ReadKey</c> cannot be driven
+        /// from a pipe. Single home for the masked prompt: the profile wizard, the shared
+        /// profile fetch, and the first-use prompt in <c>ProfileManager</c> all use it.
+        /// </summary>
+        public static string ReadPasswordMasked()
+        {
+            var password = new System.Text.StringBuilder();
+            while (true)
+            {
+                var key = Console.ReadKey(intercept: true);
+                if (key.Key == ConsoleKey.Enter) break;
+                if (key.Key == ConsoleKey.Backspace)
+                {
+                    if (password.Length > 0)
+                    {
+                        password.Remove(password.Length - 1, 1);
+                        Console.Write("\b \b");
+                    }
+                }
+                else
+                {
+                    password.Append(key.KeyChar);
+                    Console.Write('*');
+                }
+            }
+            return password.ToString();
+        }
+
+        /// <summary>
         /// Atomic, best-effort replacement of a text file (temp write + <c>File.Move</c> overwrite).
         /// Same rationale as <see cref="SaveArrayToDiskAtomic"/> — a concurrent reader never sees a
         /// half-written file. Used for settings.json normalization so parallel compiler startups

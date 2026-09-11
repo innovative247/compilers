@@ -171,6 +171,13 @@ namespace ibsCompiler.Configuration
                     if (int.TryParse(portStr, out var portOverride)) port = portOverride;
                 }
 
+                // First-use checks for a profile fetched from the shared store: neither the
+                // password nor the SQL source travels with a shared record, and a path that
+                // was valid when it was fetched may have moved since. Catch both here, once,
+                // with a clear message — not deep inside a compile.
+                if (string.IsNullOrEmpty(cmdvars.Pass)) EnsurePassword(profile.Value.ProfileName, p);
+                WarnMissingSqlSource(profile.Value.ProfileName, p);
+
                 return new ResolvedProfile
                 {
                     ProfileName = profile.Value.ProfileName,
@@ -191,6 +198,63 @@ namespace ibsCompiler.Configuration
 
             // Fallback to environment variables (legacy F4.8 behavior)
             return ResolveFromEnvironment(cmdvars);
+        }
+
+        /// <summary>
+        /// A profile with no stored password — the normal state of one just fetched from
+        /// the shared store — prompts once on first use and keeps what was entered, so the
+        /// developer is asked exactly once rather than on every command. Redirected input
+        /// gets a message instead of a prompt: a script must never block on an invisible
+        /// password field.
+        /// </summary>
+        private void EnsurePassword(string profileName, ProfileData p)
+        {
+            if (!string.IsNullOrEmpty(p.Password)) return;
+
+            if (Console.IsInputRedirected || Console.IsOutputRedirected)
+            {
+                Console.Error.WriteLine(
+                    $"Profile '{profileName}' has no stored password. Set one with: set_profile --edit {profileName} --password <PW>");
+                return;
+            }
+
+            Console.WriteLine($"Profile '{profileName}' has no stored password (shared profiles never carry one).");
+            Console.Write("  Password: ");
+            var entered = ibs_compiler_common.ReadPasswordMasked();
+            Console.WriteLine();
+            if (string.IsNullOrEmpty(entered)) return;
+
+            p.Password = entered;
+            if (PersistSettings())
+                Console.WriteLine($"  Saved to {_settingsPath}. Change it later with: set_profile --edit {profileName} --password <PW>");
+        }
+
+        /// <summary>
+        /// The SQL source is per-developer, so a fetched profile's path is only ever as
+        /// good as the machine it landed on — and it can move afterwards. Report it up
+        /// front instead of letting a compile fail on a missing file later.
+        /// </summary>
+        private static void WarnMissingSqlSource(string profileName, ProfileData p)
+        {
+            if (p.RawMode) return;
+            if (string.IsNullOrEmpty(p.SqlSource)) return;
+            if (Directory.Exists(p.SqlSource)) return;
+
+            Console.Error.WriteLine(
+                $"Profile '{profileName}': SQL source not found on this machine: {p.SqlSource}");
+            Console.Error.WriteLine(
+                $"  Fix it with: set_profile --edit {profileName} --sql-source <PATH>");
+        }
+
+        private bool PersistSettings()
+        {
+            if (string.IsNullOrEmpty(_settingsPath)) return false;
+            try
+            {
+                var json = JsonSerializer.Serialize(_settings, new JsonSerializerOptions { WriteIndented = true });
+                return ibs_compiler_common.WriteAllTextAtomic(_settingsPath, json);
+            }
+            catch { return false; }
         }
 
         private static ResolvedProfile ResolveFromEnvironment(CommandVariables cmdvars)

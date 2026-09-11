@@ -2414,6 +2414,146 @@ function Test-ProfileManagement {
     }
 }
 
+function Test-SharedProfiles {
+    Write-Host "`n--- 5b. Shared profiles ---" -ForegroundColor Cyan
+
+    $shareProfile = 'TEST_SHARE_SUITE'
+    $secret       = 'sUite-SECRET-p@ss/word!23'
+    $sqlSource    = $script:Scratch
+
+    foreach ($n in @($shareProfile, "${shareProfile}_FETCH")) {
+        Invoke-Cli set_profile '--delete' $n '--yes' | Out-Null
+    }
+
+    # ---- offline: nothing below touches the shared store ----
+
+    Test-Case 'set_profile.share_unknown_profile' {
+        $r = Invoke-Cli set_profile '--share' 'NO_SUCH_PROFILE_XYZ' '--dry-run'
+        if ($r.ExitCode -eq 0) { throw "sharing a profile that does not exist must fail" }
+        if ("$($r.StdErr)" -notmatch 'not found') { throw "expected 'not found'. stderr: $($r.StdErr)" }
+    }
+
+    Test-Case 'set_profile.shared_flags_mutually_exclusive' {
+        $r = Invoke-Cli set_profile '--shared' '--view' $script:TestProfile
+        if ($r.ExitCode -eq 0) { throw "--shared and --view together must fail" }
+        if ("$($r.StdErr)" -notmatch 'mutually exclusive') { throw "expected 'mutually exclusive'. stderr: $($r.StdErr)" }
+    }
+
+    # The contract: a password never reaches the shared payload. --dry-run runs the
+    # real capture + publish guard and prints the exact bytes that would be pushed,
+    # so this is verified without a live push.
+    Test-Case 'set_profile.share_payload_has_no_secrets' {
+        $r = Invoke-Cli set_profile '--create' $shareProfile `
+             '--platform' 'mssql' '--host' '127.0.0.1' '--port' '1433' `
+             '--user' 'sa' '--password' $secret '--company' '101' '--sql-source' $sqlSource
+        Assert-ExitCode $r
+
+        $r = Invoke-Cli set_profile '--share' $shareProfile '--dry-run'
+        Assert-ExitCode $r
+        $payload = "$($r.StdOut)"
+
+        if ($payload -match [regex]::Escape($secret)) { throw "the password appears in the shared payload" }
+        foreach ($banned in @('PASSWORD', 'SQL_SOURCE')) {
+            if ($payload -match "`"$banned`"") { throw "'$banned' must never appear in the shared payload" }
+        }
+        if ($payload -match [regex]::Escape($sqlSource)) { throw "the SQL source path appears in the shared payload" }
+
+        # ...and the fields that SHOULD travel are all there.
+        # RAW_MODE travels: whether a target has an SBN source tree behind it is a fact
+        # about the server, not about the developer who connects to it.
+        foreach ($expected in @('NAME', 'PLATFORM', 'HOST', 'PORT', 'USERNAME', 'COMPANY', 'RAW_MODE', 'OWNER', 'UPDATED')) {
+            if ($payload -notmatch "`"$expected`"") { throw "'$expected' missing from the shared payload. payload: $payload" }
+        }
+    }
+
+    Test-Case 'set_profile.share_dry_run_publishes_nothing' {
+        # A dry run must not create, refresh or write the local store cache.
+        $cache = Join-Path $script:Bin 'shared-profiles'
+        $before = (Test-Path $cache)
+        $r = Invoke-Cli set_profile '--share' $shareProfile '--dry-run'
+        Assert-ExitCode $r
+        if ($r.StdOut -notmatch 'nothing was published') { throw "dry run must say so. stdout: $($r.StdOut)" }
+        if (-not $before -and (Test-Path $cache)) { throw "dry run created the store cache" }
+    }
+
+    # ---- store-backed: skipped cleanly when the developer has no access ----
+
+    $probe = Invoke-Cli set_profile '--shared'
+    if ($probe.ExitCode -ne 0) {
+        $reason = 'shared profile store unreachable (no git, no network, or no access to the private repo)'
+        foreach ($id in @('set_profile.shared_list', 'set_profile.fetch_new', 'set_profile.fetch_existing_needs_choice')) {
+            Skip-Case $id $reason
+        }
+    }
+    else {
+        Test-Case 'set_profile.shared_list' {
+            $r = Invoke-Cli set_profile '--shared'
+            Assert-ExitCode $r
+            if ($r.StdOut -notmatch 'Shared Profiles') { throw "expected the shared listing header. stdout: $($r.StdOut)" }
+
+            # Read-only invariant over whatever is really in the store: no published
+            # record anywhere may carry a password or a per-developer path.
+            $cache = Join-Path $script:Bin 'shared-profiles\profiles'
+            if (Test-Path $cache) {
+                foreach ($f in Get-ChildItem $cache -Filter '*.json') {
+                    $body = Get-Content $f.FullName -Raw
+                    foreach ($banned in @('PASSWORD', 'SQL_SOURCE')) {
+                        if ($body -match "`"$banned`"") { throw "$($f.Name) in the shared store carries '$banned'" }
+                    }
+                }
+            }
+        }
+
+        $published = @(Get-ChildItem (Join-Path $script:Bin 'shared-profiles\profiles') `
+                       -Filter '*.json' -ErrorAction SilentlyContinue)
+        if ($published.Count -eq 0) {
+            $reason = 'nothing published to the shared store yet - fetch has nothing to read'
+            Skip-Case 'set_profile.fetch_new' $reason
+            Skip-Case 'set_profile.fetch_existing_needs_choice' $reason
+        }
+        else {
+            $source = [IO.Path]::GetFileNameWithoutExtension($published[0].Name)
+
+            Test-Case 'set_profile.fetch_new' {
+                # A fetched profile arrives WITHOUT a password and records where it came
+                # from - provenance, never a subscription.
+                $r = Invoke-Cli set_profile '--fetch' $source '--as' "${shareProfile}_FETCH" '--sql-source' $sqlSource
+                Assert-ExitCode $r
+                Assert-ProfileExists "${shareProfile}_FETCH"
+                $p = Get-Profile "${shareProfile}_FETCH"
+                if (-not [string]::IsNullOrEmpty($p.PASSWORD)) { throw "a fetched profile must not arrive with a password" }
+                Assert-Field $p 'SHARED_FROM' $source
+                Assert-Field $p 'SQL_SOURCE' $sqlSource
+            }
+
+            Test-Case 'set_profile.fetch_existing_needs_choice' {
+                # Fetching onto a profile that already exists never blind-overwrites:
+                # headless demands an explicit per-field decision.
+                $r = Invoke-Cli set_profile '--fetch' $source '--as' "${shareProfile}_FETCH"
+                if ($r.ExitCode -eq 0) { throw "fetching onto an existing profile without a choice must fail" }
+                if ("$($r.StdErr)" -notmatch '--accept-all') { throw "expected the --accept guidance. stderr: $($r.StdErr)" }
+
+                # --accept-none keeps every local value.
+                $before = Get-Profile "${shareProfile}_FETCH"
+                $r = Invoke-Cli set_profile '--fetch' $source '--as' "${shareProfile}_FETCH" '--accept-none'
+                Assert-ExitCode $r
+                $after = Get-Profile "${shareProfile}_FETCH"
+                Assert-Field $after 'HOST' $before.HOST
+                Assert-Field $after 'SQL_SOURCE' $before.SQL_SOURCE
+
+                # An unshareable field is not selectable.
+                $r = Invoke-Cli set_profile '--fetch' $source '--as' "${shareProfile}_FETCH" '--accept' 'PASSWORD'
+                if ($r.ExitCode -eq 0) { throw "--accept PASSWORD must be rejected" }
+                if ("$($r.StdErr)" -notmatch 'unknown field') { throw "expected 'unknown field'. stderr: $($r.StdErr)" }
+            }
+        }
+    }
+
+    foreach ($n in @($shareProfile, "${shareProfile}_FETCH")) {
+        Invoke-Cli set_profile '--delete' $n '--yes' | Out-Null
+    }
+}
+
 function Test-BulkCopy {
     Write-Host "`n--- 6. Bulk copy (bcp_data) ---" -ForegroundColor Cyan
 
@@ -2641,6 +2781,7 @@ try {
     Test-SetupCompile
     Test-Messages
     Test-ProfileManagement
+    Test-SharedProfiles
     Test-BulkCopy
     Test-SelfMgmt
     Test-ExclusionGuard

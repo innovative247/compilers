@@ -12,7 +12,7 @@ namespace ibsCompiler
     /// Interactive profile management wizard for settings.json.
     /// Create, edit, view, test, copy, and delete profiles.
     /// </summary>
-    public static class set_profile_main
+    public static partial class set_profile_main
     {
         private static SettingsFile _settings = new();
         private static string _settingsPath = "";
@@ -31,7 +31,8 @@ namespace ibsCompiler
             // when no headless flag is provided.
             var argList = args.ToList();
             if (CliArgs.AnyPresent(argList,
-                    "--create", "--edit", "--view", "--copy", "--delete", "--test"))
+                    "--create", "--edit", "--view", "--copy", "--delete", "--test",
+                    "--share", "--unshare", "--shared", "--fetch"))
             {
                 return RunHeadless(argList);
             }
@@ -65,6 +66,8 @@ namespace ibsCompiler
             "--test",
             "--yes",
             "--rebuild", "--rebuild-cache",
+            "--shared", "--refresh",
+            "--accept-all", "--accept-none", "--no-password", "--dry-run",
         };
 
         #region Icons
@@ -269,6 +272,7 @@ namespace ibsCompiler
                 PrintMenu(2, "Existing profile");
                 PrintMenu(3, "Add to IDE");
                 PrintMenu(4, "Open settings.json");
+                PrintMenu(5, "Shared profiles");
                 PrintMenu(99, "Exit");
 
                 // Interactive TTY → deferred 'Choice:' entry (no visible prompt line).
@@ -276,7 +280,7 @@ namespace ibsCompiler
                 string? input;
                 if (Console.IsInputRedirected || Console.IsOutputRedirected)
                 {
-                    Console.Write("\nChoose [1-4]: ");
+                    Console.Write("\nChoose [1-5]: ");
                     input = Console.ReadLine()?.Trim();
                 }
                 else
@@ -293,6 +297,7 @@ namespace ibsCompiler
                     case "2": ExistingProfileMenu(); break;
                     case "3": AddToIdeMenu(); break;
                     case "4": OpenSettingsJson(); break;
+                    case "5": SharedProfilesMenu(); break;
                     case "99":
                         Console.WriteLine("\nExiting profile setup wizard.");
                         var line = new string('=', 70);
@@ -2155,29 +2160,8 @@ namespace ibsCompiler
             return null;
         }
 
-        internal static string ReadPassword()
-        {
-            var password = new System.Text.StringBuilder();
-            while (true)
-            {
-                var key = Console.ReadKey(intercept: true);
-                if (key.Key == ConsoleKey.Enter) break;
-                if (key.Key == ConsoleKey.Backspace)
-                {
-                    if (password.Length > 0)
-                    {
-                        password.Remove(password.Length - 1, 1);
-                        Console.Write("\b \b");
-                    }
-                }
-                else
-                {
-                    password.Append(key.KeyChar);
-                    Console.Write('*');
-                }
-            }
-            return password.ToString();
-        }
+        /// <summary>Masked console read. Delegates to the single shared implementation.</summary>
+        internal static string ReadPassword() => ibs_compiler_common.ReadPasswordMasked();
         #endregion
 
         #region Headless CLI
@@ -2196,6 +2180,13 @@ namespace ibsCompiler
             var deleteName = CliArgs.GetOption(args, "--delete");
             var testName   = CliArgs.GetOption(args, "--test");
 
+            // Shared-profile actions. --shared takes no value (it is a listing), the
+            // other three name a profile.
+            var shareName   = CliArgs.GetOption(args, "--share");
+            var unshareName = CliArgs.GetOption(args, "--unshare");
+            var fetchName   = CliArgs.GetOption(args, "--fetch");
+            var listShared  = CliArgs.HasFlag(args, "--shared");
+
             int primary = 0;
             if (createName != null) primary++;
             if (editName != null)   primary++;
@@ -2203,14 +2194,18 @@ namespace ibsCompiler
             if (copyName != null)   primary++;
             if (deleteName != null) primary++;
             if (testName != null)   primary++;
+            if (shareName != null)   primary++;
+            if (unshareName != null) primary++;
+            if (fetchName != null)   primary++;
+            if (listShared)          primary++;
             if (primary > 1)
             {
-                Console.Error.WriteLine("ERROR: --create, --edit, --view, --copy, --delete, --test are mutually exclusive.");
+                Console.Error.WriteLine("ERROR: --create, --edit, --view, --copy, --delete, --test, --share, --unshare, --shared, --fetch are mutually exclusive.");
                 return 1;
             }
             if (primary == 0)
             {
-                Console.Error.WriteLine("ERROR: headless mode requires one of --create, --edit, --view, --copy, --delete, --test.");
+                Console.Error.WriteLine("ERROR: headless mode requires one of --create, --edit, --view, --copy, --delete, --test, --share, --unshare, --shared, --fetch.");
                 return 1;
             }
 
@@ -2220,6 +2215,10 @@ namespace ibsCompiler
             if (copyName != null)   return CopyHeadless(copyName, args);
             if (deleteName != null) return DeleteHeadless(deleteName, args);
             if (testName != null)   return TestHeadless(testName, args);
+            if (shareName != null)   return ShareHeadless(shareName, args);
+            if (unshareName != null) return UnshareHeadless(unshareName, args);
+            if (fetchName != null)   return FetchHeadless(fetchName, args);
+            if (listShared)          return SharedListHeadless(args);
             return 1;
         }
 

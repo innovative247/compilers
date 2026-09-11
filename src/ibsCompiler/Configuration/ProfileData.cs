@@ -73,6 +73,15 @@ namespace ibsCompiler.Configuration
 
         [JsonPropertyName("ALIASES")]
         public List<string> Aliases { get; set; } = new();
+
+        // Provenance for a profile fetched from the shared store — NOT a subscription.
+        // The shared listing uses these to say "your copy is older than the shared one";
+        // nothing ever acts on that automatically.
+        [JsonPropertyName("SHARED_FROM")]
+        public string SharedFrom { get; set; } = "";
+
+        [JsonPropertyName("SHARED_UPDATED")]
+        public string SharedUpdated { get; set; } = "";
     }
 
     public class SettingsFile
