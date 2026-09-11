@@ -43,9 +43,14 @@ namespace ibsCompiler
             // suite checks the payload without writing to the store.
             if (CliArgs.HasFlag(args, "--dry-run"))
             {
+                if (!Store.TryResolveOwner(out var previewOwner, out var identityError))
+                {
+                    PrintError(identityError);
+                    return 1;
+                }
                 try
                 {
-                    var preview = SharedProfileMap.Capture(name, profile, Store.ResolveOwner(), note);
+                    var preview = SharedProfileMap.Capture(name, profile, previewOwner, note);
                     Console.WriteLine(SharedProfileMap.SerializeForPublish(preview));
                     PrintDim("  Dry run - nothing was published.");
                     return 0;
@@ -69,7 +74,11 @@ namespace ibsCompiler
                 return false;
             }
 
-            var owner = Store.ResolveOwner();
+            if (!Store.TryResolveOwner(out var owner, out var identityError))
+            {
+                PrintError(identityError);
+                return false;
+            }
             var shared = SharedProfileMap.Capture(name, profile, owner, note);
 
             string json;
@@ -133,7 +142,11 @@ namespace ibsCompiler
                 return 1;
             }
 
-            var owner = Store.ResolveOwner();
+            if (!Store.TryResolveOwner(out var owner, out var identityError))
+            {
+                PrintError(identityError);
+                return 1;
+            }
             if (!string.Equals(existing.Owner, owner, StringComparison.OrdinalIgnoreCase))
             {
                 // Allowed — push access is the gate — but never silent.
@@ -673,8 +686,11 @@ namespace ibsCompiler
                 Console.WriteLine();
                 PrintDim("  Connection details other developers have published.");
                 Console.WriteLine();
-                PrintDim($"  You publish as: {Store.ResolveOwner()}");
-                Console.WriteLine();
+                if (Store.TryResolveOwner(out var menuOwner, out _))
+                {
+                    PrintDim($"  You publish as: {menuOwner}");
+                    Console.WriteLine();
+                }
                 PrintMenu(1, "List shared profiles");
                 PrintMenu(2, "Refresh from the shared store");
                 PrintMenu(3, "Fetch a shared profile");

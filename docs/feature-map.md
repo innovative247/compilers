@@ -339,6 +339,9 @@ Interactive main menu:
   other and with `--create`/`--edit`/`--view`/`--copy`/`--delete`/`--test`.
 - No git, no network, or no access to the private store: the shared actions report
   one line and do nothing. Every local profile operation still works.
+- **No git identity (`user.email` unset): every shared action is denied**, list and
+  fetch included, naming the `git config` commands that fix it (`set_profile.denied_without_git_identity`).
+  Nothing is ever published under an invented identity.
 
 ---
 

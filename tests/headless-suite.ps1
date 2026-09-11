@@ -2433,6 +2433,40 @@ function Test-SharedProfiles {
         if ("$($r.StdErr)" -notmatch 'not found') { throw "expected 'not found'. stderr: $($r.StdErr)" }
     }
 
+    Test-Case 'set_profile.denied_without_git_identity' {
+        # No git identity, no shared profiles. An unattributable record in a store
+        # everyone reads is worse than no record, so the feature is denied rather
+        # than attributed to a GitHub handle or the OS user name.
+        $emptyConfig = Join-Path $script:Scratch 'empty.gitconfig'
+        Set-Content -Path $emptyConfig -Value '' -Encoding ascii
+        $savedGlobal = $env:GIT_CONFIG_GLOBAL
+        $savedSystem = $env:GIT_CONFIG_SYSTEM
+        try {
+            # Scoped to the child processes this test starts - the machine's real
+            # git config is never touched.
+            $env:GIT_CONFIG_GLOBAL = $emptyConfig
+            $env:GIT_CONFIG_SYSTEM = $emptyConfig
+
+            foreach ($call in @(@('--shared'),
+                                @('--share', $script:TestProfile, '--dry-run'),
+                                @('--fetch', 'ANYTHING'))) {
+                $r = Invoke-Cli -Exe set_profile -Args $call
+                if ($r.ExitCode -eq 0) { throw "set_profile $($call -join ' ') must be denied without a git identity" }
+                $combined = "$($r.StdOut)`n$($r.StdErr)"
+                if ($combined -notmatch 'need a git identity') {
+                    throw "expected the identity message for '$($call -join ' ')'. output: $combined"
+                }
+                if ($combined -notmatch 'git config --global user\.email') {
+                    throw "the denial must say how to fix it. output: $combined"
+                }
+            }
+        }
+        finally {
+            $env:GIT_CONFIG_GLOBAL = $savedGlobal
+            $env:GIT_CONFIG_SYSTEM = $savedSystem
+        }
+    }
+
     Test-Case 'set_profile.shared_flags_mutually_exclusive' {
         $r = Invoke-Cli set_profile '--shared' '--view' $script:TestProfile
         if ($r.ExitCode -eq 0) { throw "--shared and --view together must fail" }

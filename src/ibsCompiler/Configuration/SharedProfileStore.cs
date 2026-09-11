@@ -29,8 +29,11 @@ namespace ibsCompiler.Configuration
         /// <summary>Remove one record from the store.</summary>
         bool TryWithdraw(string name, string commitSubject, out string error);
 
-        /// <summary>Identity recorded as OWNER on publish.</summary>
-        string ResolveOwner();
+        /// <summary>
+        /// The identity every shared-profile action is attributed to. False when this
+        /// machine has no git identity configured, which denies the whole feature.
+        /// </summary>
+        bool TryResolveOwner(out string owner, out string error);
     }
 
     /// <summary>
@@ -140,7 +143,7 @@ namespace ibsCompiler.Configuration
 
         public bool TryEnsureReady(out string error)
         {
-            error = "";
+            if (!TryResolveOwner(out _, out error)) return false;
             if (HasCache) return true;
 
             if (!GitAvailable())
@@ -265,19 +268,9 @@ namespace ibsCompiler.Configuration
                 return true; // nothing changed - already published exactly this
             }
 
-            // Commit as whoever this machine commits as. Synthesizing an identity from
-            // the GitHub login put a handle in the history of every publish, which is
-            // not who the developer is anywhere else in the estate. Only fall back to
-            // one when git has no identity configured at all.
-            var identity = new List<string>();
-            var (idCode, configuredEmail, _) = Git(_cacheDir, "config", "--get", "user.email");
-            if (idCode != 0 || string.IsNullOrWhiteSpace(configuredEmail))
-            {
-                var who = ResolveOwner();
-                identity.AddRange(new[] { "-c", $"user.name={who}", "-c", $"user.email={who}" });
-            }
-            var (ccode, _, cerr) = Git(_cacheDir,
-                identity.Concat(new[] { "commit", "-m", subject }).ToArray());
+            // No identity flags: commit as whoever this machine commits as. Nothing
+            // reaches here without one - TryResolveOwner is the gate.
+            var (ccode, _, cerr) = Git(_cacheDir, "commit", "-m", subject);
             if (ccode != 0) { error = $"git commit failed: {FirstLine(cerr)}"; ResetCache(); return false; }
 
             var (pcode, _, perr) = Git(_cacheDir, "push", "origin", Branch);
@@ -300,58 +293,44 @@ namespace ibsCompiler.Configuration
         private string? _owner;
 
         /// <summary>
-        /// Who to record as OWNER: the git identity this machine commits as. That is the
-        /// name colleagues already see on everything else, and on a work machine it is
-        /// the work address. The GitHub login is only a fallback - it is the account the
-        /// store is gated on, but it is a handle nobody else necessarily recognizes.
+        /// Everything here is attributed to the git identity this machine commits as -
+        /// the name colleagues already see on every other commit, and on a work machine
+        /// the work address.
+        /// <para>
+        /// With no identity configured the feature is DENIED rather than attributed to
+        /// something invented. A GitHub handle, or worse the OS user name, is not who
+        /// the developer is anywhere else in the estate, and an unattributable record in
+        /// a store everyone reads is worse than no record.
+        /// </para>
         /// </summary>
-        public string ResolveOwner()
+        public bool TryResolveOwner(out string owner, out string error)
         {
-            if (_owner != null) return _owner;
+            error = "";
+            if (_owner != null) { owner = _owner; return true; }
 
             var email = GitConfig("user.email");
-            if (!string.IsNullOrWhiteSpace(email)) return _owner = email;
+            if (!string.IsNullOrWhiteSpace(email))
+            {
+                owner = _owner = email;
+                return true;
+            }
 
-            var login = GhLogin();
-            if (!string.IsNullOrEmpty(login)) return _owner = login;
-
-            var name = GitConfig("user.name");
-            if (!string.IsNullOrWhiteSpace(name)) return _owner = name;
-
-            return _owner = Environment.UserName;
+            owner = "";
+            error = "shared profiles need a git identity, and this machine has none configured." +
+                    Environment.NewLine +
+                    "  Set one:  git config --global user.email \"you@innovative247.com\"" +
+                    Environment.NewLine +
+                    "            git config --global user.name \"Your Name\"";
+            return false;
         }
 
-        private static string GitConfig(string key)
+        private string GitConfig(string key)
         {
-            var (code, value, _) = Git(null, "config", "--get", key);
+            // Read it where the publish will happen, so the answer is the one that will
+            // actually land in the commit.
+            var (code, value, _) = Git(HasCache ? _cacheDir : null, "config", "--get", key);
             return code == 0 ? value.Trim() : "";
         }
 
-        private static string? GhLogin()
-        {
-            try
-            {
-                var psi = new ProcessStartInfo("gh")
-                {
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                };
-                psi.ArgumentList.Add("api");
-                psi.ArgumentList.Add("user");
-                psi.ArgumentList.Add("--jq");
-                psi.ArgumentList.Add(".login");
-                using var p = Process.Start(psi);
-                if (p == null) return null;
-                var outp = p.StandardOutput.ReadToEnd();
-                p.StandardError.ReadToEnd();
-                if (!p.WaitForExit(15000)) { try { p.Kill(true); } catch { } return null; }
-                if (p.ExitCode != 0) return null;
-                var login = outp.Trim();
-                return string.IsNullOrEmpty(login) ? null : login;
-            }
-            catch { return null; }
-        }
     }
 }
