@@ -88,15 +88,5 @@ namespace ibsCompiler.Configuration
     {
         [JsonPropertyName("Profiles")]
         public Dictionary<string, ProfileData> Profiles { get; set; } = new();
-
-        /// <summary>
-        /// How this developer is credited as OWNER on a shared profile. Without it the
-        /// GitHub login is used, which is a handle nobody else necessarily recognizes —
-        /// a work email is more use to the colleague reading the listing. Omitted from
-        /// settings.json until it is actually set.
-        /// </summary>
-        [JsonPropertyName("SHARED_OWNER")]
-        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
-        public string SharedOwner { get; set; } = "";
     }
 }

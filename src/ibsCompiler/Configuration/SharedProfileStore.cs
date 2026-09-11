@@ -265,11 +265,19 @@ namespace ibsCompiler.Configuration
                 return true; // nothing changed - already published exactly this
             }
 
-            var who = ResolveOwner();
+            // Commit as whoever this machine commits as. Synthesizing an identity from
+            // the GitHub login put a handle in the history of every publish, which is
+            // not who the developer is anywhere else in the estate. Only fall back to
+            // one when git has no identity configured at all.
+            var identity = new List<string>();
+            var (idCode, configuredEmail, _) = Git(_cacheDir, "config", "--get", "user.email");
+            if (idCode != 0 || string.IsNullOrWhiteSpace(configuredEmail))
+            {
+                var who = ResolveOwner();
+                identity.AddRange(new[] { "-c", $"user.name={who}", "-c", $"user.email={who}" });
+            }
             var (ccode, _, cerr) = Git(_cacheDir,
-                "-c", $"user.name={who}",
-                "-c", $"user.email={who}@users.noreply.github.com",
-                "commit", "-m", subject);
+                identity.Concat(new[] { "commit", "-m", subject }).ToArray());
             if (ccode != 0) { error = $"git commit failed: {FirstLine(cerr)}"; ResetCache(); return false; }
 
             var (pcode, _, perr) = Git(_cacheDir, "push", "origin", Branch);
@@ -292,29 +300,31 @@ namespace ibsCompiler.Configuration
         private string? _owner;
 
         /// <summary>
-        /// What the developer chose to be credited as, from settings.json. Set by the
-        /// command layer, which is the side that reads settings.
-        /// </summary>
-        public string OwnerOverride { get; set; } = "";
-
-        /// <summary>
-        /// Who to record as OWNER. An explicit choice wins; otherwise the GitHub login,
-        /// since that is the account the store is gated on. Falls back to the git
-        /// identity and then the OS user, so a publish never fails just because gh is
-        /// missing.
+        /// Who to record as OWNER: the git identity this machine commits as. That is the
+        /// name colleagues already see on everything else, and on a work machine it is
+        /// the work address. The GitHub login is only a fallback - it is the account the
+        /// store is gated on, but it is a handle nobody else necessarily recognizes.
         /// </summary>
         public string ResolveOwner()
         {
-            if (!string.IsNullOrWhiteSpace(OwnerOverride)) return OwnerOverride.Trim();
             if (_owner != null) return _owner;
+
+            var email = GitConfig("user.email");
+            if (!string.IsNullOrWhiteSpace(email)) return _owner = email;
 
             var login = GhLogin();
             if (!string.IsNullOrEmpty(login)) return _owner = login;
 
-            var (code, name, _) = Git(null, "config", "--get", "user.name");
-            if (code == 0 && !string.IsNullOrWhiteSpace(name)) return _owner = name.Trim();
+            var name = GitConfig("user.name");
+            if (!string.IsNullOrWhiteSpace(name)) return _owner = name;
 
             return _owner = Environment.UserName;
+        }
+
+        private static string GitConfig(string key)
+        {
+            var (code, value, _) = Git(null, "config", "--get", key);
+            return code == 0 ? value.Trim() : "";
         }
 
         private static string? GhLogin()

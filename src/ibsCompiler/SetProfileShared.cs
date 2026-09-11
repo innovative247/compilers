@@ -19,36 +19,7 @@ namespace ibsCompiler
     {
         private static GitSharedProfileStore? _store;
 
-        private static GitSharedProfileStore Store
-        {
-            get
-            {
-                _store ??= new GitSharedProfileStore(_settingsPath);
-                _store.OwnerOverride = _settings.SharedOwner ?? "";
-                return _store;
-            }
-        }
-
-        /// <summary>
-        /// <c>set_profile --shared-owner VALUE</c> — how you are credited as OWNER on
-        /// anything you publish. Without it the GitHub login is used, which is a handle
-        /// colleagues may not recognize; most people want their work email here.
-        /// </summary>
-        private static int SharedOwnerHeadless(string value)
-        {
-            var owner = (value ?? "").Trim();
-            if (owner.Length == 0)
-            {
-                Console.Error.WriteLine("ERROR: --shared-owner requires a value, e.g. --shared-owner jake.williams@innovative247.com");
-                return 1;
-            }
-
-            _settings.SharedOwner = owner;
-            if (!SaveSettings()) return 1;
-            PrintSuccess($"Shared profiles will be published as: {owner}");
-            PrintDim("  Re-share anything already published to update its owner.");
-            return 0;
-        }
+        private static GitSharedProfileStore Store => _store ??= new GitSharedProfileStore(_settingsPath);
 
         #region Headless
 
@@ -709,10 +680,9 @@ namespace ibsCompiler
                 PrintMenu(3, "Fetch a shared profile");
                 PrintMenu(4, "Share one of my profiles");
                 PrintMenu(5, "Withdraw a shared profile");
-                PrintMenu(6, "Change how I am credited when publishing");
                 PrintMenu(99, "Back");
 
-                var input = ReadLinePrompt("\nChoose [1-6]: ");
+                var input = ReadLinePrompt("\nChoose [1-5]: ");
                 if (input == null) return;   // end of input
 
                 switch (input)
@@ -726,7 +696,6 @@ namespace ibsCompiler
                     case "3": FetchInteractive(); break;
                     case "4": ShareInteractive(); break;
                     case "5": WithdrawInteractive(); break;
-                    case "6": SharedOwnerInteractive(); break;
                     case "99": return;
                     default: Console.WriteLine("Invalid selection."); break;
                 }
@@ -804,16 +773,6 @@ namespace ibsCompiler
             }
 
             PublishProfile(name, profile, note);
-        }
-
-        private static void SharedOwnerInteractive()
-        {
-            Console.WriteLine();
-            PrintDim($"  Currently publishing as: {Store.ResolveOwner()}");
-            PrintDim("  Most people use their work email so colleagues recognize the name.");
-            var entered = ReadLinePrompt("  Publish as [Enter to cancel]: ") ?? "";
-            if (entered.Length == 0) return;
-            SharedOwnerHeadless(entered);
         }
 
         private static void WithdrawInteractive()
