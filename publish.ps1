@@ -10,6 +10,13 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# One list, used by BOTH the zip and the tarballs: user state that must never ride
+# inside a release asset. settings.json holds real profiles (server addresses,
+# usernames, passwords) and shared-profiles/ is the private-store cache clone
+# (internal hosts plus a .git remote). A public release shipped settings.json once
+# already, v2.0.87..v3.0.0 - keep the two exclusions defined in one place.
+$script:NeverShip = @('settings.json', 'shared-profiles')
+
 $runtimes = @('win-x64', 'linux-x64', 'osx-x64', 'osx-arm64')
 
 $projects = @(
@@ -139,18 +146,32 @@ foreach ($rid in $runtimes) {
     }
 }
 
-# Windows zip (exclude settings.json — never overwrite user credentials on update)
+# Windows zip (exclude settings.json and the shared-profile cache — never overwrite
+# user credentials on update, and never ship either inside a PUBLIC release asset)
 $winDir = Join-Path $binDir "win-x64"
 if (Test-Path $winDir) {
     $zipPath = Join-Path $binDir "compilers-net8-win-x64.zip"
     if (Test-Path $zipPath) { Remove-Item $zipPath }
-    $filesToZip = Get-ChildItem -Path $winDir | Where-Object { $_.Name -ne "settings.json" }
+    $filesToZip = Get-ChildItem -Path $winDir | Where-Object { $_.Name -notin $script:NeverShip }
     Compress-Archive -Path ($filesToZip.FullName) -DestinationPath $zipPath
+    # Same abort the tarballs get: a leak must break the release, not ride inside it.
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $zip = [IO.Compression.ZipFile]::OpenRead($zipPath)
+    try {
+        $bad = $zip.Entries | Where-Object {
+            $_.FullName -match '(^|/)settings\.json$' -or $_.FullName -match '(^|/)shared-profiles(/|$)'
+        }
+    } finally { $zip.Dispose() }
+    if ($bad) {
+        Write-Host "ABORT: compilers-net8-win-x64.zip contains $($bad[0].FullName)" -ForegroundColor Red
+        exit 1
+    }
     $sizeMB = [math]::Round((Get-Item $zipPath).Length / 1MB, 1)
     Write-Host "  Created: compilers-net8-win-x64.zip ($sizeMB MB)" -ForegroundColor Green
 }
 
-# Linux + macOS tar.gz archives (exclude settings.json — never overwrite credentials on update)
+# Linux + macOS tar.gz archives (exclude settings.json and the shared-profile cache
+# — never overwrite credentials on update, never ship either in a public asset)
 $tarRids = $runtimes | Where-Object { $_ -ne 'win-x64' }
 foreach ($rid in $tarRids) {
     $srcDir = Join-Path $binDir $rid
@@ -159,9 +180,9 @@ foreach ($rid in $tarRids) {
     if (Test-Path $tarPath) { Remove-Item $tarPath }
     # WSL gives Windows a Unix tar; macOS/Linux use the native one directly.
     if (Get-Command wsl -ErrorAction SilentlyContinue) {
-        wsl tar -czf $tarPath --exclude='./settings.json' -C $srcDir .
+        wsl tar -czf $tarPath --exclude='./settings.json' --exclude='./shared-profiles' -C $srcDir .
     } else {
-        tar -czf $tarPath --exclude='./settings.json' -C $srcDir .
+        tar -czf $tarPath --exclude='./settings.json' --exclude='./shared-profiles' -C $srcDir .
     }
     if (Test-Path $tarPath) {
         $sizeMB = [math]::Round((Get-Item $tarPath).Length / 1MB, 1)
