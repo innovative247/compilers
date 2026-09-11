@@ -320,6 +320,7 @@ Interactive main menu:
 | `5` → Withdraw | Remove a published record (warns when it is not yours) | `--unshare NAME [--yes]` | (manual - a suite run must not mutate the shared store) | SKIP |
 | `5` → Fetch (new name) | Copy a shared record into `settings.json`; password and SQL source are resolved on arrival, never fetched | `--fetch NAME [--as LOCAL] [--sql-source PATH] [--password PW \| --no-password]` | `set_profile.fetch_new` | COVERED |
 | `5` → Fetch (existing profile) | Per-field merge. TTY prompts per differing field with keep-local as the default; headless demands an explicit choice and never blind-overwrites | `--fetch NAME --as EXISTING (--accept-all \| --accept-none \| --accept FIELD[,FIELD...])` | `set_profile.fetch_existing_needs_choice` | COVERED |
+| `5` → Change how I am credited | Set the OWNER recorded on anything you publish (settings.json `SHARED_OWNER`); defaults to the GitHub login | `--shared-owner VALUE` | `set_profile.shared_owner` | COVERED |
 | `99` Exit | exit 0 | (default with no flags + no positional) | — | COVERED |
 
 **Validation surfaces (still enforced in headless):**

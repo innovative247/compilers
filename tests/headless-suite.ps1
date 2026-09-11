@@ -2433,6 +2433,27 @@ function Test-SharedProfiles {
         if ("$($r.StdErr)" -notmatch 'not found') { throw "expected 'not found'. stderr: $($r.StdErr)" }
     }
 
+    Test-Case 'set_profile.shared_owner' {
+        # How you are credited when publishing. Defaults to the GitHub login, which is
+        # a handle colleagues may not recognize, so it must be settable.
+        $settings = Get-Settings
+        $original = $settings.SHARED_OWNER
+
+        $r = Invoke-Cli set_profile '--shared-owner' 'suite.test@innovative247.com'
+        Assert-ExitCode $r
+        if ((Get-Settings).SHARED_OWNER -ne 'suite.test@innovative247.com') {
+            throw "SHARED_OWNER was not written to settings.json"
+        }
+
+        $r = Invoke-Cli set_profile '--share' $script:TestProfile '--dry-run'
+        Assert-ExitCode $r
+        if ($r.StdOut -notmatch 'suite\.test@innovative247\.com') {
+            throw "the chosen owner is not used in the payload. stdout: $($r.StdOut)"
+        }
+
+        if ($original) { Invoke-Cli set_profile '--shared-owner' $original | Out-Null }
+    }
+
     Test-Case 'set_profile.shared_flags_mutually_exclusive' {
         $r = Invoke-Cli set_profile '--shared' '--view' $script:TestProfile
         if ($r.ExitCode -eq 0) { throw "--shared and --view together must fail" }

@@ -19,7 +19,36 @@ namespace ibsCompiler
     {
         private static GitSharedProfileStore? _store;
 
-        private static GitSharedProfileStore Store => _store ??= new GitSharedProfileStore(_settingsPath);
+        private static GitSharedProfileStore Store
+        {
+            get
+            {
+                _store ??= new GitSharedProfileStore(_settingsPath);
+                _store.OwnerOverride = _settings.SharedOwner ?? "";
+                return _store;
+            }
+        }
+
+        /// <summary>
+        /// <c>set_profile --shared-owner VALUE</c> — how you are credited as OWNER on
+        /// anything you publish. Without it the GitHub login is used, which is a handle
+        /// colleagues may not recognize; most people want their work email here.
+        /// </summary>
+        private static int SharedOwnerHeadless(string value)
+        {
+            var owner = (value ?? "").Trim();
+            if (owner.Length == 0)
+            {
+                Console.Error.WriteLine("ERROR: --shared-owner requires a value, e.g. --shared-owner jake.williams@innovative247.com");
+                return 1;
+            }
+
+            _settings.SharedOwner = owner;
+            if (!SaveSettings()) return 1;
+            PrintSuccess($"Shared profiles will be published as: {owner}");
+            PrintDim("  Re-share anything already published to update its owner.");
+            return 0;
+        }
 
         #region Headless
 
@@ -92,9 +121,32 @@ namespace ibsCompiler
                 return false;
             }
 
+            // Stamp the local profile with what was just published, or the listing would
+            // immediately report your own copy as older than the record you just wrote.
+            if (string.Equals(name, shared.Name, StringComparison.OrdinalIgnoreCase))
+            {
+                profile.SharedFrom = shared.Name;
+                profile.SharedUpdated = shared.Updated;
+                SaveSettingsQuietly();
+            }
+
             PrintSuccess($"Shared '{shared.Name}' as {owner}.");
-            PrintDim("  Password and SQL source were not published.");
             return true;
+        }
+
+        /// <summary>
+        /// Persist settings without the "Settings saved to:" line. Used for bookkeeping
+        /// writes the developer did not ask for and should not have to read about.
+        /// </summary>
+        private static void SaveSettingsQuietly()
+        {
+            try
+            {
+                var json = System.Text.Json.JsonSerializer.Serialize(_settings,
+                    new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+                ibs_compiler_common.WriteAllTextAtomic(_settingsPath, json);
+            }
+            catch { }
         }
 
         /// <summary><c>set_profile --unshare NAME</c> — remove your published copy.</summary>
@@ -199,7 +251,8 @@ namespace ibsCompiler
         /// Returns null when the developer cancelled.
         /// </summary>
         private static List<ShareField>? ResolveAcceptedFields(
-            SharedProfile shared, string? existingName, List<string> args, out string? error)
+            SharedProfile shared, string? existingName, List<string> args, out string? error,
+            bool interactive = false)
         {
             error = null;
 
@@ -242,7 +295,9 @@ namespace ibsCompiler
                 return chosen;
             }
 
-            if (!CliArgs.IsInteractiveTty())
+            // The menu knows it is driving a human; the flag path has to work out whether
+            // anyone is there to answer. Asking the console was wrong for the menu case.
+            if (!interactive && !CliArgs.IsInteractiveTty())
             {
                 error = $"profile '{existingName}' already exists. Fetching onto it needs an explicit choice: " +
                         "--accept-all, --accept-none, or --accept FIELD[,FIELD...].";
@@ -335,9 +390,12 @@ namespace ibsCompiler
 
             if (!SaveSettings()) return false;
 
-            PrintSuccess(isNew
-                ? $"Fetched '{shared.Name}' into new profile '{target}'."
-                : $"Merged shared '{shared.Name}' into '{target}'.");
+            if (isNew)
+                PrintSuccess($"Fetched '{shared.Name}' into new profile '{target}'.");
+            else if (accepted.Count == 0)
+                PrintSuccess($"'{target}' left unchanged - no shared value was taken.");
+            else
+                PrintSuccess($"Merged into '{target}': {string.Join(", ", accepted.Select(f => f.Label))}.");
             DisplayProfile(target, profile);
 
             if (!profile.RawMode && !string.IsNullOrEmpty(profile.SqlSource) && Directory.Exists(profile.SqlSource))
@@ -417,8 +475,9 @@ namespace ibsCompiler
                 var prompt = string.IsNullOrEmpty(suggestion)
                     ? "  SQL source directory: "
                     : $"  SQL source directory [{suggestion}]: ";
-                Console.Write(prompt);
-                var entered = Console.ReadLine()?.Trim() ?? "";
+                var entered = ReadLinePrompt(prompt);
+                if (entered == null) return true;   // end of input - leave it unset
+
                 if (entered.Length == 0) entered = suggestion ?? "";
 
                 if (entered.Length == 0)
@@ -599,10 +658,30 @@ namespace ibsCompiler
         /// Yes/no that works on a TTY and on redirected stdin alike (the suite drives
         /// these paths with piped input).
         /// </summary>
+        /// <summary>
+        /// Read a line after discarding anything already sitting in the key buffer.
+        /// The main menu is a ReadKey loop and these prompts are ReadLine, so a
+        /// keystroke left over from the menu would otherwise answer the next prompt
+        /// before the user has seen it.
+        /// </summary>
+        /// <summary>
+        /// Returns null at end of input - a piped run that has run out of answers must
+        /// back out, not spin forever re-asking a question nobody is left to answer.
+        /// </summary>
+        private static string? ReadLinePrompt(string prompt)
+        {
+            if (!Console.IsInputRedirected)
+            {
+                try { while (Console.KeyAvailable) Console.ReadKey(intercept: true); } catch { }
+            }
+            Console.Write(prompt);
+            var line = Console.ReadLine();
+            return line?.Trim();
+        }
+
         private static bool ConfirmYesNo(string question, bool defaultYes)
         {
-            Console.Write($"{question} [{(defaultYes ? "Y/n" : "y/N")}]: ");
-            var answer = (Console.ReadLine() ?? "").Trim().ToLowerInvariant();
+            var answer = (ReadLinePrompt($"{question} [{(defaultYes ? "Y/n" : "y/N")}]: ") ?? "").ToLowerInvariant();
             if (answer.Length == 0) return defaultYes;
             return answer is "y" or "yes";
         }
@@ -621,18 +700,20 @@ namespace ibsCompiler
                 Console.WriteLine();
                 WriteBright("Shared Profiles");
                 Console.WriteLine();
-                PrintDim("  Connection details other developers have published. Passwords and SQL");
-                PrintDim("  source paths are never shared.");
+                PrintDim("  Connection details other developers have published.");
+                Console.WriteLine();
+                PrintDim($"  You publish as: {Store.ResolveOwner()}");
                 Console.WriteLine();
                 PrintMenu(1, "List shared profiles");
                 PrintMenu(2, "Refresh from the shared store");
                 PrintMenu(3, "Fetch a shared profile");
                 PrintMenu(4, "Share one of my profiles");
                 PrintMenu(5, "Withdraw a shared profile");
+                PrintMenu(6, "Change how I am credited when publishing");
                 PrintMenu(99, "Back");
 
-                Console.Write("\nChoose [1-5]: ");
-                var input = Console.ReadLine()?.Trim();
+                var input = ReadLinePrompt("\nChoose [1-6]: ");
+                if (input == null) return;   // end of input
 
                 switch (input)
                 {
@@ -645,6 +726,7 @@ namespace ibsCompiler
                     case "3": FetchInteractive(); break;
                     case "4": ShareInteractive(); break;
                     case "5": WithdrawInteractive(); break;
+                    case "6": SharedOwnerInteractive(); break;
                     case "99": return;
                     default: Console.WriteLine("Invalid selection."); break;
                 }
@@ -658,8 +740,7 @@ namespace ibsCompiler
             if (shared.Count == 0) { PrintWarning("Nothing has been shared yet."); return; }
 
             PrintSharedList(shared);
-            Console.Write($"\nFetch which profile [1-{shared.Count}, Enter to cancel]: ");
-            var pick = Console.ReadLine()?.Trim();
+            var pick = ReadLinePrompt($"\nFetch which profile [1-{shared.Count}, Enter to cancel]: ");
             if (string.IsNullOrEmpty(pick)) return;
             if (!int.TryParse(pick, out var idx) || idx < 1 || idx > shared.Count)
             {
@@ -674,8 +755,7 @@ namespace ibsCompiler
             if (existing != null)
             {
                 PrintWarning($"You already have a profile called '{existing}'.");
-                Console.Write($"  Fetch into a different name instead [Enter to merge into {existing}]: ");
-                var alt = (Console.ReadLine() ?? "").Trim().ToUpperInvariant();
+                var alt = (ReadLinePrompt($"  Fetch into a different name instead [Enter to merge into {existing}]: ") ?? "").ToUpperInvariant();
                 if (alt.Length > 0)
                 {
                     var err = ValidateNewProfileName(alt);
@@ -686,7 +766,7 @@ namespace ibsCompiler
             }
 
             var args = new List<string>();
-            var accepted = ResolveAcceptedFields(chosen, existing, args, out var acceptError);
+            var accepted = ResolveAcceptedFields(chosen, existing, args, out var acceptError, interactive: true);
             if (acceptError != null) { PrintError(acceptError); return; }
             if (accepted == null) { Console.WriteLine("Cancelled."); return; }
 
@@ -698,8 +778,7 @@ namespace ibsCompiler
             var names = ListProfiles();
             if (names.Count == 0) return;
 
-            Console.Write($"\nShare which profile [1-{names.Count}, Enter to cancel]: ");
-            var pick = Console.ReadLine()?.Trim();
+            var pick = ReadLinePrompt($"\nShare which profile [1-{names.Count}, Enter to cancel]: ");
             if (string.IsNullOrEmpty(pick)) return;
             if (!int.TryParse(pick, out var idx) || idx < 1 || idx > names.Count)
             {
@@ -714,11 +793,9 @@ namespace ibsCompiler
             PrintDim("  These fields will be published:");
             foreach (var f in SharedProfileMap.Fields)
                 PrintDim($"    {f.Label,-12}{Ellipsize(f.FromLocal(profile), 40)}");
-            PrintDim("  Password and SQL source will NOT be published.");
             Console.WriteLine();
 
-            Console.Write("  Note (optional, e.g. 'lab box, rebuilt nightly'): ");
-            var note = (Console.ReadLine() ?? "").Trim();
+            var note = ReadLinePrompt("  Note (optional, e.g. 'lab box, rebuilt nightly'): ") ?? "";
 
             if (!ConfirmYesNo($"  Publish '{name}' to the shared store?", defaultYes: true))
             {
@@ -729,6 +806,16 @@ namespace ibsCompiler
             PublishProfile(name, profile, note);
         }
 
+        private static void SharedOwnerInteractive()
+        {
+            Console.WriteLine();
+            PrintDim($"  Currently publishing as: {Store.ResolveOwner()}");
+            PrintDim("  Most people use their work email so colleagues recognize the name.");
+            var entered = ReadLinePrompt("  Publish as [Enter to cancel]: ") ?? "";
+            if (entered.Length == 0) return;
+            SharedOwnerHeadless(entered);
+        }
+
         private static void WithdrawInteractive()
         {
             if (!EnsureStore(refresh: false)) return;
@@ -736,8 +823,7 @@ namespace ibsCompiler
             if (shared.Count == 0) { PrintWarning("Nothing has been shared yet."); return; }
 
             PrintSharedList(shared);
-            Console.Write($"\nWithdraw which profile [1-{shared.Count}, Enter to cancel]: ");
-            var pick = Console.ReadLine()?.Trim();
+            var pick = ReadLinePrompt($"\nWithdraw which profile [1-{shared.Count}, Enter to cancel]: ");
             if (string.IsNullOrEmpty(pick)) return;
             if (!int.TryParse(pick, out var idx) || idx < 1 || idx > shared.Count)
             {

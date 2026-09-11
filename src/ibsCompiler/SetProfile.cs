@@ -32,7 +32,7 @@ namespace ibsCompiler
             var argList = args.ToList();
             if (CliArgs.AnyPresent(argList,
                     "--create", "--edit", "--view", "--copy", "--delete", "--test",
-                    "--share", "--unshare", "--shared", "--fetch"))
+                    "--share", "--unshare", "--shared", "--fetch", "--shared-owner"))
             {
                 return RunHeadless(argList);
             }
@@ -282,6 +282,9 @@ namespace ibsCompiler
                 {
                     Console.Write("\nChoose [1-5]: ");
                     input = Console.ReadLine()?.Trim();
+                    // End of piped input: leave, rather than re-printing the menu and
+                    // "Invalid selection." forever against a stdin that is finished.
+                    if (input == null) return;
                 }
                 else
                 {
@@ -2186,6 +2189,7 @@ namespace ibsCompiler
             var unshareName = CliArgs.GetOption(args, "--unshare");
             var fetchName   = CliArgs.GetOption(args, "--fetch");
             var listShared  = CliArgs.HasFlag(args, "--shared");
+            var sharedOwner = CliArgs.GetOption(args, "--shared-owner");
 
             int primary = 0;
             if (createName != null) primary++;
@@ -2198,14 +2202,15 @@ namespace ibsCompiler
             if (unshareName != null) primary++;
             if (fetchName != null)   primary++;
             if (listShared)          primary++;
+            if (sharedOwner != null) primary++;
             if (primary > 1)
             {
-                Console.Error.WriteLine("ERROR: --create, --edit, --view, --copy, --delete, --test, --share, --unshare, --shared, --fetch are mutually exclusive.");
+                Console.Error.WriteLine("ERROR: --create, --edit, --view, --copy, --delete, --test, --share, --unshare, --shared, --fetch, --shared-owner are mutually exclusive.");
                 return 1;
             }
             if (primary == 0)
             {
-                Console.Error.WriteLine("ERROR: headless mode requires one of --create, --edit, --view, --copy, --delete, --test, --share, --unshare, --shared, --fetch.");
+                Console.Error.WriteLine("ERROR: headless mode requires one of --create, --edit, --view, --copy, --delete, --test, --share, --unshare, --shared, --fetch, --shared-owner.");
                 return 1;
             }
 
@@ -2219,6 +2224,7 @@ namespace ibsCompiler
             if (unshareName != null) return UnshareHeadless(unshareName, args);
             if (fetchName != null)   return FetchHeadless(fetchName, args);
             if (listShared)          return SharedListHeadless(args);
+            if (sharedOwner != null) return SharedOwnerHeadless(sharedOwner);
             return 1;
         }
 

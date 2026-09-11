@@ -292,12 +292,20 @@ namespace ibsCompiler.Configuration
         private string? _owner;
 
         /// <summary>
-        /// Who to record as OWNER. The GitHub login is the honest answer, so gh is asked
-        /// first when it is installed; otherwise fall back to the git identity, then the
-        /// OS user, so a publish never fails just because gh is missing.
+        /// What the developer chose to be credited as, from settings.json. Set by the
+        /// command layer, which is the side that reads settings.
+        /// </summary>
+        public string OwnerOverride { get; set; } = "";
+
+        /// <summary>
+        /// Who to record as OWNER. An explicit choice wins; otherwise the GitHub login,
+        /// since that is the account the store is gated on. Falls back to the git
+        /// identity and then the OS user, so a publish never fails just because gh is
+        /// missing.
         /// </summary>
         public string ResolveOwner()
         {
+            if (!string.IsNullOrWhiteSpace(OwnerOverride)) return OwnerOverride.Trim();
             if (_owner != null) return _owner;
 
             var login = GhLogin();
