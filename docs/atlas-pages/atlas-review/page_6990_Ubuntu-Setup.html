@@ -1,0 +1,42 @@
+<h1>Ubuntu Setup</h1>
+
+<h2>Prerequisites</h2>
+
+<ul>
+<li>Ubuntu (native Linux or WSL) with your username configured</li>
+<li><code>git</code>, <code>curl</code> — verify with <code>git --version</code> / <code>curl --version</code></li>
+<li>An <a href="/help/Developer-Tools/Compilers/GettingStarted">Innovative-authorized GitHub account</a></li>
+<li>A working copy of the SBN_IR SVN tree — follow <a href="/help/Developer-Tools/Source-Code">Source Code</a> first</li>
+</ul>
+
+<h2>Step 1 — Install the compilers</h2>
+
+<pre><code>curl -fsSL https://raw.githubusercontent.com/innovative247/compilers/main/install.sh | bash
+</code></pre>
+
+<p>The installer downloads the latest release into <code>~/ibs-compilers</code> and adds the directory to your PATH via <code>~/.bashrc</code>.</p>
+
+<p><em>📷 Screenshot placeholder — install.sh final output</em></p>
+
+<h2>Step 2 — Configure</h2>
+
+<p>Open a new shell so the new PATH entry loads, then:</p>
+<pre><code>set_profile configure   # Verifies the install, adds compilers to PATH
+set_profile             # Wizard — add a database connection profile
+runsql version          # Smoke test
+</code></pre>
+
+<p>Use any profile name (e.g. <code>SBNA</code>). Point <code>SQL_SOURCE</code> at the SVN working copy you set up via <a href="/help/Developer-Tools/Source-Code">Source Code</a> (typically <code>~/ir_local</code>).</p>
+
+<p><em>📷 Screenshot placeholder — set_profile wizard with first profile being added</em></p>
+
+<h2>Updating later</h2>
+
+<p>See <a href="/help/Developer-Tools/Compilers/GettingStarted">Getting Started → Updating</a>.</p>
+
+<h2>Notes</h2>
+
+<ul>
+<li><strong>Permission denied after self-update</strong>: <code>chmod +x ~/ibs-compilers/*</code></li>
+<li><strong>Bash hash cache</strong>: <code>hash -r</code> after PATH changes.</li>
+</ul>

@@ -1,0 +1,156 @@
+<h1>Getting Started with the Compilers</h1>
+
+<p>Compilers are cross-platform command-line tools for compiling SQL, managing database configurations, and running upgrades against Innovative's SBN environments. Self-contained binaries run on Windows, Linux, and macOS, with a built-in self-updater. This page covers everything from access through install, configure, every command, updating, and troubleshooting.</p>
+
+<p><em>📷 Screenshot placeholder — terminal output of <code>runsql version</code></em></p>
+
+<h2>Repository Access</h2>
+
+<p>The compilers live in the private GitHub repository <a href="https://github.com/innovative247/compilers">innovative247/compilers</a>. <strong>You must have authorization from Innovative before you can access it</strong> — without explicit access on your GitHub account, every install URL and the auto-update endpoint return 404.</p>
+
+<p>To request access:</p>
+<ol>
+<li>Make sure you have a personal GitHub account (<a href="https://github.com/signup">github.com/signup</a> if not).</li>
+<li>Contact your Innovative point of contact with your GitHub username and a short note about why you need access.</li>
+<li>Innovative will add you as a collaborator. Accept the invitation email within 7 days.</li>
+<li>Verify by visiting <a href="https://github.com/innovative247/compilers">https://github.com/innovative247/compilers</a> while signed in.</li>
+</ol>
+
+<p>You will also need a working copy of the SBN_IR SVN tree — see <a href="/help/Developer-Tools/Source-Code"><strong>Source Code (SBN_IR)</strong></a>.</p>
+
+<h2>Installation</h2>
+
+<p>Pick the platform-specific guide:</p>
+<ul>
+<li><a href="/help/Developer-Tools/Compilers/Windows-Setup">Windows Setup</a></li>
+<li><a href="/help/Developer-Tools/Compilers/Ubuntu-Setup">Ubuntu Setup</a></li>
+</ul>
+
+<p><em>📷 Screenshot placeholder — successful install one-liner output (last few lines)</em></p>
+
+<h2>Configuration</h2>
+
+<p>After install, run:</p>
+<pre><code>set_profile configure   # Adds compilers to PATH; verifies the install
+set_profile             # Interactive wizard — adds a database connection profile
+runsql version          # Smoke test
+</code></pre>
+
+<p><em>📷 Screenshot placeholder — <code>set_profile</code> wizard prompts</em></p>
+
+<h3>settings.json</h3>
+
+<p>Profiles are stored in <code>settings.json</code> next to the binaries:</p>
+
+<pre><code>{
+  "Profiles": {
+    "SBNA": {
+      "ALIASES": ["A"],
+      "COMPANY": 999,
+      "DEFAULT_LANGUAGE": 1,
+      "PLATFORM": "SYBASE",
+      "HOST": "10.10.10.10",
+      "PORT": 5000,
+      "USERNAME": "user",
+      "PASSWORD": "your_password",
+      "SQL_SOURCE": "/path/to/your/ir_local"
+    }
+  }
+}
+</code></pre>
+
+<p><code>SQL_SOURCE</code> must point at the SVN working copy from <a href="/help/Developer-Tools/Source-Code">Source Code</a>. Use <code>set_profile</code> to manage profiles instead of editing the file directly when possible.</p>
+
+<h2>Commands</h2>
+
+<table>
+<thead><tr><th>Command</th><th>Aliases</th><th>What it does</th></tr></thead>
+<tbody>
+<tr><td><code>set_profile</code></td><td></td><td>Interactive profile configuration wizard</td></tr>
+<tr><td><code>isqlline</code></td><td></td><td>Execute a single SQL command</td></tr>
+<tr><td><code>runsql</code></td><td></td><td>Execute a SQL script with placeholder resolution</td></tr>
+<tr><td><code>runcreate</code></td><td></td><td>Orchestrate multi-file builds; supports <code>-bg</code></td></tr>
+<tr><td><code>i_run_upgrade</code></td><td></td><td>Apply database upgrade scripts</td></tr>
+<tr><td><code>set_options</code></td><td><code>eopt</code></td><td>Edit and compile database options</td></tr>
+<tr><td><code>set_table_locations</code></td><td><code>eloc</code></td><td>Edit and compile table locations</td></tr>
+<tr><td><code>set_actions</code></td><td><code>eact</code></td><td>Edit and compile actions</td></tr>
+<tr><td><code>set_required_fields</code></td><td></td><td>Edit and compile required-fields</td></tr>
+<tr><td><code>set_messages</code></td><td><code>compile_msg</code>, <code>extract_msg</code></td><td>Compile / extract message tables</td></tr>
+<tr><td><code>transfer_data</code></td><td></td><td>Bulk data transfer (interactive only)</td></tr>
+<tr><td><code>bcp_data</code></td><td></td><td>Bulk copy in/out for individual tables</td></tr>
+<tr><td><code>iplan</code> / <code>iplanext</code></td><td></td><td>Query plan viewers</td></tr>
+<tr><td><code>iwho</code></td><td></td><td>Show connected users (sp_who)</td></tr>
+<tr><td><code>iwatch</code></td><td></td><td>Tail a log file live</td></tr>
+</tbody>
+</table>
+
+<h3>Common subcommands</h3>
+
+<p>Every command supports:</p>
+<ul>
+<li><code>version</code> — print version</li>
+<li><code>configure</code> — verify install, add to PATH</li>
+<li><code>update</code> / <code>install</code> — self-update from GitHub Releases</li>
+<li><code>help</code> — show usage</li>
+</ul>
+
+<h3>Background builds with live tail</h3>
+
+<pre><code>runcreate create_all SBNA my_run.log -bg   # launches in background
+iwatch my_run.log.out                      # follows the log live
+</code></pre>
+
+<p><code>runcreate</code> writes both <code>.out</code> (everything) and <code>.err</code> (failures only) when given a log file. <code>iwatch</code> waits up to 5 seconds for the file to appear, then tails until the process exits.</p>
+
+<h2>Updating</h2>
+
+<p>The compilers self-update from GitHub Releases. Run <code>update</code> (or <code>install</code>) from any binary — the dispatcher accepts the verb with any prefix:</p>
+<pre><code>runsql update           runsql -update          runsql --update
+isqlline install        set_profile -install    runcreate /update
+</code></pre>
+
+<p>The mechanism queries the latest GitHub release, compares the tag against the binary's compiled-in version, and (if newer) downloads and extracts the platform-matching asset. Your <code>settings.json</code> is never overwritten.</p>
+
+<p>A daily background check also runs on first invocation each day. If a newer release exists, you'll be prompted interactively.</p>
+
+<h2>MSSQL Initialization Script</h2>
+
+<p>For Microsoft SQL Server, the compilers honor the <code>SQLCMDINI</code> environment variable. If it points to a SQL file, that file runs at the start of every connection — useful for setting session options that match Sybase behavior.</p>
+
+<p>Example <code>mssql_setup.sql</code>:</p>
+<pre><code>SET ARITHABORT               ON
+SET ANSI_NULL_DFLT_ON        OFF
+SET ANSI_NULL_DFLT_OFF       OFF
+SET CONCAT_NULL_YIELDS_NULL  OFF
+SET ANSI_WARNINGS            ON
+SET QUOTED_IDENTIFIER        OFF
+</code></pre>
+
+<p>Set the variable on Windows:</p>
+<pre><code>[Environment]::SetEnvironmentVariable("SQLCMDINI", "C:\path\to\mssql_setup.sql", "User")
+</code></pre>
+
+<p>On Ubuntu:</p>
+<pre><code>echo 'export SQLCMDINI="$HOME/mssql_setup.sql"' &gt;&gt; ~/.bashrc
+</code></pre>
+
+<h2>Troubleshooting</h2>
+
+<table>
+<thead><tr><th>Symptom</th><th>Fix</th></tr></thead>
+<tbody>
+<tr><td><code>Profile 'XYZ' not found</code></td><td>Run <code>set_profile --view XYZ</code>. Use <code>set_profile</code> to create.</td></tr>
+<tr><td><code>Company Option File Missing! .../css/setup/options.NNN</code></td><td>Profile's <code>SQL_SOURCE</code> doesn't have populated <code>css/setup/</code>, or <code>COMPANY</code> doesn't match an existing options file.</td></tr>
+<tr><td>Self-update succeeds but version unchanged</td><td>Multiple installs on PATH. Run <code>which runsql</code> (Linux/macOS) or <code>where runsql</code> (Windows).</td></tr>
+<tr><td>macOS: <code>cannot be opened — developer cannot be verified</code></td><td><code>xattr -d com.apple.quarantine *</code> in the install dir.</td></tr>
+<tr><td>Linux: permission denied after self-update</td><td><code>chmod +x ~/ibs-compilers/*</code></td></tr>
+<tr><td>Bash hash cache holding an old path</td><td><code>hash -r</code></td></tr>
+</tbody>
+</table>
+
+<h2>Related</h2>
+<ul>
+<li><a href="/help/Developer-Tools/Source-Code">Source Code (SBN_IR)</a> — the SVN tree the compilers consume.</li>
+<li><a href="/help/Developer-Tools/Compilers/Windows-Setup">Windows Setup</a> — install + configure on Windows.</li>
+<li><a href="/help/Developer-Tools/Compilers/Ubuntu-Setup">Ubuntu Setup</a> — install + configure on Ubuntu (native or WSL).</li>
+</ul>
