@@ -1,0 +1,7 @@
+# WSL case-sensitivity test — references files via LOWERCASE css/ss/ba/
+# while actual sandbox dirs are CSS/ss/ba/. Should fail on ext4 (case-sensitive)
+# and succeed on Windows DrvFs (case-insensitive). Goal: confirm the issue
+# and validate any FindFile fix.
+runsql $1 $ir>css>ss>ba>pro_ba_gen_chg_log_dummy   sbnpro
+runsql $1 $ir>css>ss>ba>u_get_user_info_dummy      sbnpro
+runsql $1 $ir>css>ss>ba>u_raiserror                sbnpro

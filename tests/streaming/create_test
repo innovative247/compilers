@@ -1,0 +1,6 @@
+# runcreate test bundle — recompiles three harmless "dummy" procs into &dbpro&
+# on GONZO. These exact files are already in CSS/ss/ba/create_all, so this is
+# the same operation that production runcreate runs as part of create_all.
+runsql $1 $ir>css>ss>ba>pro_ba_gen_chg_log_dummy   &dbpro& &sv&
+runsql $1 $ir>css>ss>ba>u_get_user_info_dummy      &dbpro& &sv&
+runsql $1 $ir>css>ss>ba>u_raiserror                &dbpro& &sv&
