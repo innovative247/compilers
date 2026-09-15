@@ -1,0 +1,72 @@
+<h1>Source Code (SBN_IR)</h1>
+
+<p>The SBN_IR repository is the SVN tree that holds every piece of SQL, JAM source, options, table-locations, actions, and message data the Innovative compilers operate on. The Compilers expect a working copy of this repo on disk and reference it as <code>$ir</code>.</p>
+
+<p><em>📷 Screenshot placeholder — top-level folder listing of a fresh checkout (css, ibs, ios, etc.)</em></p>
+
+<h2>Repository Access</h2>
+
+<p>The SVN repository lives on Innovative's private network and is <strong>not publicly reachable</strong>. To get the URL:</p>
+<ol>
+<li>Contact your Innovative point of contact (account manager, Innovative SR, or onboarding engineer).</li>
+<li>Request the SBN_IR SVN URL.</li>
+<li>You will be provided a URL of the form <code>http://&lt;host&gt;/work2/svn/repos/SBN_IR/trunk</code>.</li>
+</ol>
+<p>Substitute the URL for <code>&lt;url&gt;</code> in the commands below.</p>
+
+<h2>Initial Checkout</h2>
+
+<h3>Windows</h3>
+<p>Prerequisites: a Subversion command-line client (e.g. <a href="https://sliksvn.com">SlikSVN</a>) on your PATH.</p>
+<pre><code>mkdir $HOME\ir_local
+cd $HOME\ir_local
+svn checkout &lt;url&gt; .
+</code></pre>
+
+<h3>Ubuntu (native or WSL)</h3>
+<p>Prerequisites: <code>subversion</code> installed (<code>sudo apt install subversion</code> if not).</p>
+<pre><code>mkdir -p ~/ir_local
+cd ~/ir_local
+svn checkout &lt;url&gt; .
+</code></pre>
+
+<p><em>📷 Screenshot placeholder — terminal output of a successful <code>svn checkout</code> (last few lines)</em></p>
+
+<h2>Set the <code>$ir</code> Environment Variable</h2>
+
+<p>The compilers reference your working copy as <code>$ir</code>. Setting it once means every <code>$ir/...</code> path in scripts and documentation just works.</p>
+
+<h3>Windows (PowerShell)</h3>
+<pre><code>[Environment]::SetEnvironmentVariable("ir", "$HOME\ir_local", "User")
+</code></pre>
+<p>Restart your terminal for the change to take effect.</p>
+
+<h3>Ubuntu</h3>
+<pre><code>echo 'export ir="$HOME/ir_local"' &gt;&gt; ~/.bashrc
+source ~/.bashrc
+</code></pre>
+
+<h2>Updating</h2>
+
+<p>To pull the latest changes from the SVN server:</p>
+<pre><code>cd $ir
+svn update
+</code></pre>
+
+<p>SVN merges any upstream changes into your working copy. If you have local edits and they conflict with upstream, SVN reports the conflicted paths — resolve them per <a href="https://svnbook.red-bean.com/">the standard SVN conflict workflow</a>, then re-run <code>svn update</code>.</p>
+
+<h2>What's in the Repo</h2>
+
+<p>Top-level folders (from a fresh checkout):</p>
+<ul>
+<li><code>css/</code> — SQL source organized by application module (<code>ss/ba/</code>, <code>ss/bl/</code>, etc.) plus <code>setup/</code> for options, table-locations, actions, messages.</li>
+<li><code>ibs/</code> — IBS application-layer SQL and configuration.</li>
+<li><code>ios/</code> — IBS Unix toolchain (Command Library, Terminal Definitions, etc.).</li>
+<li><code>create_links.sh</code> — legacy script that creates lowercase symlinks on Unix systems. Modern checkouts already use lowercase folder names; this script is a historical artifact.</li>
+</ul>
+
+<h2>Used By</h2>
+
+<p>The Compilers (<a href="/help/Developer-Tools/Compilers/GettingStarted">Compilers → Getting Started</a>) read this working copy via the <code>SQL_SOURCE</code> field in each profile in <code>settings.json</code>. Set <code>SQL_SOURCE</code> to the same path you assigned to <code>$ir</code> above.</p>
+
+<p>For installing and configuring the compilers themselves, see <a href="/help/Developer-Tools/Compilers/GettingStarted">Compilers → Getting Started</a>.</p>
