@@ -60,9 +60,9 @@ namespace ibsCompiler.Configuration
         /// </summary>
         public static readonly string AccessRequirements = string.Join(Environment.NewLine, new[]
         {
-            "Profile sharing requires access to the private GitHub repo innovative247/compiler-profiles.",
-            "  1. A GitHub account with access to " + RepoPage,
-            "     (a repo admin grants it under Settings > Collaborators and teams).",
+            "Profile sharing requires access to the private GitHub repo " + RepoPage,
+            "  1. A GitHub account with access to that repo",
+            "     (a repo admin grants it at " + RepoPage + "/settings/access).",
             "  2. git installed and signed in to GitHub over HTTPS (Git Credential Manager, or 'gh auth login').",
             "  3. A git identity on this machine:",
             "       git config --global user.email \"you@innovative247.com\"",
