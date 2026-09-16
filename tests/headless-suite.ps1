@@ -2453,8 +2453,11 @@ function Test-SharedProfiles {
                 $r = Invoke-Cli -Exe set_profile -Args $call
                 if ($r.ExitCode -eq 0) { throw "set_profile $($call -join ' ') must be denied without a git identity" }
                 $combined = "$($r.StdOut)`n$($r.StdErr)"
-                if ($combined -notmatch 'need a git identity') {
+                if ($combined -notmatch 'no git identity') {
                     throw "expected the identity message for '$($call -join ' ')'. output: $combined"
+                }
+                if ($combined -notmatch 'innovative247/compiler-profiles') {
+                    throw "the denial must name the repo access is needed for. output: $combined"
                 }
                 if ($combined -notmatch 'git config --global user\.email') {
                     throw "the denial must say how to fix it. output: $combined"

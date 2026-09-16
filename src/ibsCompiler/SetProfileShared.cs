@@ -686,11 +686,16 @@ namespace ibsCompiler
                 Console.WriteLine();
                 PrintDim("  Connection details other developers have published.");
                 Console.WriteLine();
-                if (Store.TryResolveOwner(out var menuOwner, out _))
+                if (Store.TryResolveOwner(out var menuOwner, out var menuDenied))
                 {
                     PrintDim($"  You publish as: {menuOwner}");
-                    Console.WriteLine();
                 }
+                else
+                {
+                    // Guide before the first click, not after it fails.
+                    PrintWarning(menuDenied);
+                }
+                Console.WriteLine();
                 PrintMenu(1, "List shared profiles");
                 PrintMenu(2, "Refresh from the shared store");
                 PrintMenu(3, "Fetch a shared profile");

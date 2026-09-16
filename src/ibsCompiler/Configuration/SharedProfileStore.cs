@@ -51,6 +51,26 @@ namespace ibsCompiler.Configuration
     public class GitSharedProfileStore : ISharedProfileStore
     {
         public const string RepoUrl = "https://github.com/innovative247/compiler-profiles.git";
+        public const string RepoPage = "https://github.com/innovative247/compiler-profiles";
+
+        /// <summary>
+        /// What profile sharing needs, in the order a developer sets it up. Every
+        /// denial leads with this so the reader learns the whole contract once, then
+        /// the one line naming which step this machine is missing.
+        /// </summary>
+        public static readonly string AccessRequirements = string.Join(Environment.NewLine, new[]
+        {
+            "Profile sharing requires access to the private GitHub repo innovative247/compiler-profiles.",
+            "  1. A GitHub account with access to " + RepoPage,
+            "     (a repo admin grants it under Settings > Collaborators and teams).",
+            "  2. git installed and signed in to GitHub over HTTPS (Git Credential Manager, or 'gh auth login').",
+            "  3. A git identity on this machine:",
+            "       git config --global user.email \"you@innovative247.com\"",
+            "       git config --global user.name  \"Your Name\"",
+        });
+
+        private static string Denied(string missing) =>
+            AccessRequirements + Environment.NewLine + "Missing here: " + missing;
         private const string Branch = "main";
         private const string ProfilesDir = "profiles";
         private const int GitTimeoutSeconds = 90;
@@ -133,6 +153,22 @@ namespace ibsCompiler.Configuration
             return "";
         }
 
+        /// <summary>
+        /// The line that says why git failed. git prints progress ("Cloning into ...")
+        /// on stderr before the failure, so the first line is usually not the reason;
+        /// prefer fatal:/error:, then remote:, then the last thing it said.
+        /// </summary>
+        private static string ErrorLine(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return "";
+            var lines = text.Split('\n').Select(l => l.Trim()).Where(l => l.Length > 0).ToList();
+            return lines.FirstOrDefault(l => l.StartsWith("fatal:", StringComparison.OrdinalIgnoreCase) ||
+                                             l.StartsWith("error:", StringComparison.OrdinalIgnoreCase))
+                ?? lines.FirstOrDefault(l => l.StartsWith("remote:", StringComparison.OrdinalIgnoreCase))
+                ?? lines.LastOrDefault()
+                ?? "";
+        }
+
         private static bool GitAvailable()
         {
             var (code, _, _) = Git(null, "--version");
@@ -148,7 +184,7 @@ namespace ibsCompiler.Configuration
 
             if (!GitAvailable())
             {
-                error = "git is not installed or not on PATH - shared profiles are unavailable.";
+                error = Denied("git is not installed or not on PATH (step 2).");
                 return false;
             }
 
@@ -159,10 +195,36 @@ namespace ibsCompiler.Configuration
             {
                 // Leave nothing half-cloned behind, or the next run thinks it has a cache.
                 try { if (Directory.Exists(_cacheDir)) Directory.Delete(_cacheDir, recursive: true); } catch { }
-                error = $"could not reach the shared profile store: {FirstLine(err)}";
+                error = DescribeCloneFailure(ErrorLine(err));
                 return false;
             }
             return true;
+        }
+
+        /// <summary>
+        /// Turn git's clone stderr into the step the developer is missing. GitHub answers
+        /// "not found" for a private repo the caller cannot see, so that line means
+        /// "no access", not "wrong URL".
+        /// </summary>
+        private static string DescribeCloneFailure(string line)
+        {
+            if (line.Contains("could not read Username", StringComparison.OrdinalIgnoreCase) ||
+                line.Contains("terminal prompts disabled", StringComparison.OrdinalIgnoreCase) ||
+                line.Contains("Authentication failed", StringComparison.OrdinalIgnoreCase))
+                return Denied("git is not signed in to GitHub on this machine (step 2).");
+
+            if (line.Contains("not found", StringComparison.OrdinalIgnoreCase) ||
+                line.Contains("403", StringComparison.Ordinal) ||
+                line.Contains("Permission", StringComparison.OrdinalIgnoreCase))
+                return Denied("GitHub refused access - the signed-in account is not a collaborator on the repo, " +
+                              "or git is signed in as a different account (step 1).");
+
+            if (line.Contains("Could not resolve host", StringComparison.OrdinalIgnoreCase) ||
+                line.Contains("unable to access", StringComparison.OrdinalIgnoreCase) ||
+                line.Contains("timed out", StringComparison.OrdinalIgnoreCase))
+                return $"could not reach GitHub from this machine: {line}";
+
+            return Denied($"could not clone the shared store: {line}");
         }
 
         public bool TryRefresh(out string error)
@@ -277,7 +339,13 @@ namespace ibsCompiler.Configuration
             if (pcode != 0)
             {
                 ResetCache();
-                error = $"push rejected - your GitHub account may not have write access to the shared store: {FirstLine(perr)}";
+                var line = ErrorLine(perr);
+                error = line.Contains("403", StringComparison.Ordinal) ||
+                        line.Contains("Permission", StringComparison.OrdinalIgnoreCase) ||
+                        line.Contains("denied", StringComparison.OrdinalIgnoreCase)
+                    ? "push rejected - your GitHub account can read the shared store but not write to it. " +
+                      $"A repo admin grants write access at {RepoPage}/settings/access: {line}"
+                    : $"push rejected: {line}";
                 return false;
             }
 
@@ -316,11 +384,7 @@ namespace ibsCompiler.Configuration
             }
 
             owner = "";
-            error = "shared profiles need a git identity, and this machine has none configured." +
-                    Environment.NewLine +
-                    "  Set one:  git config --global user.email \"you@innovative247.com\"" +
-                    Environment.NewLine +
-                    "            git config --global user.name \"Your Name\"";
+            error = Denied("no git identity is configured on this machine (step 3).");
             return false;
         }
 
