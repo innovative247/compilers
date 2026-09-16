@@ -48,6 +48,31 @@ namespace ibsCompiler
         }
 
         /// <summary>
+        /// Whether this console can render non-ASCII glyphs (box characters, arrows,
+        /// status symbols). Answered once per process: the encoding and the host
+        /// environment variables it is derived from do not change under a running
+        /// console, and every widget that asks needs the same answer.
+        /// </summary>
+        internal static bool SupportsUnicode => _supportsUnicode ??= CheckUnicode();
+        private static bool? _supportsUnicode;
+
+        private static bool CheckUnicode()
+        {
+            try
+            {
+                var enc = Console.OutputEncoding;
+                if (enc.CodePage == 65001) return true;
+                if (enc.EncodingName.Contains("Unicode", StringComparison.OrdinalIgnoreCase)) return true;
+                if (enc.EncodingName.Contains("UTF", StringComparison.OrdinalIgnoreCase)) return true;
+                if (Environment.GetEnvironmentVariable("WT_SESSION") != null) return true;
+                if (Environment.GetEnvironmentVariable("TERM_PROGRAM") == "vscode") return true;
+                if (Environment.GetEnvironmentVariable("MSYSTEM") != null) return true;
+                return false;
+            }
+            catch { return false; }
+        }
+
+        /// <summary>
         /// Resize-safe replacement for <c>Console.SetCursorPosition</c>. Every full-screen
         /// widget caches absolute row numbers at scaffold time; shrinking the window makes
         /// those rows fall outside the (now smaller) buffer, and the raw call throws an

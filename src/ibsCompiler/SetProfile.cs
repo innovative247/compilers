@@ -73,32 +73,14 @@ namespace ibsCompiler
         #region Icons
         private static class Icons
         {
-            private static readonly bool _unicode = CheckUnicode();
-
-            public static string GEAR     => _unicode ? "⚙"  : "[*]";
-            public static string DATABASE => _unicode ? "🗄"  : "[DB]";
-            public static string ARROW    => _unicode ? "🛢"  : "->";
-            public static string BULLET   => _unicode ? "🔑" : "*";
-            public static string FOLDER   => _unicode ? "📁" : "[D]";
-            public static string WARNING  => _unicode ? "⚠"  : "[!]";
-            public static string SUCCESS  => _unicode ? "✓"  : "[OK]";
-            public static string ERROR    => _unicode ? "✗"  : "[X]";
-
-            private static bool CheckUnicode()
-            {
-                try
-                {
-                    var enc = Console.OutputEncoding;
-                    if (enc.CodePage == 65001) return true;
-                    if (enc.EncodingName.Contains("Unicode", StringComparison.OrdinalIgnoreCase)) return true;
-                    if (enc.EncodingName.Contains("UTF", StringComparison.OrdinalIgnoreCase)) return true;
-                    if (Environment.GetEnvironmentVariable("WT_SESSION") != null) return true;
-                    if (Environment.GetEnvironmentVariable("TERM_PROGRAM") == "vscode") return true;
-                    if (Environment.GetEnvironmentVariable("MSYSTEM") != null) return true;
-                    return false;
-                }
-                catch { return false; }
-            }
+            public static string GEAR     => ConsoleMenu.SupportsUnicode ? "⚙"  : "[*]";
+            public static string DATABASE => ConsoleMenu.SupportsUnicode ? "🗄"  : "[DB]";
+            public static string ARROW    => ConsoleMenu.SupportsUnicode ? "🛢"  : "->";
+            public static string BULLET   => ConsoleMenu.SupportsUnicode ? "🔑" : "*";
+            public static string FOLDER   => ConsoleMenu.SupportsUnicode ? "📁" : "[D]";
+            public static string WARNING  => ConsoleMenu.SupportsUnicode ? "⚠"  : "[!]";
+            public static string SUCCESS  => ConsoleMenu.SupportsUnicode ? "✓"  : "[OK]";
+            public static string ERROR    => ConsoleMenu.SupportsUnicode ? "✗"  : "[X]";
         }
         #endregion
 
@@ -325,11 +307,7 @@ namespace ibsCompiler
             var names = _settings.Profiles.Keys.ToList();
             if (names.Count == 0)
             {
-                PrintWarning("No profiles configured yet.");
-                Console.WriteLine();
-                Console.Write("  Run ");
-                WriteBright("set_profile");
-                Console.WriteLine(" and select option 1 to create your first profile.");
+                WarnNoProfiles();
                 return names;
             }
 
@@ -369,6 +347,20 @@ namespace ibsCompiler
             }
 
             return names;
+        }
+
+        /// <summary>
+        /// The empty-list message. Says what is missing AND what to do about it — every
+        /// entry point that needs a profile before it can act shares this wording, so a
+        /// developer with no profiles never gets a bare warning and no way forward.
+        /// </summary>
+        private static void WarnNoProfiles()
+        {
+            PrintWarning("No profiles configured yet.");
+            Console.WriteLine();
+            Console.Write("  Run ");
+            WriteBright("set_profile");
+            Console.WriteLine(" and select option 1 to create your first profile.");
         }
 
         private static void PrintListField(string label, string? value, ConsoleColor valueColor = ConsoleColor.Gray)
@@ -708,7 +700,7 @@ namespace ibsCompiler
         {
             if (_settings.Profiles.Count == 0)
             {
-                PrintWarning("No profiles configured yet.");
+                WarnNoProfiles();
                 return;
             }
 
@@ -736,36 +728,80 @@ namespace ibsCompiler
                 return;
             }
 
-            while (true)
+            // Full-screen picker: arrow keys to move, Right to open a profile's details
+            // in place, typing to filter. The old numbered list + 'Select:' prompt could
+            // only be driven by reading a number off a screen that scrolled away.
+            var names = _settings.Profiles.Keys.ToList();
+            if (names.Count == 0) return;
+
+            var picked = ProfilePicker.Pick("Configured Profiles", BuildLocalPickerItems(names),
+                PickerMode.Single, "Open", out var tooSmall);
+            if (tooSmall)
             {
-                var names = ListProfiles();
-                if (names.Count == 0) return;
-
-                // Deferred 'Select:' entry — accepts a list number OR a profile name
-                // (alphanumerics/underscore); Enter on an empty buffer or Esc cancels.
-                // This path is TTY-only (redirected consoles use the sequential submenu).
-                Console.WriteLine();
-                // No safe "current" profile to default to — force explicit entry.
-                var sel = ConsoleMenu.ReadDeferredChoice(allowText: true, label: "Select");
-                if (string.IsNullOrEmpty(sel)) return;
-
-                (string Name, ProfileData Profile)? pick = null;
-                if (int.TryParse(sel, out var pidx) && pidx >= 1 && pidx <= names.Count)
-                    pick = FindProfile(names[pidx - 1]);
-                if (pick == null)
-                    pick = FindProfile(sel.ToUpperInvariant());
-                if (pick == null)
-                {
-                    PrintError($"Profile '{sel}' not found.");
-                    Console.WriteLine();
-                    continue;
-                }
-
-                // Editor is the hub; on return (Back/Save/Copy/Delete) unwind to the main
-                // menu — the list was just a picker, not a hub to come back to.
-                EditProfile(pick.Value.Name, pick.Value.Profile);
+                // Window cannot hold the picker — the numbered submenu still works.
+                ExistingProfileMenuSequential();
                 return;
             }
+            if (picked == null || picked.Count == 0) return;
+
+            var pick = FindProfile(names[picked[0]]);
+            if (pick == null) return;
+
+            // Editor is the hub; on return (Back/Save/Copy/Delete) unwind to the main
+            // menu — the list was just a picker, not a hub to come back to.
+            EditProfile(pick.Value.Name, pick.Value.Profile);
+        }
+
+        /// <summary>
+        /// Turns local profile names into picker rows. The detail block mirrors what
+        /// <see cref="ListProfiles"/> prints, so nothing looks different once a row is
+        /// expanded; the search text additionally carries the host, port and username so
+        /// a profile can be found by the box it points at, not only by its name.
+        /// </summary>
+        private static List<PickerItem> BuildLocalPickerItems(List<string> names)
+        {
+            var items = new List<PickerItem>(names.Count);
+            foreach (var name in names)
+            {
+                var profile = _settings.Profiles[name];
+                var details = new List<(string Label, string Value, ConsoleColor Color)>();
+
+                if (!profile.RawMode && !string.IsNullOrEmpty(profile.Company))
+                    details.Add(("Company", profile.Company, ConsoleColor.Gray));
+                details.Add(("Platform", profile.Platform ?? "unknown", ConsoleColor.Cyan));
+                if (ibs_compiler_common.ParsePlatform(profile.Platform) == SQLServerTypes.POSTGRES)
+                    details.Add(("Database", string.IsNullOrEmpty(profile.Database) ? "(none)" : profile.Database, ConsoleColor.Cyan));
+                details.Add(("Server", $"{profile.Host}:{profile.Port}", ConsoleColor.Green));
+                details.Add(("Username", profile.Username ?? "unknown", ConsoleColor.Gray));
+                if (!profile.RawMode && !string.IsNullOrEmpty(profile.SqlSource))
+                    details.Add(("SQL Source", profile.SqlSource, ConsoleColor.Cyan));
+
+                var aliases = profile.Aliases ?? new List<string>();
+                // RAW_MODE is deliberately absent — it is a mode flag, not something a
+                // developer would ever type to find a profile.
+                var haystack = string.Join(" ", new[]
+                {
+                    name,
+                    string.Join(" ", aliases),
+                    profile.Company ?? "",
+                    profile.Platform ?? "",
+                    profile.Database ?? "",
+                    profile.Host ?? "",
+                    profile.Port.ToString(),
+                    $"{profile.Host}:{profile.Port}",
+                    profile.Username ?? "",
+                    profile.SqlSource ?? "",
+                }).ToLowerInvariant();
+
+                items.Add(new PickerItem
+                {
+                    Name = name,
+                    Aliases = aliases,
+                    Details = details,
+                    SearchText = haystack,
+                });
+            }
+            return items;
         }
 
         /// <summary>

@@ -729,16 +729,45 @@ namespace ibsCompiler
             var shared = Store.List();
             if (shared.Count == 0) { PrintWarning("Nothing has been shared yet."); return; }
 
-            PrintSharedList(shared);
-            var pick = ReadLinePrompt($"\nFetch which profile [1-{shared.Count}, Enter to cancel]: ");
-            if (string.IsNullOrEmpty(pick)) return;
-            if (!int.TryParse(pick, out var idx) || idx < 1 || idx > shared.Count)
+            // Redirected console (suite / piped stdin) keeps the numbered list prompt —
+            // the full-screen picker cannot run without a TTY.
+            if (Console.IsInputRedirected || Console.IsOutputRedirected)
             {
-                PrintWarning("Invalid selection.");
+                FetchInteractiveSequential(shared);
                 return;
             }
 
-            var chosen = shared[idx - 1];
+            var picked = ProfilePicker.Pick("Shared Profiles", BuildSharedPickerItems(shared),
+                PickerMode.Multi, "Fetch", out var tooSmall);
+            if (tooSmall)
+            {
+                // Window cannot hold the picker — the numbered listing still works.
+                FetchInteractiveSequential(shared);
+                return;
+            }
+            if (picked == null || picked.Count == 0) return;
+
+            foreach (var i in picked)
+            {
+                var chosen = shared[i];
+                if (picked.Count > 1)
+                {
+                    Console.WriteLine();
+                    WriteBright($"--- {chosen.Name} ---");
+                    Console.WriteLine();
+                }
+                // Per-profile: a name clash, a declined merge or a failed apply ends THAT
+                // fetch, never the batch — the developer picked the others on purpose.
+                FetchOne(chosen);
+            }
+        }
+
+        /// <summary>
+        /// Fetch exactly one shared record, prompting for everything it cannot decide:
+        /// an alternate local name when one already exists, then the per-field merge.
+        /// </summary>
+        private static void FetchOne(SharedProfile chosen)
+        {
             var target = chosen.Name;
 
             var existing = _settings.Profiles.Keys.FirstOrDefault(k => string.Equals(k, target, StringComparison.OrdinalIgnoreCase));
@@ -763,7 +792,149 @@ namespace ibsCompiler
             ApplyFetch(chosen, target, existing, accepted, args);
         }
 
+        /// <summary>
+        /// The pre-picker flow, kept verbatim for redirected consoles: print the numbered
+        /// listing, read one number, fetch that record.
+        /// </summary>
+        private static void FetchInteractiveSequential(IReadOnlyList<SharedProfile> shared)
+        {
+            PrintSharedList(shared);
+            var pick = ReadLinePrompt($"\nFetch which profile [1-{shared.Count}, Enter to cancel]: ");
+            if (string.IsNullOrEmpty(pick)) return;
+            if (!int.TryParse(pick, out var idx) || idx < 1 || idx > shared.Count)
+            {
+                PrintWarning("Invalid selection.");
+                return;
+            }
+
+            FetchOne(shared[idx - 1]);
+        }
+
+        /// <summary>
+        /// Turns shared records into picker rows. The detail block mirrors what
+        /// <see cref="PrintSharedList"/> prints, provenance line included, so expanding a
+        /// row shows the same facts the flat listing would have.
+        /// </summary>
+        private static List<PickerItem> BuildSharedPickerItems(IReadOnlyList<SharedProfile> shared)
+        {
+            var items = new List<PickerItem>(shared.Count);
+            foreach (var s in shared)
+            {
+                var owner = string.IsNullOrEmpty(s.Owner) ? "unknown" : s.Owner;
+                var details = new List<(string Label, string Value, ConsoleColor Color)>
+                {
+                    ("Platform", s.Platform ?? "", ConsoleColor.Cyan),
+                    ("Server", $"{s.Host}:{s.Port}", ConsoleColor.Green),
+                    ("Username", s.Username ?? "", ConsoleColor.Gray),
+                };
+                if (!string.IsNullOrEmpty(s.Database)) details.Add(("Database", s.Database, ConsoleColor.Gray));
+                details.Add(("Shared by", owner, ConsoleColor.Gray));
+                if (!string.IsNullOrEmpty(s.Note)) details.Add(("Note", s.Note, ConsoleColor.Gray));
+
+                var status = LocalCopyStatus(s);
+                if (status != null) details.Add(("Local copy", status, ConsoleColor.Yellow));
+
+                var aliases = s.Aliases ?? new List<string>();
+                var haystack = string.Join(" ", new[]
+                {
+                    s.Name,
+                    string.Join(" ", aliases),
+                    s.Platform ?? "",
+                    s.Host ?? "",
+                    s.Port.ToString(),
+                    $"{s.Host}:{s.Port}",
+                    s.Username ?? "",
+                    s.Database ?? "",
+                    owner,
+                    s.Note ?? "",
+                    s.Company ?? "",
+                }).ToLowerInvariant();
+
+                items.Add(new PickerItem
+                {
+                    Name = s.Name,
+                    Aliases = aliases,
+                    Details = details,
+                    SearchText = haystack,
+                });
+            }
+            return items;
+        }
+
         private static void ShareInteractive()
+        {
+            // Redirected console (suite / piped stdin) keeps the numbered list prompt.
+            if (Console.IsInputRedirected || Console.IsOutputRedirected)
+            {
+                ShareInteractiveSequential();
+                return;
+            }
+
+            var names = _settings.Profiles.Keys.ToList();
+            if (names.Count == 0) { WarnNoProfiles(); return; }
+
+            var picked = ProfilePicker.Pick("Share Profiles", BuildLocalPickerItems(names),
+                PickerMode.Multi, "Share", out var tooSmall);
+            if (tooSmall)
+            {
+                // Window cannot hold the picker — the numbered listing still works.
+                ShareInteractiveSequential();
+                return;
+            }
+            if (picked == null || picked.Count == 0) return;
+
+            // One confirmation covers a batch; a single pick keeps the per-profile
+            // question it has always asked, naming the profile.
+            if (picked.Count > 1 && !ConfirmYesNo($"  Publish {picked.Count} profiles to the shared store?", defaultYes: true))
+            {
+                Console.WriteLine("Cancelled.");
+                return;
+            }
+
+            int published = 0;
+            foreach (var i in picked)
+            {
+                var name = names[i];
+                var profile = _settings.Profiles[name];
+
+                if (picked.Count > 1)
+                {
+                    Console.WriteLine();
+                    WriteBright($"--- {name} ---");
+                    Console.WriteLine();
+                }
+
+                Console.WriteLine();
+                PrintDim("  These fields will be published:");
+                foreach (var f in SharedProfileMap.Fields)
+                    PrintDim($"    {f.Label,-12}{Ellipsize(f.FromLocal(profile), 40)}");
+                Console.WriteLine();
+
+                var note = ReadLinePrompt("  Note (optional, e.g. 'lab box, rebuilt nightly'): ") ?? "";
+
+                if (picked.Count == 1 && !ConfirmYesNo($"  Publish '{name}' to the shared store?", defaultYes: true))
+                {
+                    Console.WriteLine("Cancelled.");
+                    return;
+                }
+
+                if (PublishProfile(name, profile, note)) published++;
+            }
+
+            // A batch needs a tally; a single publish already said what happened and a
+            // "Published 1 of 1." under it would be noise.
+            if (picked.Count > 1)
+            {
+                Console.WriteLine();
+                PrintDim($"  Published {published} of {picked.Count}.");
+            }
+        }
+
+        /// <summary>
+        /// The pre-picker flow, kept verbatim for redirected consoles: print the numbered
+        /// listing, read one number, publish that profile.
+        /// </summary>
+        private static void ShareInteractiveSequential()
         {
             var names = ListProfiles();
             if (names.Count == 0) return;
