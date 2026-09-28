@@ -17,6 +17,8 @@ namespace SqlTest;
 /// - SKIP is signalled by `raiserror 50002`.
 /// - Any other severity-11+ Sybase error is ERROR.
 /// - No exception means PASS.
+/// - @@trancount other than 1 (0 for `-- @no-transaction`) after the test turns PASS/SKIP into FAIL
+///   (a proc's `rollback tran` ends the runner's tran and later statements commit); ERROR/TIMEOUT keep their outcome with a note.
 ///
 /// Two test shapes are supported:
 /// - Singleton: one `test_<name>` proc; runner ExecuteNonQuery's it inside
@@ -262,87 +264,142 @@ public class Runner
             }
         }
 
-        using var conn = new AseConnection(BuildConnectionString(_opts.Database));
-        conn.InfoMessage += (_, e) =>
-        {
-            foreach (AseError err in e.Errors)
-            {
-                if (err.Severity >= 11) continue;
-                var msg = err.Message ?? "";
-                if (msg.StartsWith("Changed client character set") ||
-                    msg.StartsWith("Changed database context") ||
-                    msg.StartsWith("Changed language setting"))
-                    continue;
-                messages.Add(err);
-            }
-        };
-
-        try { conn.Open(); }
-        catch (Exception ex)
-        {
-            return new TestResult(tc.LogicalName, Outcome.ERROR,
-                $"connection failed: {ex.Message}",
-                stopwatch.Elapsed.TotalSeconds, ex.ToString());
-        }
-
-        // Read-only report builders do `select ... into #tmp`, which Sybase forbids
-        // inside a multi-statement transaction (Msg 226). A `-- @no-transaction`
-        // test runs WITHOUT begin tran/rollback so those procs are runnable; since
-        // it can't lean on rollback to undo writes, isolation is explicit: clear
-        // the capture table and run the `<base>_teardown` hook in Cleanup().
-        AseTransaction? tx = tc.NoTransaction ? null : conn.BeginTransaction();
-
-        void Cleanup()
-        {
-            if (tx != null) { try { tx.Rollback(); } catch { } return; }
-            // No-transaction path: undo by hand (best-effort; failures here must not
-            // mask the test's own outcome).
-            if (tc.Capture != null)
-                TryExec(conn, $"delete from {tc.Capture.IntoTable}");
-            if (tc.TeardownProc != null)
-                TryExec(conn, $"exec {tc.TeardownProc}", _opts.TimeoutSeconds);
-        }
-
+        var conn = new AseConnection(BuildConnectionString(_opts.Database));
         try
         {
-            // No-transaction capture tests can't rely on rollback to start clean,
-            // so defensively clear any rows a crashed prior test left this session.
-            if (tx == null && tc.Capture != null)
-                TryExec(conn, $"delete from {tc.Capture.IntoTable}");
+            conn.InfoMessage += (_, e) =>
+            {
+                foreach (AseError err in e.Errors)
+                {
+                    if (err.Severity >= 11) continue;
+                    var msg = err.Message ?? "";
+                    if (msg.StartsWith("Changed client character set") ||
+                        msg.StartsWith("Changed database context") ||
+                        msg.StartsWith("Changed language setting"))
+                        continue;
+                    messages.Add(err);
+                }
+            };
 
-            // Paired: pretest runs in the capture batch (it feeds @tstuser to
-            // the capture proc); the assert proc only reads the capture table.
-            // Singleton: pretest runs in the test batch.
-            if (tc.CaptureProc != null && tc.Capture != null)
-                RunCapturePhase(conn, tx, tc.CaptureProc, tc.Capture, tc.Pretest, _opts.TimeoutSeconds);
+            try { conn.Open(); }
+            catch (Exception ex)
+            {
+                return new TestResult(tc.LogicalName, Outcome.ERROR,
+                    $"connection failed: {ex.Message}",
+                    stopwatch.Elapsed.TotalSeconds, ex.ToString());
+            }
 
-            var assertSql = tc.CaptureProc != null
-                ? $"exec {tc.AssertProc}"
-                : WithPretest(tc.Pretest, tc.AssertProc);
-            using var cmd = new AseCommand(assertSql, conn);
-            if (tx != null) cmd.Transaction = tx;
-            cmd.CommandTimeout = _opts.TimeoutSeconds;
-            cmd.ExecuteNonQuery();
+            // Read-only report builders do `select ... into #tmp`, which Sybase forbids
+            // inside a multi-statement transaction (Msg 226). A `-- @no-transaction`
+            // test runs WITHOUT begin tran/rollback so those procs are runnable; since
+            // it can't lean on rollback to undo writes, isolation is explicit: clear
+            // the capture table and run the `<base>_teardown` hook in Cleanup().
+            AseTransaction? tx = tc.NoTransaction ? null : conn.BeginTransaction();
 
-            Cleanup();
-            stopwatch.Stop();
-            return new TestResult(tc.LogicalName, Outcome.PASS, "",
-                stopwatch.Elapsed.TotalSeconds, JoinMessages(messages));
+            var tranHandled = false;
+
+            void Cleanup()
+            {
+                if (tx != null) { if (!tranHandled) try { tx.Rollback(); } catch { } return; }
+                // No-transaction path: undo by hand (best-effort; failures here must not
+                // mask the test's own outcome).
+                if (tc.Capture != null)
+                    TryExec(conn, $"delete from {tc.Capture.IntoTable}");
+                if (tc.TeardownProc != null)
+                    TryExec(conn, $"exec {tc.TeardownProc}", _opts.TimeoutSeconds);
+            }
+
+            // See class doc for why this check exists.
+            string? CheckTranCount()
+            {
+                int expected = tx == null ? 0 : 1, actual;
+                try
+                {
+                    using var cmd = new AseCommand("select @@trancount", conn);
+                    if (tx != null) cmd.Transaction = tx;
+                    cmd.CommandTimeout = _opts.TimeoutSeconds;
+                    actual = Convert.ToInt32(cmd.ExecuteScalar());
+                }
+                catch { return null; }   // connection unusable: keep the original outcome
+                if (actual == expected) return null;
+
+                tranHandled = true;
+                var msg = actual < expected
+                    ? $"transaction ended inside the test (rollback tran or server abort; @@trancount={actual}, expected {expected}): later statements were not rolled back"
+                    : $"transaction left open by the test (@@trancount={actual}, expected {expected}): rolled back";
+                if (actual > 0)
+                {
+                    try
+                    {
+                        if (tx != null) tx.Rollback();
+                        else { using var rb = new AseCommand("rollback tran", conn); rb.ExecuteNonQuery(); }
+                    }
+                    catch (Exception ex) { msg += $"; rollback failed: {ex.Message}"; }
+                }
+                return msg;
+            }
+
+            // Only PASS/SKIP get promoted to FAIL; ERROR/TIMEOUT (server already aborted
+            // the tran, e.g. deadlock victim) keep their outcome with the note prefixed.
+            TestResult WithTranCheck(TestResult r, string? violation)
+            {
+                if (violation == null) return r;
+                var outcome = r.Outcome is Outcome.PASS or Outcome.SKIP ? Outcome.FAIL : r.Outcome;
+                return r with
+                {
+                    Outcome = outcome,
+                    Message = string.IsNullOrEmpty(r.Message) ? violation : $"{violation} | {r.Message}"
+                };
+            }
+
+            try
+            {
+                // No-transaction capture tests can't rely on rollback to start clean,
+                // so defensively clear any rows a crashed prior test left this session.
+                if (tx == null && tc.Capture != null)
+                    TryExec(conn, $"delete from {tc.Capture.IntoTable}");
+
+                // Paired: pretest runs in the capture batch (it feeds @tstuser to
+                // the capture proc); the assert proc only reads the capture table.
+                // Singleton: pretest runs in the test batch.
+                if (tc.CaptureProc != null && tc.Capture != null)
+                    RunCapturePhase(conn, tx, tc.CaptureProc, tc.Capture, tc.Pretest, _opts.TimeoutSeconds);
+
+                var assertSql = tc.CaptureProc != null
+                    ? $"exec {tc.AssertProc}"
+                    : WithPretest(tc.Pretest, tc.AssertProc);
+                using var cmd = new AseCommand(assertSql, conn);
+                if (tx != null) cmd.Transaction = tx;
+                cmd.CommandTimeout = _opts.TimeoutSeconds;
+                cmd.ExecuteNonQuery();
+
+                var violation = CheckTranCount();
+                Cleanup();
+                stopwatch.Stop();
+                return WithTranCheck(new TestResult(tc.LogicalName, Outcome.PASS, "",
+                    stopwatch.Elapsed.TotalSeconds, JoinMessages(messages)), violation);
+            }
+            catch (AseException ex)
+            {
+                var violation = CheckTranCount();
+                Cleanup();
+                stopwatch.Stop();
+                return WithTranCheck(Classify(tc.LogicalName, ex, messages, stopwatch.Elapsed.TotalSeconds), violation);
+            }
+            catch (Exception ex)
+            {
+                var violation = CheckTranCount();
+                Cleanup();
+                stopwatch.Stop();
+                var outcome = ex.Message.Contains("timeout", StringComparison.OrdinalIgnoreCase)
+                    ? Outcome.TIMEOUT : Outcome.ERROR;
+                return WithTranCheck(new TestResult(tc.LogicalName, outcome, ex.Message,
+                    stopwatch.Elapsed.TotalSeconds, ex.ToString()), violation);
+            }
         }
-        catch (AseException ex)
+        finally
         {
-            Cleanup();
-            stopwatch.Stop();
-            return Classify(tc.LogicalName, ex, messages, stopwatch.Elapsed.TotalSeconds);
-        }
-        catch (Exception ex)
-        {
-            Cleanup();
-            stopwatch.Stop();
-            var outcome = ex.Message.Contains("timeout", StringComparison.OrdinalIgnoreCase)
-                ? Outcome.TIMEOUT : Outcome.ERROR;
-            return new TestResult(tc.LogicalName, outcome, ex.Message,
-                stopwatch.Elapsed.TotalSeconds, ex.ToString());
+            try { conn.Dispose(); } catch { }
         }
     }
 
