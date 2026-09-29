@@ -15,6 +15,10 @@ public class Options
     public bool PrintCaptureDdl { get; set; }
     public string User { get; set; } = "";
     public string Pass { get; set; } = "";
+    public string? BenchPattern { get; set; }
+    public int Count { get; set; } = 5;
+    public string? BenchOut { get; set; }
+    public string? BenchBaseline { get; set; }
 
     public const string Usage =
         "Usage: sql-test <database> <server/profile>\n" +
@@ -27,6 +31,10 @@ public class Options
         "                [--verbose]\n" +
         "                [--regenerate-capture-tables]\n" +
         "                [--print-capture-ddl]\n" +
+        "                [--bench <like>]     (run bench_* procs instead of tests; --pattern ignored)\n" +
+        "                [--count <n>]        (measured runs per benchmark after one warm-up; default: 5)\n" +
+        "                [--bench-out <file>] (write results as JSON)\n" +
+        "                [--bench-baseline <file>] (compare against a --bench-out file; exit 1 when flagged)\n" +
         "                [-U user] [-P pass]";
 
     public static Options? Parse(string[] argv)
@@ -51,6 +59,10 @@ public class Options
                 case "--verbose":                    opts.Verbose                 = true; break;
                 case "--regenerate-capture-tables":  opts.RegenerateCaptureTables = true; break;
                 case "--print-capture-ddl":          opts.PrintCaptureDdl         = true; break;
+                case "--bench":                      opts.BenchPattern            = Next(a); break;
+                case "--count":                      opts.Count                   = int.Parse(Next(a)); break;
+                case "--bench-out":                  opts.BenchOut                = Next(a); break;
+                case "--bench-baseline":             opts.BenchBaseline           = Next(a); break;
                 case "-h":
                 case "--help":                       return null;
                 default:
@@ -62,6 +74,8 @@ public class Options
             }
         }
 
+        if (opts.Count < 1)
+            throw new ArgumentException("--count must be at least 1");
         if (positional.Count < 2)
             throw new ArgumentException("missing <database> and/or <server/profile>");
         opts.Database = positional[0];

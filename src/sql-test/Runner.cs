@@ -38,9 +38,23 @@ public class Runner
     private static readonly Regex CaptureIntoRe   = new(@"^\s*--\s*@capture-into\s*:\s*(\S+)",     RegexOptions.IgnoreCase | RegexOptions.Multiline);
     private static readonly Regex CaptureSourceRe = new(@"^\s*--\s*@capture-source\s*:\s*(.+?)\s*$", RegexOptions.IgnoreCase | RegexOptions.Multiline);
     private static readonly Regex NoTranRe        = new(@"^\s*--\s*@no-transaction\b",            RegexOptions.IgnoreCase | RegexOptions.Multiline);
+    private static readonly Regex BenchThresholdRe = new(@"^\s*--\s*@bench-threshold\b(.*)$",        RegexOptions.IgnoreCase | RegexOptions.Multiline);
+    private static readonly Regex BenchThresholdValueRe = new(@"^\s*:\s*(\d{1,9})\s*%?\s*$");
+    private static readonly Regex BudgetRe        = new(@"\bpro_test_assert_max_reads\b",           RegexOptions.IgnoreCase);
+
+    private const int StatTableMessage  = 3615;
+    // A cheap set statement: a connection that cannot run it in this time is unusable anyway.
+    private const int DisableMeterTimeoutSeconds = 10;
+    private const int StatWritesMessage = 3614;
+
+    internal const string PairBudgetError = "budget not supported in _capture/_assert pairs";
+    internal const string UnmeteredMarkerError = "budget marker in an unmetered run (call pro_test_assert_max_reads from the test body)";
 
     private readonly ResolvedProfile _profile;
     private readonly Options _opts;
+
+    // One mode per invocation: --bench replaces --pattern.
+    private string Pattern => _opts.BenchPattern ?? _opts.Pattern;
 
     // Per-session rebuild cache: each distinct capture table is dropped
     // and recreated exactly once on first reference. Eliminates schema
@@ -94,7 +108,8 @@ public class Runner
         foreach (var t in teardowns) consumed.Add(t);
 
         // Pair: for each `*_capture`, find matching `*_assert`.
-        foreach (var name in procNames)
+        // Bench procs are singletons: capture INSERTs would be measured.
+        foreach (var name in _opts.BenchPattern != null ? Enumerable.Empty<string>() : procNames)
         {
             if (!name.EndsWith("_capture", StringComparison.OrdinalIgnoreCase)) continue;
             var baseName = name[..^"_capture".Length];
@@ -106,8 +121,11 @@ public class Runner
             var noTran   = body != null && NoTranRe.IsMatch(body);
             var teardown = teardowns.Contains(baseName + "_teardown") ? baseName + "_teardown" : null;
 
+            // The capture phase runs unmetered, so a pair's budget could never be checked.
+            var budgetError = HasBudget(body) || HasBudget(bodies.GetValueOrDefault(assertName)) ? PairBudgetError : null;
             cases.Add(new TestCase(baseName, name, assertName, spec,
-                                   ResolvePretest(baseName, pretests), noTran, teardown));
+                                   ResolvePretest(baseName, pretests), noTran, teardown,
+                                   Error: budgetError));
             consumed.Add(name);
             consumed.Add(assertName);
         }
@@ -119,8 +137,11 @@ public class Runner
             var body     = bodies.GetValueOrDefault(name);
             var noTran   = body != null && NoTranRe.IsMatch(body);
             var teardown = teardowns.Contains(name + "_teardown") ? name + "_teardown" : null;
+            string? thresholdError = null;
+            var threshold = _opts.BenchPattern != null ? ParseBenchThreshold(body, out thresholdError) : null;
             cases.Add(new TestCase(name, null, name, null,
-                                   ResolvePretest(name, pretests), noTran, teardown));
+                                   ResolvePretest(name, pretests), noTran, teardown,
+                                   threshold, HasBudget(body), thresholdError));
         }
 
         return cases.OrderBy(c => c.LogicalName).ToList();
@@ -143,7 +164,7 @@ public class Runner
             "where o.type = 'P' and o.name like @pat escape '\\' " +
             "order by o.name, c.colid2, c.colid",
             conn);
-        cmd.Parameters.Add("@pat", _opts.Pattern);
+        cmd.Parameters.Add("@pat", Pattern);
 
         var map = new Dictionary<string, StringBuilder>(StringComparer.OrdinalIgnoreCase);
         using var reader = cmd.ExecuteReader();
@@ -224,7 +245,7 @@ public class Runner
             "where type = 'P' and name like @pat escape '\\' " +
             "order by name",
             conn);
-        cmd.Parameters.Add("@pat", _opts.Pattern);
+        cmd.Parameters.Add("@pat", Pattern);
 
         var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         using var reader = cmd.ExecuteReader();
@@ -245,10 +266,53 @@ public class Runner
             SourceCall: sourceMatch.Groups[1].Value.Trim());
     }
 
-    public TestResult RunOne(TestCase tc)
+    internal static bool HasBudget(string? body) => body != null && BudgetRe.IsMatch(body);
+
+    // An unparseable directive is an error, never a silently different threshold.
+    internal static int? ParseBenchThreshold(string? body, out string? error)
+    {
+        error = null;
+        var m = body == null ? null : BenchThresholdRe.Match(body);
+        if (m is not { Success: true }) return null;
+        var v = BenchThresholdValueRe.Match(m.Groups[1].Value);
+        if (v.Success && int.TryParse(v.Groups[1].Value, System.Globalization.NumberStyles.None,
+                                      System.Globalization.CultureInfo.InvariantCulture, out var pct))
+            return pct;
+        error = $"invalid @bench-threshold directive: {m.Value.Trim()}";
+        return null;
+    }
+
+    // A marker printed with no meter attached would otherwise pass silently.
+    internal static TestResult CheckUnmeteredMarker(TestResult r, IEnumerable<string> messages)
+    {
+        if (!messages.Any(m => m.TrimStart().StartsWith(MeasureAccumulator.AssertMarker, StringComparison.Ordinal)))
+            return r;
+        var outcome = r.Outcome is Outcome.PASS or Outcome.SKIP ? Outcome.ERROR : r.Outcome;
+        return r with
+        {
+            Outcome = outcome,
+            Message = string.IsNullOrEmpty(r.Message) ? UnmeteredMarkerError : $"{UnmeteredMarkerError} | {r.Message}"
+        };
+    }
+
+    // Statistics are enabled only when measuring, so unbudgeted test output is unchanged.
+    public TestResult RunOne(TestCase tc, bool measure = false)
     {
         var stopwatch = Stopwatch.StartNew();
         var messages = new List<AseError>();
+
+        if (tc.Error != null)
+            return new TestResult(tc.LogicalName, Outcome.ERROR, tc.Error, stopwatch.Elapsed.TotalSeconds, "");
+
+        IIoMeter? meter = null;
+        if (measure || tc.Budgeted)
+        {
+            meter = IoMeters.For(_profile.ServerType);
+            if (meter == null)
+                return new TestResult(tc.LogicalName, Outcome.ERROR,
+                    $"I/O measurement is not supported for server type {_profile.ServerType}",
+                    stopwatch.Elapsed.TotalSeconds, "");
+        }
 
         // Step 0 (pre-tran): ensure the capture table exists. DDL must
         // happen outside the test's begin tran/rollback wrap because
@@ -352,6 +416,50 @@ public class Runner
                 };
             }
 
+            // Region ends when the batch returns or throws; later @@trancount/rollback stat lines are not fed.
+            int regionEnd = -1;
+
+            // Budget violations promote like the tran check; a budget without a start marker is an ERROR.
+            TestResult WithMeasure(TestResult r)
+            {
+                if (meter == null) return CheckUnmeteredMarker(r, messages.Select(m => m.Message ?? ""));
+                var acc = new MeasureAccumulator(meter);
+                int end = regionEnd < 0 ? messages.Count : regionEnd;
+                for (int i = 0; i < end; i++)
+                    acc.Feed(messages[i].MessageNumber, messages[i].Message ?? "");
+
+                // Report the budget that failed; with none failing, the last one checked.
+                var shown = acc.Budgets.FirstOrDefault(b => b.Failed) ?? (acc.Budgets.Count > 0 ? acc.Budgets[^1] : null);
+                r = r with
+                {
+                    Io = shown != null && !measure ? acc.Current with { LogicalReads = shown.Actual } : acc.Current,
+                    MaxReads = shown?.MaxReads,
+                };
+                if (r.Outcome is not (Outcome.PASS or Outcome.SKIP)) return r;
+                if (acc.Error != null)
+                    return r with { Outcome = Outcome.ERROR, Message = string.IsNullOrEmpty(r.Message) ? acc.Error : $"{acc.Error} | {r.Message}" };
+                if (acc.Failures.Count > 0)
+                {
+                    var fail = string.Join(" | ", acc.Failures.Select(f => "FAIL: " + f));
+                    return r with { Outcome = Outcome.FAIL, Message = string.IsNullOrEmpty(r.Message) ? fail : $"{fail} | {r.Message}" };
+                }
+                return r;
+            }
+
+            // An aborted batch skips the trailing DisableSql; turn it off so the tran check's output stays clean.
+            void DisableMeterAfterAbort()
+            {
+                if (meter == null) return;
+                try
+                {
+                    using var off = new AseCommand(meter.DisableSql, conn);
+                    if (tx != null) off.Transaction = tx;
+                    off.CommandTimeout = DisableMeterTimeoutSeconds;
+                    off.ExecuteNonQuery();
+                }
+                catch { }
+            }
+
             try
             {
                 // No-transaction capture tests can't rely on rollback to start clean,
@@ -368,33 +476,40 @@ public class Runner
                 var assertSql = tc.CaptureProc != null
                     ? $"exec {tc.AssertProc}"
                     : WithPretest(tc.Pretest, tc.AssertProc);
+                if (meter != null)
+                    assertSql = $"{meter.EnableSql}\n{assertSql}\n{meter.DisableSql}";
                 using var cmd = new AseCommand(assertSql, conn);
                 if (tx != null) cmd.Transaction = tx;
                 cmd.CommandTimeout = _opts.TimeoutSeconds;
                 cmd.ExecuteNonQuery();
+                regionEnd = messages.Count;
 
                 var violation = CheckTranCount();
                 Cleanup();
                 stopwatch.Stop();
-                return WithTranCheck(new TestResult(tc.LogicalName, Outcome.PASS, "",
-                    stopwatch.Elapsed.TotalSeconds, JoinMessages(messages)), violation);
+                return WithTranCheck(WithMeasure(new TestResult(tc.LogicalName, Outcome.PASS, "",
+                    stopwatch.Elapsed.TotalSeconds, JoinMessages(messages))), violation);
             }
             catch (AseException ex)
             {
+                if (regionEnd < 0) regionEnd = messages.Count;
+                DisableMeterAfterAbort();
                 var violation = CheckTranCount();
                 Cleanup();
                 stopwatch.Stop();
-                return WithTranCheck(Classify(tc.LogicalName, ex, messages, stopwatch.Elapsed.TotalSeconds), violation);
+                return WithTranCheck(WithMeasure(Classify(tc.LogicalName, ex, messages, stopwatch.Elapsed.TotalSeconds, meter != null)), violation);
             }
             catch (Exception ex)
             {
+                if (regionEnd < 0) regionEnd = messages.Count;
+                DisableMeterAfterAbort();
                 var violation = CheckTranCount();
                 Cleanup();
                 stopwatch.Stop();
                 var outcome = ex.Message.Contains("timeout", StringComparison.OrdinalIgnoreCase)
                     ? Outcome.TIMEOUT : Outcome.ERROR;
-                return WithTranCheck(new TestResult(tc.LogicalName, outcome, ex.Message,
-                    stopwatch.Elapsed.TotalSeconds, ex.ToString()), violation);
+                return WithTranCheck(WithMeasure(new TestResult(tc.LogicalName, outcome, ex.Message,
+                    stopwatch.Elapsed.TotalSeconds, ex.ToString())), violation);
             }
         }
         finally
@@ -605,19 +720,19 @@ public class Runner
         cmd.ExecuteNonQuery();
     }
 
-    private TestResult Classify(string name, AseException ex, List<AseError> info, double duration)
+    private TestResult Classify(string name, AseException ex, List<AseError> info, double duration, bool metered = false)
     {
         foreach (AseError err in ex.Errors)
         {
             if (err.MessageNumber == FailErrorNumber)
             {
                 var msg = LastMatching(info, "FAIL:") ?? "FAIL";
-                return new TestResult(name, Outcome.FAIL, msg, duration, JoinMessages(info, ex.Errors));
+                return new TestResult(name, Outcome.FAIL, msg, duration, JoinMessages(info, ex.Errors, metered));
             }
             if (err.MessageNumber == SkipErrorNumber)
             {
                 var msg = LastMatching(info, "SKIP:") ?? "SKIP";
-                return new TestResult(name, Outcome.SKIP, msg, duration, JoinMessages(info, ex.Errors));
+                return new TestResult(name, Outcome.SKIP, msg, duration, JoinMessages(info, ex.Errors, metered));
             }
         }
 
@@ -625,7 +740,7 @@ public class Runner
         var headline = first != null
             ? $"Msg {first.MessageNumber}, Level {first.Severity}: {first.Message}"
             : ex.Message;
-        return new TestResult(name, Outcome.ERROR, headline, duration, JoinMessages(info, ex.Errors));
+        return new TestResult(name, Outcome.ERROR, headline, duration, JoinMessages(info, ex.Errors, metered));
     }
 
     private static string? LastMatching(List<AseError> messages, string prefix)
@@ -638,14 +753,16 @@ public class Runner
         return null;
     }
 
-    private static string JoinMessages(List<AseError> info, AseErrorCollection? errors = null)
+    // ex.Errors repeats earlier info messages; with the meter on, drop its stat lines so they are not listed twice.
+    private static string JoinMessages(List<AseError> info, AseErrorCollection? errors = null, bool metered = false)
     {
         var sb = new StringBuilder();
         foreach (var m in info)
             sb.AppendLine((m.Message ?? "").TrimEnd());
         if (errors != null)
             foreach (AseError e in errors)
-                sb.AppendLine($"Msg {e.MessageNumber}, Level {e.Severity}: {(e.Message ?? "").TrimEnd()}");
+                if (!metered || e.MessageNumber is not (StatTableMessage or StatWritesMessage))
+                    sb.AppendLine($"Msg {e.MessageNumber}, Level {e.Severity}: {(e.Message ?? "").TrimEnd()}");
         return sb.ToString();
     }
 
