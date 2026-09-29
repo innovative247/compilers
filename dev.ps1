@@ -12,7 +12,7 @@ Set-Location $PSScriptRoot
 $compilerProcesses = @('runsql','isqlline','set_profile','iwho','iwatch','iplan','iplanext',
     'runcreate','eact','set_actions','eloc','set_table_locations','eopt','set_options',
     'compile_msg','set_messages','compile_required_fields','set_required_fields',
-    'i_run_upgrade','transfer_data','bcp_data','extract_msg')
+    'i_run_upgrade','transfer_data','bcp_data','extract_msg','sql-test')
 $killed = @()
 foreach ($name in $compilerProcesses) {
     $procs = Get-Process -Name $name -ErrorAction SilentlyContinue
@@ -48,6 +48,7 @@ $projects = @(
     'transfer_data'
     'bcp_data'
     'extract_msg'
+    'sql-test'
 )
 
 # --- Bump patch version ---
