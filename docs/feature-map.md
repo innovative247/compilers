@@ -37,6 +37,8 @@ in `$env:EDITOR`).
   read-only tests run against the real profile. Postgres-platform tests are
   flag/arg-level only (no live Postgres server in the suite); a live Postgres
   target runs on port 5432.
+  The §6b `sql-test` cases target the Sybase profile given by `-SybaseProfile`
+  (default `GONZO`).
 - **Out of scope — never agent-accessible:** `transfer_data`. Excluded from the
   test suite entirely. If a future change adds CLI flags here, push back.
 - **TTY-only — intentionally not headless:** `set_profile` main-menu options
@@ -469,6 +471,30 @@ data file, third-to-last means the token between it and the profile is one.
   inside data. On POSTGRES the COPY wire format still separates fields with
   tabs, so its tab escaping is unchanged for the default and a tab inside data
   simply stays a tab when the terminator is something else.
+
+---
+
+## 6b. SQL unit tests
+
+### `sql-test` — run `test_*` procs; bench mode and read budgets (SR 53527)
+
+These cases run against a live Sybase profile (`-SybaseProfile`, default
+`GONZO`) and its `sbntest` database, which carries the deployed `bench_*`,
+`test_*` and `selftest_*` procs. They SKIP when that profile is absent from
+`settings.json`. Read counts are data-dependent, so the cases assert output
+shape and exit codes only.
+
+| Outcome | Flags | Test ID | Status |
+|---|---|---|---|
+| List benchmarks without running them | `sql-test <db> <profile> --bench <like> --list` | `sql-test.bench.list` | COVERED |
+| Run benchmarks: one warm-up plus N measured runs, one `<name>  <N>  <n> reads/op  <n> phys/op  <n> writes/op` line each; per-table lines with `--verbose` | `--bench <like>` [`--count <n>`] [`--verbose`] | `sql-test.bench.run` | COVERED |
+| Write results as JSON (`schema: 1`, `threshold_pct` from `-- @bench-threshold:`) | `--bench-out <file>` | `sql-test.bench.out` | COVERED |
+| Compare against a saved baseline; a reads regression over the threshold ends `! (threshold N%)` and exits 1 | `--bench-baseline <file>` | `sql-test.bench.baseline` | COVERED |
+| Merge PASS results into the baseline (created if missing); exits 0 | `--bench-baseline <file> --bench-update-baseline` | `sql-test.bench.update` | COVERED |
+| Read budget within limit passes | test body calls `pro_test_measure_start` + `pro_test_assert_max_reads` | `sql-test.budget.pass` | COVERED |
+| Read budget exceeded fails with `FAIL: <label> (max_reads=<n> actual=<n>)`, exit 1 | (same) | `sql-test.budget.fail` | COVERED |
+| Budget without a start marker is an ERROR (`budget without pro_test_measure_start`), exit 1 | (same) | `sql-test.budget.no-start` | COVERED |
+| Output of tests without a budget unchanged by bench mode, even with `--verbose` (no table stats or `@sql-test:` markers) | `--pattern <like> --verbose` | `sql-test.plain.unchanged` | COVERED |
 
 ---
 

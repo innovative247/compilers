@@ -33,8 +33,9 @@ var cmdvars = new ibsCompiler.CommandVariables
 };
 var profile = profileMgr.Resolve(cmdvars);
 
-Console.Error.WriteLine(
-    $"sql-test: pattern='{opts.Pattern}' db={opts.Database} profile={profile.ProfileName}");
+Console.Error.WriteLine(opts.BenchPattern == null
+    ? $"sql-test: pattern='{opts.Pattern}' db={opts.Database} profile={profile.ProfileName}"
+    : $"sql-test: bench='{opts.BenchPattern}' db={opts.Database} profile={profile.ProfileName}");
 
 var runner = new Runner(profile, opts);
 
@@ -103,6 +104,9 @@ if (opts.ListOnly)
     return 0;
 }
 
+if (opts.BenchPattern != null)
+    return RunBench(runner, cases, opts, profile);
+
 Console.Error.WriteLine($"sql-test: {cases.Count} tests discovered");
 
 var stopwatch = Stopwatch.StartNew();
@@ -144,6 +148,94 @@ if (!string.IsNullOrEmpty(opts.JunitPath))
 bool failed = results.Any(r => r.Outcome is Outcome.FAIL or Outcome.ERROR or Outcome.TIMEOUT);
 return failed ? 1 : 0;
 
+
+// Serial regardless of --parallel: one buffer cache, concurrent runs distort physical reads.
+static int RunBench(Runner runner, List<TestCase> cases, Options opts, ResolvedProfile profile)
+{
+    BenchDocument? baseline = null;
+    if (!string.IsNullOrEmpty(opts.BenchBaseline))
+    {
+        try { baseline = BenchReport.LoadBaseline(opts.BenchBaseline, opts.BenchUpdateBaseline); }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"sql-test: FATAL: cannot read baseline: {ex.Message}");
+            return 2;
+        }
+    }
+    if (opts.Parallel > 1)
+        Console.Error.WriteLine("sql-test: bench mode runs serially; --parallel ignored");
+    Console.Error.WriteLine($"sql-test: {cases.Count} benchmarks discovered, 1 warm-up + {opts.Count} measured runs each");
+
+    var stopwatch = Stopwatch.StartNew();
+    var results = new List<TestResult>(cases.Count);
+    var benches = new List<BenchResult>(cases.Count);
+    foreach (var c in cases)
+    {
+        var runs = new List<IoMeasure>(opts.Count);
+        TestResult? failed = null;
+        double seconds = 0;
+        for (int i = 0; i <= opts.Count; i++)   // run 0 is the discarded warm-up
+        {
+            var r = runner.RunOne(c, measure: true);
+            seconds += r.DurationSeconds;
+            if (r.Outcome != Outcome.PASS) { failed = r with { Io = null, MaxReads = null }; break; }
+            if (i > 0) runs.Add(r.Io!);
+        }
+        if (failed != null)
+        {
+            results.Add(failed);
+            PrintResult(failed, opts.Verbose);
+            continue;
+        }
+
+        var b = BenchReport.Summarize(c.LogicalName, c.BenchThresholdPct, runs);
+        benches.Add(b);
+        var perOp = new IoMeasure((long)Math.Round(b.ReadsPerOp), (long)Math.Round(b.PhysPerOp),
+                                  (long)Math.Round(b.WritesPerOp), Array.Empty<TableIo>());
+        results.Add(new TestResult(c.LogicalName, Outcome.PASS, "", seconds, "")
+            { Io = perOp, Count = opts.Count });
+        Console.Error.WriteLine(BenchReport.FormatLine(b, opts.Count));
+        if (opts.Verbose)
+            foreach (var line in BenchReport.FormatTables(b)) Console.Error.WriteLine(line);
+    }
+    stopwatch.Stop();
+
+    PrintSummary(results, stopwatch.Elapsed.TotalSeconds);
+    if (!string.IsNullOrEmpty(opts.JunitPath))
+        JunitWriter.Write(opts.JunitPath, results, stopwatch.Elapsed.TotalSeconds);
+
+    var now = DateTime.UtcNow;
+    var doc = new BenchDocument(BenchReport.Schema,
+        string.IsNullOrEmpty(profile.Host) ? profile.ProfileName : profile.Host, opts.Database,
+        new DateTime(now.Ticks - now.Ticks % TimeSpan.TicksPerSecond, DateTimeKind.Utc), opts.Count, benches);
+    if (!string.IsNullOrEmpty(opts.BenchOut))
+        BenchReport.WriteJson(opts.BenchOut, doc);
+
+    bool anyFailed = results.Any(r => r.Outcome is Outcome.FAIL or Outcome.ERROR or Outcome.TIMEOUT);
+    BenchComparison? cmp = null;
+    if (baseline != null)
+    {
+        var failedNames = results.Where(r => r.Outcome is Outcome.FAIL or Outcome.ERROR or Outcome.TIMEOUT)
+                                 .Select(r => r.Name).ToList();
+        cmp = BenchReport.Compare(baseline, doc, failedNames);
+        foreach (var line in BenchReport.FormatComparison(cmp)) Console.Error.WriteLine(line);
+    }
+    if (opts.BenchUpdateBaseline)
+    {
+        var passed = results.Where(r => r.Outcome == Outcome.PASS).Select(r => r.Name)
+                            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        try { BenchReport.UpdateBaseline(opts.BenchBaseline!, baseline, doc, passed); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Console.Error.WriteLine($"sql-test: FATAL: cannot write baseline: {ex.Message}");
+            return 2;
+        }
+        Console.Error.WriteLine(baseline == null
+            ? $"sql-test: baseline created: {opts.BenchBaseline} ({passed.Count} benchmarks)"
+            : $"sql-test: baseline updated: {opts.BenchBaseline} ({passed.Count} benchmarks replaced or added)");
+    }
+    return BenchReport.ExitCode(anyFailed, cmp, opts.BenchUpdateBaseline);
+}
 
 static void PrintResult(TestResult r, bool verbose)
 {

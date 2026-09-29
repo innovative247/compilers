@@ -7,7 +7,12 @@ public record TestResult(
     Outcome Outcome,
     string Message,
     double DurationSeconds,
-    string Output);
+    string Output)
+{
+    public IoMeasure? Io { get; init; }
+    public long? MaxReads { get; init; }
+    public int? Count { get; init; }
+}
 
 /// <summary>
 /// Per-test metadata resolved at discovery.
@@ -32,8 +37,11 @@ public record TestCase(
     bool NoTransaction = false, // `-- @no-transaction`: run WITHOUT begin tran/rollback
                                 // (read-only report builders do `select into`, illegal
                                 //  in a multi-statement tran). Cleanup is explicit.
-    string? TeardownProc = null // `<base>_teardown`: cleanup hook for no-transaction
-                                // tests (deletes any rows the test created); best-effort
+    string? TeardownProc = null, // `<base>_teardown`: cleanup hook for no-transaction
+                                 // tests (deletes any rows the test created); best-effort
+    int? BenchThresholdPct = null, // `-- @bench-threshold: <n>%` on a bench proc
+    bool Budgeted = false,         // body calls pro_test_assert_max_reads: run with the I/O meter
+    string? Error = null           // discovery-time problem: reported as ERROR without running
 );
 
 public record CaptureSpec(

@@ -21,3 +21,6 @@ settings.json
 # Test-suite artifacts (regression-suite stdout + iplanext trace files written to cwd)
 suite.out
 PLANTRACE.*
+
+# Test scratch (tests/SqlTest.Tests TestScratch; kept only when a test fails)
+.test-scratch/

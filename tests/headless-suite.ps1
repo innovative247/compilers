@@ -21,6 +21,10 @@
 .PARAMETER ListOnly
     Print every test ID + status and exit.
 
+.PARAMETER SybaseProfile
+    Live Sybase profile whose sbntest database carries the sql-test procs
+    (default GONZO). The sql-test cases SKIP when it is not in settings.json.
+
 .NOTES
     Pair with feature-map.md — the test IDs there match the ones below.
 #>
@@ -28,7 +32,8 @@
 param(
     [string]$OnlyId,
     [switch]$NoCleanup,
-    [switch]$ListOnly
+    [switch]$ListOnly,
+    [string]$SybaseProfile = 'GONZO'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -2734,6 +2739,126 @@ function Test-BulkCopy {
     Skip-Case 'bcp_data.in'  'needs an SBN table on the test target plus a real data file; would truncate it - manual verification only'
 }
 
+function Test-SqlTest {
+    Write-Host "`n--- 6b. SQL unit tests (sql-test) ---" -ForegroundColor Cyan
+    # SRM_LOCAL (MSSQL) has no sql-test procs; these need a live Sybase profile with sbntest.
+    $ids = @('sql-test.bench.list','sql-test.bench.run','sql-test.bench.out','sql-test.bench.baseline',
+             'sql-test.bench.update','sql-test.budget.pass','sql-test.budget.fail','sql-test.budget.no-start',
+             'sql-test.plain.unchanged')
+    if (-not (Get-Profile $SybaseProfile)) {
+        foreach ($id in $ids) { Skip-Case $id "profile '$SybaseProfile' not in settings.json - needs a live Sybase profile with sbntest (-SybaseProfile)" }
+        return
+    }
+    $db    = 'sbntest'
+    $bench = 'bench\_is\_ba\_acc\_sch\_ac1\_list'
+    $name  = 'bench_is_ba_acc_sch_ac1_list'
+
+    function Invoke-SqlTest { Invoke-Cli sql-test $db $SybaseProfile '--timeout' '30' @args }
+
+    # Halves every reads_per_op so the current run lands +100% over the 10% threshold.
+    function Write-HalvedBaseline([string]$Path) {
+        $json = Get-Content $Path -Raw
+        if ($json -notmatch '"reads_per_op":\s*[1-9]') { throw "no non-zero reads_per_op to halve in $Path" }
+        $half = [regex]::Replace($json, '"reads_per_op":\s*([0-9.eE+-]+)', {
+            param($m) '"reads_per_op": ' + ([double]::Parse($m.Groups[1].Value, [Globalization.CultureInfo]::InvariantCulture) / 2).ToString('R', [Globalization.CultureInfo]::InvariantCulture)
+        })
+        Set-Content -Path $Path -Value $half -Encoding ASCII
+    }
+
+    Test-Case 'sql-test.bench.list' {
+        $r = Invoke-SqlTest '--bench' 'bench\_is\_ba\_acc\_sch\_%' '--list'
+        Assert-ExitCode $r
+        if ($r.StdOut -notmatch "(?m)^$name\s*$") { throw "expected $name in --list output. stdout: $($r.StdOut)" }
+        if ($r.StdOut -match '(?m)^(test|selftest)_') { throw "--bench --list must list bench_ procs only. stdout: $($r.StdOut)" }
+    }
+    Test-Case 'sql-test.bench.run' {
+        $r = Invoke-SqlTest '--bench' $bench '--count' '2' '--verbose'
+        Assert-ExitCode $r
+        if ($r.StdErr -notmatch "(?m)^\s+$name\s+2\s+\d+ reads/op\s+\d+ phys/op\s+\d+ writes/op\s*$") {
+            throw "expected '<name>  2  <n> reads/op  <n> phys/op  <n> writes/op'. stderr: $($r.StdErr)"
+        }
+        if ($r.StdErr -notmatch '(?m)^ {10}\S+\s+\d+ reads/op\s+\d+ phys/op\s*$') {
+            throw "--verbose must add per-table '<table>  <n> reads/op  <n> phys/op' lines. stderr: $($r.StdErr)"
+        }
+    }
+    Test-Case 'sql-test.bench.out' {
+        $out = Join-Path $script:Scratch 'bench-out.json'
+        Remove-Item $out -ErrorAction SilentlyContinue
+        $r = Invoke-SqlTest '--bench' $bench '--bench-out' $out
+        Assert-ExitCode $r
+        if (-not (Test-Path $out)) { throw "--bench-out did not write $out" }
+        $doc = Get-Content $out -Raw | ConvertFrom-Json
+        if ($doc.schema -ne 1) { throw "expected schema 1, got '$($doc.schema)'" }
+        $b = @($doc.benchmarks) | Where-Object name -eq $name
+        if (-not $b) { throw "benchmark $name missing from $out" }
+        if ($b.threshold_pct -ne 10) { throw "expected threshold_pct 10 from '-- @bench-threshold: 10%', got '$($b.threshold_pct)'" }
+    }
+    Test-Case 'sql-test.bench.baseline' {
+        $base = Join-Path $script:Scratch 'bench-baseline.json'
+        Remove-Item $base -ErrorAction SilentlyContinue
+        Assert-ExitCode (Invoke-SqlTest '--bench' $bench '--bench-out' $base)
+        Write-HalvedBaseline $base
+        $r = Invoke-SqlTest '--bench' $bench '--bench-baseline' $base
+        Assert-ExitCode $r 1
+        if ($r.StdErr -notmatch "(?m)^$name\s+reads\s.*! \(threshold 10%\)\s*$") {
+            throw "expected a flagged reads row ending '! (threshold 10%)'. stderr: $($r.StdErr)"
+        }
+    }
+    Test-Case 'sql-test.bench.update' {
+        $base = Join-Path $script:Scratch 'bench-update.json'
+        Remove-Item $base -ErrorAction SilentlyContinue
+        Assert-ExitCode (Invoke-SqlTest '--bench' $bench '--bench-out' $base)
+        Write-HalvedBaseline $base
+        $halved = (@((Get-Content $base -Raw | ConvertFrom-Json).benchmarks) | Where-Object name -eq $name).reads_per_op
+        $r = Invoke-SqlTest '--bench' $bench '--bench-baseline' $base '--bench-update-baseline'
+        Assert-ExitCode $r
+        if ($r.StdErr -notmatch 'sql-test: baseline updated: ') { throw "expected 'baseline updated'. stderr: $($r.StdErr)" }
+        $now = (@((Get-Content $base -Raw | ConvertFrom-Json).benchmarks) | Where-Object name -eq $name).reads_per_op
+        if (-not ($now -gt $halved)) { throw "baseline reads_per_op not replaced: halved=$halved after-update=$now" }
+        $fresh = Join-Path $script:Scratch 'bench-update-new.json'
+        Remove-Item $fresh -ErrorAction SilentlyContinue
+        $r = Invoke-SqlTest '--bench' $bench '--bench-baseline' $fresh '--bench-update-baseline'
+        Assert-ExitCode $r
+        if ($r.StdErr -notmatch 'sql-test: baseline created: ') { throw "expected 'baseline created'. stderr: $($r.StdErr)" }
+        if (-not (Test-Path $fresh)) { throw "--bench-update-baseline did not create $fresh" }
+    }
+    Test-Case 'sql-test.budget.pass' {
+        $r = Invoke-SqlTest '--pattern' 'test\_framework\_budget\_%'
+        Assert-ExitCode $r
+        if ($r.StdErr -notmatch '(?m)^\s+PASS\s+test_framework_budget_') { throw "expected a PASS line. stderr: $($r.StdErr)" }
+        if ($r.StdErr -notmatch '\| 0 failed \| \d+ skipped \| 0 errored') { throw "expected 0 failed / 0 errored. stderr: $($r.StdErr)" }
+    }
+    Test-Case 'sql-test.budget.fail' {
+        $r = Invoke-SqlTest '--pattern' 'selftest\_framework\_budget\_%'
+        Assert-ExitCode $r 1
+        if ($r.StdErr -notmatch '(?m)^\s+FAIL\s+selftest_framework_budget_fail\b') { throw "expected selftest_framework_budget_fail to FAIL. stderr: $($r.StdErr)" }
+        if ($r.StdErr -notmatch 'FAIL: budget-fail \(max_reads=0 actual=\d+\)') {
+            throw "expected 'FAIL: budget-fail (max_reads=0 actual=<n>)'. stderr: $($r.StdErr)"
+        }
+    }
+    Test-Case 'sql-test.budget.no-start' {
+        $r = Invoke-SqlTest '--pattern' 'selftest\_framework\_budget\_%'
+        Assert-ExitCode $r 1
+        if ($r.StdErr -notmatch '(?m)^\s+ERROR\s+selftest_framework_budget_no_start\b') { throw "expected selftest_framework_budget_no_start to ERROR. stderr: $($r.StdErr)" }
+        if ($r.StdErr -notmatch 'budget without pro_test_measure_start') {
+            throw "expected 'budget without pro_test_measure_start'. stderr: $($r.StdErr)"
+        }
+    }
+    Test-Case 'sql-test.plain.unchanged' {
+        # Tests without a budget must look as they did before bench mode, even with --verbose:
+        # no table stats and no @sql-test: markers. --exclude drops the one budgeted test.
+        $r = Invoke-SqlTest '--pattern' 'test\_is\_ba\_acc\_sch\_%' '--exclude' 'summary_omitted' '--verbose'
+        Assert-ExitCode $r
+        $combined = "$($r.StdOut)`n$($r.StdErr)"
+        if ($combined -notmatch '(?m)^([1-9]\d*) tests \| \1 passed \| 0 failed \| 0 skipped \| 0 errored') {
+            throw "expected every test_is_ba_acc_sch_* to PASS. output: $combined"
+        }
+        foreach ($needle in @('Table:', 'Total writes for this command', '@sql-test:')) {
+            if ($combined -match [regex]::Escape($needle)) { throw "plain run leaked '$needle'. output: $combined" }
+        }
+    }
+}
+
 function Test-SelfMgmt {
     Write-Host "`n--- 7. Self-management ---" -ForegroundColor Cyan
     Test-Case 'version.print' {
@@ -2820,6 +2945,7 @@ try {
     Test-ProfileManagement
     Test-SharedProfiles
     Test-BulkCopy
+    Test-SqlTest
     Test-SelfMgmt
     Test-ExclusionGuard
 
