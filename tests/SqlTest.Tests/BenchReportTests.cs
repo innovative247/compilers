@@ -136,4 +136,137 @@ public class BenchReportTests
         Assert.NotNull(c.Warning);
         Assert.Equal(0, c.ExitCode);
     }
+
+    private static readonly DateTime Later = new(2026, 9, 30, 8, 0, 0, DateTimeKind.Utc);
+
+    private static BenchDocument Current(params BenchResult[] b) =>
+        new(1, "NEWHOST", "newdb", Later, 3, b.ToList());
+
+    private static HashSet<string> Passed(params string[] n) => new(n, StringComparer.OrdinalIgnoreCase);
+
+    [Fact]
+    public void Merge_replaces_pass_bench_present_in_both()
+    {
+        var m = BenchReport.Merge(Doc(Bench("bench_x", 100)), Current(Bench("bench_x", 200)), Passed("bench_x"));
+        Assert.Equal(200, Assert.Single(m.Benchmarks).ReadsPerOp);
+    }
+
+    [Fact]
+    public void Merge_keeps_bench_only_in_baseline()
+    {
+        var old = Bench("bench_old", 100);
+        var m = BenchReport.Merge(Doc(old, Bench("bench_x", 1)), Current(Bench("bench_x", 2)), Passed("bench_x"));
+        Assert.Same(old, m.Benchmarks.Single(b => b.Name == "bench_old"));
+    }
+
+    [Fact]
+    public void Merge_adds_pass_bench_only_in_current()
+    {
+        var m = BenchReport.Merge(Doc(Bench("bench_x", 1)), Current(Bench("bench_new", 7)), Passed("bench_new"));
+        Assert.Equal(new[] { "bench_x", "bench_new" }, m.Benchmarks.Select(b => b.Name));
+        Assert.Equal(7, m.Benchmarks[1].ReadsPerOp);
+    }
+
+    [Fact]
+    public void Merge_keeps_baseline_entry_when_bench_failed()
+    {
+        var old = Bench("bench_broken", 100);
+        var m = BenchReport.Merge(Doc(old), Current(Bench("bench_broken", 999)), Passed());
+        Assert.Same(old, Assert.Single(m.Benchmarks));
+    }
+
+    [Fact]
+    public void Merge_header_comes_from_current_run()
+    {
+        var m = BenchReport.Merge(Doc(Bench("bench_x", 1)), Current(Bench("bench_x", 2)), Passed("bench_x"));
+        Assert.Equal("NEWHOST", m.Server);
+        Assert.Equal("newdb", m.Database);
+        Assert.Equal(Later, m.Date);
+        Assert.Equal(3, m.Count);
+        Assert.Equal(BenchReport.Schema, m.Schema);
+    }
+
+    [Fact]
+    public void Update_exit_is_0_when_flagged_but_all_pass()
+    {
+        var c = BenchReport.Compare(Doc(Bench("bench_x", 100)), Doc(Bench("bench_x", 500, threshold: 10)));
+        Assert.Equal(1, c.ExitCode);
+        Assert.Equal(0, BenchReport.ExitCode(anyFailed: false, c, updateBaseline: true));
+        Assert.Equal(1, BenchReport.ExitCode(anyFailed: false, c, updateBaseline: false));
+    }
+
+    [Fact]
+    public void ExitCode_without_comparison()
+    {
+        Assert.Equal(1, BenchReport.ExitCode(true, null, false));
+        Assert.Equal(0, BenchReport.ExitCode(false, null, false));
+    }
+
+    [Fact]
+    public void LoadBaseline_with_update_rejects_missing_parent_and_directory()
+    {
+        TestScratch.Use(dir =>
+        {
+            Assert.Throws<DirectoryNotFoundException>(() =>
+                BenchReport.LoadBaseline(Path.Combine(dir, "nope", "b.json"), updateBaseline: true));
+            Assert.Throws<IOException>(() => BenchReport.LoadBaseline(dir, updateBaseline: true));
+        });
+    }
+
+    [Fact]
+    public void WriteJson_to_a_directory_throws_and_leaves_no_temp_file()
+    {
+        TestScratch.Use(dir =>
+        {
+            var target = Path.Combine(dir, "out");
+            Directory.CreateDirectory(target);
+            Assert.ThrowsAny<Exception>(() => BenchReport.WriteJson(target, Doc(Bench("bench_x", 1))));
+            Assert.Empty(Directory.GetFiles(dir));
+        });
+    }
+
+    [Fact]
+    public void Update_exit_is_1_when_a_bench_failed()
+    {
+        var c = BenchReport.Compare(Doc(Bench("bench_x", 100)), Doc(Bench("bench_x", 100)));
+        Assert.Equal(1, BenchReport.ExitCode(anyFailed: true, c, updateBaseline: true));
+        Assert.Equal(1, BenchReport.ExitCode(anyFailed: true, null, updateBaseline: true));
+    }
+
+    [Fact]
+    public void Update_with_null_baseline_creates_file_from_passed_only()
+    {
+        TestScratch.Use(dir =>
+        {
+            var path = Path.Combine(dir, "baseline.json");
+            Assert.Null(BenchReport.LoadBaseline(path, updateBaseline: true));
+            Assert.Throws<FileNotFoundException>(() => BenchReport.LoadBaseline(path, updateBaseline: false));
+
+            BenchReport.UpdateBaseline(path, null, Current(Bench("bench_ok", 5), Bench("bench_bad", 9)), Passed("bench_ok"));
+            var back = BenchReport.ReadJson(path);
+            Assert.Equal("bench_ok", Assert.Single(back.Benchmarks).Name);
+            Assert.Equal("NEWHOST", back.Server);
+        });
+    }
+
+    [Fact]
+    public void Updated_baseline_round_trips_with_schema_1()
+    {
+        TestScratch.Use(dir =>
+        {
+            var path = Path.Combine(dir, "baseline.json");
+            BenchReport.WriteJson(path, Doc(Bench("bench_old", 1), Bench("bench_x", 100)));
+            var baseline = BenchReport.LoadBaseline(path, updateBaseline: true)!;
+
+            BenchReport.UpdateBaseline(path, baseline, Current(Bench("bench_x", 200, threshold: 10)), Passed("bench_x"));
+            Assert.Contains("\"schema\": 1", File.ReadAllText(path));
+            var back = BenchReport.ReadJson(path);
+            Assert.Equal(1, back.Schema);
+            Assert.Equal(new[] { "bench_old", "bench_x" }, back.Benchmarks.Select(b => b.Name));
+            Assert.Equal(200, back.Benchmarks[1].ReadsPerOp);
+            Assert.Equal(10, back.Benchmarks[1].ThresholdPct);
+            Assert.Equal(Later, back.Date);
+            Assert.Equal(new[] { "baseline.json" }, Directory.GetFiles(dir).Select(Path.GetFileName));
+        });
+    }
 }

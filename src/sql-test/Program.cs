@@ -155,7 +155,7 @@ static int RunBench(Runner runner, List<TestCase> cases, Options opts, ResolvedP
     BenchDocument? baseline = null;
     if (!string.IsNullOrEmpty(opts.BenchBaseline))
     {
-        try { baseline = BenchReport.ReadJson(opts.BenchBaseline); }
+        try { baseline = BenchReport.LoadBaseline(opts.BenchBaseline, opts.BenchUpdateBaseline); }
         catch (Exception ex)
         {
             Console.Error.WriteLine($"sql-test: FATAL: cannot read baseline: {ex.Message}");
@@ -211,16 +211,30 @@ static int RunBench(Runner runner, List<TestCase> cases, Options opts, ResolvedP
     if (!string.IsNullOrEmpty(opts.BenchOut))
         BenchReport.WriteJson(opts.BenchOut, doc);
 
-    int exit = results.Any(r => r.Outcome is Outcome.FAIL or Outcome.ERROR or Outcome.TIMEOUT) ? 1 : 0;
+    bool anyFailed = results.Any(r => r.Outcome is Outcome.FAIL or Outcome.ERROR or Outcome.TIMEOUT);
+    BenchComparison? cmp = null;
     if (baseline != null)
     {
         var failedNames = results.Where(r => r.Outcome is Outcome.FAIL or Outcome.ERROR or Outcome.TIMEOUT)
                                  .Select(r => r.Name).ToList();
-        var cmp = BenchReport.Compare(baseline, doc, failedNames);
+        cmp = BenchReport.Compare(baseline, doc, failedNames);
         foreach (var line in BenchReport.FormatComparison(cmp)) Console.Error.WriteLine(line);
-        exit = Math.Max(exit, cmp.ExitCode);
     }
-    return exit;
+    if (opts.BenchUpdateBaseline)
+    {
+        var passed = results.Where(r => r.Outcome == Outcome.PASS).Select(r => r.Name)
+                            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        try { BenchReport.UpdateBaseline(opts.BenchBaseline!, baseline, doc, passed); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Console.Error.WriteLine($"sql-test: FATAL: cannot write baseline: {ex.Message}");
+            return 2;
+        }
+        Console.Error.WriteLine(baseline == null
+            ? $"sql-test: baseline created: {opts.BenchBaseline} ({passed.Count} benchmarks)"
+            : $"sql-test: baseline updated: {opts.BenchBaseline} ({passed.Count} benchmarks replaced or added)");
+    }
+    return BenchReport.ExitCode(anyFailed, cmp, opts.BenchUpdateBaseline);
 }
 
 static void PrintResult(TestResult r, bool verbose)

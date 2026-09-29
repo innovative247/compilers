@@ -52,8 +52,21 @@ public static class BenchReport
         r.Tables.Select(t => string.Format(Inv, "          {0,-36} {1,8:F0} reads/op {2,6:F0} phys/op",
             t.Table, t.ReadsPerOp, t.PhysPerOp));
 
-    public static void WriteJson(string path, BenchDocument doc) =>
-        File.WriteAllText(path, JsonSerializer.Serialize(doc, Json));
+    // Temp file + move in the same directory, so a crash never leaves a truncated baseline.
+    public static void WriteJson(string path, BenchDocument doc)
+    {
+        var full = Path.GetFullPath(path);
+        var tmp = Path.Combine(Path.GetDirectoryName(full)!, $".{Path.GetFileName(full)}.{Guid.NewGuid():N}.tmp");
+        try
+        {
+            File.WriteAllText(tmp, JsonSerializer.Serialize(doc, Json));
+            File.Move(tmp, full, overwrite: true);
+        }
+        finally
+        {
+            if (File.Exists(tmp)) File.Delete(tmp);
+        }
+    }
 
     public static BenchDocument ReadJson(string path)
     {
@@ -119,4 +132,36 @@ public static class BenchReport
             yield return line;
         }
     }
+
+    // Header from the current run; entries merged by name so benchmarks not run (or failed) keep their reference.
+    public static BenchDocument Merge(BenchDocument? baseline, BenchDocument current, IReadOnlySet<string> passed)
+    {
+        var fresh = current.Benchmarks.Where(b => passed.Contains(b.Name))
+                                      .ToDictionary(b => b.Name, StringComparer.OrdinalIgnoreCase);
+        var merged = new List<BenchResult>();
+        foreach (var b in baseline?.Benchmarks ?? new List<BenchResult>())
+            merged.Add(fresh.Remove(b.Name, out var cur) ? cur : b);
+        merged.AddRange(current.Benchmarks.Where(b => fresh.ContainsKey(b.Name)));
+        return current with { Schema = Schema, Benchmarks = merged };
+    }
+
+    // An update accepts the flagged deltas, so only a benchmark's own failure fails the run.
+    public static int ExitCode(bool anyFailed, BenchComparison? cmp, bool updateBaseline) =>
+        anyFailed ? 1 : updateBaseline ? 0 : cmp?.ExitCode ?? 0;
+
+    // Null means "no baseline yet": only valid when the run is going to create it.
+    // The create target is checked here so a bad path fails before the benchmarks run, not after.
+    public static BenchDocument? LoadBaseline(string path, bool updateBaseline)
+    {
+        if (!updateBaseline || File.Exists(path)) return ReadJson(path);
+        if (Directory.Exists(path))
+            throw new IOException($"baseline path is a directory: {path}");
+        var parent = Path.GetDirectoryName(Path.GetFullPath(path))!;
+        if (!Directory.Exists(parent))
+            throw new DirectoryNotFoundException($"baseline directory does not exist: {parent}");
+        return null;
+    }
+
+    public static void UpdateBaseline(string path, BenchDocument? baseline, BenchDocument current, IReadOnlySet<string> passed) =>
+        WriteJson(path, Merge(baseline, current, passed));
 }
