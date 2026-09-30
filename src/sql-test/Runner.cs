@@ -1276,16 +1276,132 @@ public class Runner
         return string.Equals(Norm(a), Norm(b), OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
     }
 
-    private string BuildConnectionString(string database)
+    private string BuildConnectionString(string database) => BuildConnectionString(_profile, database);
+
+    private string BuildConnectionString(ResolvedProfile p, string database)
     {
         var sb = new StringBuilder();
-        sb.Append($"Data Source={_profile.Host}");
-        sb.Append($";Port={_profile.Port}");
-        sb.Append($";User ID={_profile.User}");
-        sb.Append($";Password={_profile.Pass}");
+        sb.Append($"Data Source={p.Host}");
+        sb.Append($";Port={p.Port}");
+        sb.Append($";User ID={p.User}");
+        sb.Append($";Password={p.Pass}");
         if (!string.IsNullOrEmpty(database))
             sb.Append($";Database={database}");
         sb.Append(";Pooling=false");
         return sb.ToString();
+    }
+
+    /// <summary>R11: measures the I/O of <c>req.Proc</c> lines From-To per call, as <paramref name="asProfile"/> when set. 0 measured, 1 not reached or unclosed, 2 failure.</summary>
+    public int Spike(SpikeRequest req, ResolvedProfile? asProfile, TextWriter report, TextWriter? error = null)
+    {
+        var meter = IoMeters.For(_profile.ServerType);
+        if (meter == null)
+        {
+            (error ?? report).WriteLine($"sql-test: I/O measurement is not supported for server type {_profile.ServerType}");
+            return 2;
+        }
+        var deps = new SpikeDeps(_locator, _scratchCompiler, _opts.Database,
+            OpenControl: () =>
+            {
+                var conn = new AseConnection(BuildConnectionString(_opts.Database));
+                try { conn.Open(); }
+                catch { conn.Dispose(); throw; }
+                // Restores run to completion: a cancelled restore leaves product rows dirty.
+                return (new AseSqlExec(conn, _opts.TimeoutSeconds), new AseSqlExec(conn, 0), conn);
+            },
+            RunSide: (db, tran, sql, onOpen) => RunSpikeSide(asProfile ?? _profile, db, tran, sql, onOpen, req.TimeoutSeconds),
+            AsLogin: asProfile?.User,
+            Meter: meter,
+            Sweep: () => { if (DiscoverSweepRestoreTimeout(_opts) is { } t) SweepWriterJournal(t); });
+        return SqlTest.Spike.Run(req, deps, report, error);
+    }
+
+    // A fresh connection per call, as the --as login when set; the stat lines arrive as info messages.
+    private SpikeRun RunSpikeSide(ResolvedProfile p, string? db, bool tran, string sql, Action<int, int> onOpen, int timeout)
+    {
+        var messages = new List<(int, string)>();
+        int? trancount = null, raised = null;
+        int expected = tran ? 1 : 0;
+        AseTransaction? tx = null;
+        using var conn = new AseConnection(BuildConnectionString(p, db ?? _opts.Database));
+        conn.InfoMessage += (_, e) =>
+        {
+            foreach (AseError err in e.Errors)
+            {
+                if (err.Severity >= 11) continue;
+                var msg = err.Message ?? "";
+                if (msg.StartsWith("Changed client character set") ||
+                    msg.StartsWith("Changed database context") ||
+                    msg.StartsWith("Changed language setting"))
+                    continue;
+                messages.Add((err.MessageNumber, msg));
+            }
+        };
+        try
+        {
+            conn.Open();
+            var me = new AseSqlExec(conn, timeout).Rows("select @@spid, kpid from master..sysprocesses where spid = @@spid").Single();
+            onOpen(Convert.ToInt32(me[0], CultureInfo.InvariantCulture), Convert.ToInt32(me[1], CultureInfo.InvariantCulture));
+            if (tran) tx = conn.BeginTransaction();
+
+            using (var cmd = new AseCommand(sql, conn) { CommandTimeout = timeout })
+            {
+                if (tx != null) cmd.Transaction = tx;
+                try { CommandDeadline.Run(cmd, timeout, () => { cmd.ExecuteNonQuery(); }); }
+                catch (AseException ex)
+                {
+                    raised = ex.Errors.Cast<AseError>().FirstOrDefault(e => e.Severity >= 11)?.MessageNumber
+                             ?? (ex.Errors.Count > 0 ? ex.Errors[0].MessageNumber : 0);
+                }
+            }
+
+            try
+            {
+                using var check = new AseCommand("select @@trancount", conn) { CommandTimeout = timeout };
+                if (tx != null) check.Transaction = tx;
+                trancount = Convert.ToInt32(CommandDeadline.Run(check, timeout, check.ExecuteScalar), CultureInfo.InvariantCulture);
+            }
+            catch { /* connection unusable: trancount stays unknown */ }
+            return new SpikeRun(messages, raised, trancount, expected, null);
+        }
+        catch (Exception ex)
+        {
+            // CommandTimeoutException carries a readable "command timeout: exceeded Ns" message.
+            return new SpikeRun(messages, raised, trancount, expected, ex);
+        }
+        finally
+        {
+            try
+            {
+                if (tx != null) tx.Rollback();
+                else if (trancount > 0)
+                {
+                    using var rb = new AseCommand("rollback tran", conn) { CommandTimeout = timeout };
+                    CommandDeadline.Run(rb, timeout, () => rb.ExecuteNonQuery());
+                }
+            }
+            catch { /* closing the connection rolls back what is left */ }
+        }
+    }
+
+    /// <summary>
+    /// Refuses an unknown <c>--as</c> alias, one on another platform, host or port than <paramref name="runnerServer"/>,
+    /// or one without a stored password. It reads settings only and never prompts.
+    /// </summary>
+    public static void PrecheckAsProfile(ProfileManager mgr, string alias, string runnerServer)
+    {
+        if (mgr.ResolveProfile(alias) is not { } a)
+            throw new ArgumentException($"unknown --as {alias}: no such profile");
+        if (mgr.ResolveProfile(runnerServer) is not { } r)
+            throw new ArgumentException($"--as {a.ProfileName}: runner profile {runnerServer} is not in settings");
+        var (at, rt) = (ibsCompiler.ibs_compiler_common.ParsePlatform(a.Profile.Platform),
+                        ibsCompiler.ibs_compiler_common.ParsePlatform(r.Profile.Platform));
+        if (at != rt)
+            throw new ArgumentException($"--as {a.ProfileName} is {at} but profile {r.ProfileName} is {rt}; --as must reach the same server");
+        if (!string.Equals(a.Profile.Host, r.Profile.Host, StringComparison.OrdinalIgnoreCase) || a.Profile.Port != r.Profile.Port)
+            throw new ArgumentException($"--as {a.ProfileName} is {a.Profile.Host}:{a.Profile.Port} but profile {r.ProfileName} is " +
+                                        $"{r.Profile.Host}:{r.Profile.Port}; --as must reach the same server");
+        if (string.IsNullOrEmpty(a.Profile.Password))
+            throw new ArgumentException($"--as {a.ProfileName} has no stored password; --as never prompts");
     }
 }

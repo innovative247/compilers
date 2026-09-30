@@ -129,7 +129,6 @@ public class OptionsTests
     [Theory]
     [InlineData("--compare-rev", "123")]
     [InlineData("--proc", "pro_a")]
-    [InlineData("--calls", "c.json")]
     public void Compare_flag_alone_is_refused(string flag, string value)
     {
         var ex = Assert.Throws<ArgumentException>(() => Options.Parse(new[] { "sbntest", "G", flag, value }));
@@ -203,4 +202,91 @@ public class OptionsTests
     [Fact]
     public void Compare_rev_accepts_variant_profile() =>
         Assert.Equal("GONZO", Options.Parse(Compare.Concat(new[] { "--variant-profile", "GONZO" }).ToArray())!.VariantProfile);
+
+    private static readonly string[] SpikeArgs = { "sbntest", "G", "--spike", "pro_a", "--lines", "10-20", "--calls", "c.json" };
+
+    [Theory]
+    [InlineData("--spike", "pro_a")]
+    [InlineData("--lines", "10-20")]
+    public void Spike_flag_alone_is_refused(string flag, string value)
+    {
+        var ex = Assert.Throws<ArgumentException>(() => Options.Parse(new[] { "sbntest", "G", flag, value }));
+        Assert.Equal("--spike, --lines and --calls go together", ex.Message);
+    }
+
+    [Fact]
+    public void Calls_alone_is_refused()
+    {
+        var ex = Assert.Throws<ArgumentException>(() => Options.Parse(new[] { "sbntest", "G", "--calls", "c.json" }));
+        Assert.Equal("--calls requires --compare-rev or --spike", ex.Message);
+    }
+
+    [Fact]
+    public void Proc_with_calls_names_the_compare_group()
+    {
+        var ex = Assert.Throws<ArgumentException>(() => Options.Parse(new[] { "sbntest", "G", "--proc", "P", "--calls", "c.json" }));
+        Assert.Equal("--compare-rev, --proc and --calls go together", ex.Message);
+    }
+
+    [Fact]
+    public void Spike_flags_together_parse()
+    {
+        var o = Options.Parse(SpikeArgs.Concat(new[] { "--as", "RO_USER" }).ToArray())!;
+        Assert.Equal(("pro_a", "10-20", "c.json", "RO_USER"), (o.Spike, o.SpikeLines, o.Calls, o.As));
+        Assert.Null(o.CompareRev);
+        Assert.Null(Options.Parse(SpikeArgs)!.As);
+        Assert.Contains("--spike", Options.Usage);
+        Assert.Contains("--as", Options.Usage);
+    }
+
+    [Fact]
+    public void As_without_spike_is_refused()
+    {
+        var ex = Assert.Throws<ArgumentException>(() => Options.Parse(new[] { "sbntest", "G", "--as", "RO_USER" }));
+        Assert.Equal("--as requires --spike", ex.Message);
+    }
+
+    [Theory]
+    [InlineData("20-10")]
+    [InlineData("a-b")]
+    [InlineData("0-5")]
+    public void Spike_bad_lines_are_refused(string lines)
+    {
+        var args = (string[])SpikeArgs.Clone();
+        args[5] = lines;
+        var ex = Assert.Throws<ArgumentException>(() => Options.Parse(args));
+        Assert.Equal($"--lines {lines}: not a range <a>-<b> with 1 <= a <= b", ex.Message);
+    }
+
+    [Fact]
+    public void Spike_proc_must_be_an_identifier()
+    {
+        var args = (string[])SpikeArgs.Clone();
+        args[3] = "dbo.pro_a";
+        Assert.Equal("--spike dbo.pro_a: not an identifier", Assert.Throws<ArgumentException>(() => Options.Parse(args)).Message);
+    }
+
+    [Theory]
+    [InlineData("--compare-rev", "5")]
+    [InlineData("--proc", "pro_b")]
+    [InlineData("--compare-print", null)]
+    [InlineData("--pattern", "test\\_x")]
+    [InlineData("--bench", "b")]
+    [InlineData("--parallel", "2")]
+    [InlineData("--list", null)]
+    public void Spike_refuses_other_modes(string flag, string? value)
+    {
+        var args = SpikeArgs.Append(flag).ToList();
+        if (value != null) args.Add(value);
+        var ex = Assert.Throws<ArgumentException>(() => Options.Parse(args.ToArray()));
+        Assert.Equal($"--spike runs alone; drop {flag}", ex.Message);
+    }
+
+    [Fact]
+    public void Spike_accepts_timeout_verbose_source_root_variant_profile_and_login()
+    {
+        var o = Options.Parse(SpikeArgs.Concat(new[] { "--timeout", "30", "--verbose", "--source-root", "/ir",
+                                                       "--variant-profile", "V", "-U", "u", "-P", "p" }).ToArray())!;
+        Assert.Equal((30, true, "/ir", "V", "u", "p"), (o.TimeoutSeconds, o.Verbose, o.SourceRoot, o.VariantProfile, o.User, o.Pass));
+    }
 }

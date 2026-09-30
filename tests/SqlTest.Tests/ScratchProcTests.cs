@@ -603,4 +603,39 @@ public class ScratchProcTests
         var spec = Spec() with { BatchEdit = b => b.Append("-- marker x").ToList() };
         Assert.EndsWith("-- marker x__t\ngo\n", ScratchProc.Render(spec));
     }
+
+    [Fact]
+    public void SplitBatchesWithLines_reports_the_first_kept_line_of_each_batch()
+    {
+        // 1 use / 2 go / 3 "" / 4 "" / 5 create / 6 select / 7 go / 8 "  " / 9 grant / 10 go / 11 ""
+        var text = "use sbntest\r\ngo\r\n\r\n\r\ncreate proc x as\r\nselect 1\r\ngo\r\n  \r\ngrant execute on x to public\r\ngo\r\n";
+        var b = ScratchProc.SplitBatchesWithLines(text);
+        Assert.Equal(new[] { ("use sbntest", 1), ("create proc x as\nselect 1", 5), ("  \ngrant execute on x to public", 8) }, b);
+    }
+
+    [Fact]
+    public void SplitBatchesWithLines_counts_lines_after_a_blank_batch_and_without_a_trailing_go()
+    {
+        var b = ScratchProc.SplitBatchesWithLines("go\n\ngo\n\nselect 1\n\n");
+        Assert.Equal(new[] { ("select 1", 5) }, b);
+    }
+
+    [Fact]
+    public void SplitBatches_output_is_unchanged()
+    {
+        Assert.Equal(new[] { "use sbntest", "create proc x as select 1", "create proc other as select 2" }, ScratchProc.SplitBatches(Source));
+        Assert.Equal(new[] { "  \nselect 1", "select 2\n " }, ScratchProc.SplitBatches("\n\n  \nselect 1\n\nGO\r\n\n \ngo\nselect 2\n \n\n"));
+    }
+
+    [Fact]
+    public void CreatesProc_and_CreateLineOffset_find_the_create_line()
+    {
+        var batch = "-- header\n\n  CREATE PROCEDURE X @a int\nas select 1";
+        Assert.True(ScratchProc.CreatesProc(batch, "x"));
+        Assert.False(ScratchProc.CreatesProc(batch, "y"));
+        Assert.False(ScratchProc.CreatesProc("exec x", "x"));
+        Assert.Equal(2, ScratchProc.CreateLineOffset(batch, "x"));
+        Assert.Equal(0, ScratchProc.CreateLineOffset("create proc x as select 1", "x"));
+        Assert.Null(ScratchProc.CreateLineOffset(batch, "y"));
+    }
 }

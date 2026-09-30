@@ -124,8 +124,21 @@ public static class ScratchProc
 
     /// <summary>The batch creating <paramref name="proc"/>, as selected for the variant; null when the text has none.</summary>
     internal static string? CreateBatch(string text, string proc) =>
-        SelectBatches(text, proc).FirstOrDefault(b => CreateProcLine.Matches(b)
-            .Any(m => string.Equals(m.Groups[1].Value, proc, StringComparison.OrdinalIgnoreCase)));
+        SelectBatches(text, proc).FirstOrDefault(b => CreatesProc(b, proc));
+
+    internal static bool CreatesProc(string batch, string proc) => CreateMatch(batch, proc) != null;
+
+    /// <summary>0-based line index, within <paramref name="batch"/>, of the line creating <paramref name="proc"/>; null when none does.</summary>
+    internal static int? CreateLineOffset(string batch, string proc)
+    {
+        if (CreateMatch(batch, proc) is not { } m) return null;
+        // `^\s*` also spans blank lines above, so count up to the `create` token, not the match start.
+        var create = m.Index + (m.Value.Length - m.Value.TrimStart().Length);
+        return batch.AsSpan(0, create).Count('\n');
+    }
+
+    private static Match? CreateMatch(string batch, string proc) =>
+        CreateProcLine.Matches(batch).FirstOrDefault(m => string.Equals(m.Groups[1].Value, proc, StringComparison.OrdinalIgnoreCase));
 
     /// <summary>
     /// dbo's proc text, rows concatenated in colid order; null when <c>object_id</c> is null.
@@ -151,14 +164,20 @@ public static class ScratchProc
         && UseLine.IsMatch(first);
 
     // Runsql's splitter is private; a `go` line ends a batch, blank batches are dropped.
-    internal static List<string> SplitBatches(string text)
+    internal static List<string> SplitBatches(string text) => SplitBatchesWithLines(text).Select(b => b.Text).ToList();
+
+    /// <summary>Batches as <see cref="SplitBatches"/> returns them, each with the 1-based source line of its first kept line.</summary>
+    internal static List<(string Text, int FirstLine)> SplitBatchesWithLines(string text)
     {
-        var batches = new List<string>();
+        var batches = new List<(string, int)>();
         var current = new List<string>();
-        foreach (var line in text.Replace("\r\n", "\n").Split('\n'))
+        var start = 1;
+        var lines = text.Replace("\r\n", "\n").Split('\n');
+        for (var n = 0; n < lines.Length; n++)
         {
-            if (!string.Equals(line.Trim(), "go", StringComparison.OrdinalIgnoreCase)) { current.Add(line); continue; }
+            if (!string.Equals(lines[n].Trim(), "go", StringComparison.OrdinalIgnoreCase)) { current.Add(lines[n]); continue; }
             Flush();
+            start = n + 2;
         }
         Flush();
         return batches;
@@ -166,7 +185,8 @@ public static class ScratchProc
         void Flush()
         {
             var b = string.Join("\n", current).Trim('\n');
-            if (b.Trim().Length > 0) batches.Add(b);
+            // Trim('\n') drops only empty lines, so the leading "" count is the offset of the first kept line.
+            if (b.Trim().Length > 0) batches.Add((b, start + current.TakeWhile(l => l.Length == 0).Count()));
             current.Clear();
         }
     }
@@ -311,6 +331,21 @@ public sealed class ScratchSession : IDisposable
         foreach (var h in _handles.AsEnumerable().Reverse().ToList())
             if (Drop(h) is { } err) failures.Add(err);
         return failures.Count == 0 ? null : string.Join(" | ", failures);
+    }
+
+    /// <summary>Grants execute on the scratch proc to <paramref name="dbUser"/>. Null on success, else the refusal.</summary>
+    public string? Grant(ScratchHandle h, string dbUser)
+    {
+        // The user reaches the grant unquoted.
+        if (!WriterJournal.IsIdent(dbUser)) return $"cannot grant execute on {h.Db}..{h.Name} to '{dbUser}': not a plain identifier";
+        try
+        {
+            _x.Exec($"use {h.Db}");
+            try { _x.Exec($"grant execute on {h.Name} to {dbUser}"); }
+            finally { _x.Exec($"use {_home}"); }
+            return null;
+        }
+        catch (Exception ex) { return $"grant execute on {h.Db}..{h.Name} to {dbUser} failed: {ex.Message}"; }
     }
 
     public void Dispose() => DropAll();

@@ -2752,7 +2752,8 @@ function Test-SqlTest {
              'sql-test.variant.on','sql-test.variant.off','sql-test.variant.drop','sql-test.variant.refuse.unknown-opt',
              'sql-test.variant.refuse.chain-break','sql-test.variant.refuse.tag-conflict','sql-test.variant.sweep',
              'sql-test.variant.refuse.drift','sql-test.variant.profile',
-             'sql-test.compare.same','sql-test.compare.diff','sql-test.compare.refuse')
+             'sql-test.compare.same','sql-test.compare.diff','sql-test.compare.refuse',
+             'sql-test.spike.range','sql-test.spike.refuse','sql-test.spike.refuse.user')
     if (-not (Get-Profile $SybaseProfile)) {
         foreach ($id in $ids) { Skip-Case $id "profile '$SybaseProfile' not in settings.json - needs a live Sybase profile with sbntest (-SybaseProfile)" }
         return
@@ -3383,6 +3384,67 @@ function Test-SqlTest {
                 if ($out -match '(?m)^compare \w+:') { throw "a refused no_tran call ran. output: $out" }
                 Assert-CompareClean "after the no_tran call list (output: $out)"
             } finally { Remove-CompareRepo $t }
+        }
+    }
+
+    # --spike: measures a line range of a scratch copy of css/ss/test/pro_test_spike_fx.sql. Fixture lines:
+    # loop body range 19-20, multi-line select 23-26, grant batch 32. Needs the dbo login ($variantProfile).
+    $spikeIds   = $ids | Where-Object { $_ -like 'sql-test.spike.*' }
+    $spikeCalls = Join-Path $PSScriptRoot 'fixtures/sql/spike-calls.json'
+    if (-not $variantReady) {
+        foreach ($id in $spikeIds) { Skip-Case $id "profile '$variantProfile' not in settings.json - spike scratch compiles need a login that is dbo in sbntest" }
+    } else {
+        # No scratch proc, journal row or item for a pro_test_spike_fx run.
+        function Assert-SpikeClean([string]$When) {
+            $r = Invoke-Cli runsql (Join-Path $PSScriptRoot 'fixtures/sql/sql-test-spike-dump.sql') $db $variantProfile '--changelog:n'
+            Assert-ExitCode $r
+            $d = "$($r.StdOut)`n$($r.StdErr)"
+            foreach ($k in @('spike-procs', 'spike-journal-rows', 'spike-items')) {
+                if ($d -notmatch "$k`: 0\b") { throw "$k not 0 $When. dump: $d" }
+            }
+        }
+        function Invoke-Spike([string]$Lines, [string[]]$Extra = @()) {
+            Invoke-Cli sql-test $db $variantProfile '--spike' 'pro_test_spike_fx' '--lines' $Lines '--calls' $spikeCalls `
+                '--source-root' (Join-Path $PSScriptRoot 'fixtures/sql') '--timeout' '30' @Extra
+        }
+
+        Test-Case 'sql-test.spike.range' {
+            Assert-SpikeClean 'before --spike'
+            $r = Invoke-Spike '19-20'
+            $out = "$($r.StdOut)`n$($r.StdErr)"
+            Assert-ExitCode $r 1
+            if ($out -notmatch '(?m)^spike three: .*: 3 pass') { throw "expected 3 passes for call three. output: $out" }
+            if ($out -notmatch '(?m)^\s+sysusers\s+logical') { throw "expected sysusers under call three. output: $out" }
+            if ($out -match '(?m)^\s+(sysobjects|syscolumns)\s+logical') { throw "a table outside the range was counted. output: $out" }
+            if ($out -notmatch '(?m)^spike zero: .*: range not reached') { throw "expected 'range not reached' for call zero. output: $out" }
+            Assert-SpikeClean "after --spike (output: $out)"
+        }
+        Test-Case 'sql-test.spike.refuse' {
+            Assert-SpikeClean 'before the refusals'
+            # Starts inside the multi-line select (lines 23-26): the scratch copy does not compile.
+            $r = Invoke-Spike '24-28'
+            $out = "$($r.StdOut)`n$($r.StdErr)"
+            Assert-ExitCode $r 2
+            if ($out -notmatch 'compile of') { throw "expected the compile refusal. output: $out" }
+            if ($out -match '(?m)^spike \w+:') { throw "a refused range measured a call. output: $out" }
+            Assert-SpikeClean "after the mid-select range (output: $out)"
+
+            # Line 32 is the grant batch, not the proc's own create batch.
+            $r = Invoke-Spike '32-32'
+            $out = "$($r.StdOut)`n$($r.StdErr)"
+            Assert-ExitCode $r 2
+            if ($out -notmatch 'create batch') { throw "expected the create batch refusal. output: $out" }
+            if ($out -match '(?m)^spike \w+:') { throw "a refused range measured a call. output: $out" }
+            Assert-SpikeClean "after the grant-batch range (output: $out)"
+        }
+        Test-Case 'sql-test.spike.refuse.user' {
+            Assert-SpikeClean 'before --as GONZO_MON'
+            # monitor has no user in sbntest, so --as cannot impersonate it.
+            $r = Invoke-Spike '19-20' @('--as', 'GONZO_MON')
+            $out = "$($r.StdOut)`n$($r.StdErr)"
+            Assert-ExitCode $r 2
+            if ($out -match '(?m)^spike \w+:') { throw "a refused --as measured a call. output: $out" }
+            Assert-SpikeClean "after --as GONZO_MON (output: $out)"
         }
     }
 }

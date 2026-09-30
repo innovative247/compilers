@@ -23,7 +23,11 @@ catch (Exception ex)
 var profileMgr = new ProfileManager();
 if (!profileMgr.ValidateProfile(opts.Server)) return 2;
 // Before Resolve, which can prompt for a password, and before the banner.
-try { Runner.PrecheckVariantProfile(profileMgr, opts.VariantProfile, opts.Server); }
+try
+{
+    Runner.PrecheckVariantProfile(profileMgr, opts.VariantProfile, opts.Server);
+    if (opts.As != null) Runner.PrecheckAsProfile(profileMgr, opts.As, opts.Server);
+}
 catch (ArgumentException ex)
 {
     Console.Error.WriteLine($"sql-test: {ex.Message}");
@@ -47,8 +51,14 @@ catch (ArgumentException ex)
     return 2;
 }
 
+// --as resolves with its own stored password (checked non-empty above), so Resolve never prompts; -U/-P never apply to it.
+ResolvedProfile? asProfile = opts.As == null ? null
+    : profileMgr.Resolve(new ibsCompiler.CommandVariables { Server = opts.As, Pass = profileMgr.ResolveProfile(opts.As)!.Value.Profile.Password });
+
 Console.Error.WriteLine(
-    opts.CompareRev != null ? $"sql-test: compare-rev r{opts.CompareRev} proc={opts.Proc} db={opts.Database} profile={profile.ProfileName}"
+    opts.Spike != null ? $"sql-test: spike {opts.Spike} lines {opts.SpikeLines} db={opts.Database} profile={profile.ProfileName}" +
+                         (asProfile != null ? $" as={asProfile.ProfileName}" : "")
+    : opts.CompareRev != null ? $"sql-test: compare-rev r{opts.CompareRev} proc={opts.Proc} db={opts.Database} profile={profile.ProfileName}"
     : opts.BenchPattern == null ? $"sql-test: pattern='{opts.Pattern}' db={opts.Database} profile={profile.ProfileName}"
     : $"sql-test: bench='{opts.BenchPattern}' db={opts.Database} profile={profile.ProfileName}");
 
@@ -75,6 +85,21 @@ if (opts.CompareRev != null)
     catch (Exception ex)
     {
         Console.Error.WriteLine($"sql-test: FATAL: compare-rev failed: {ex.Message}");
+        return 2;
+    }
+}
+
+if (opts.Spike != null)
+{
+    try
+    {
+        Spike.TryParseLines(opts.SpikeLines!, out var from, out var to);
+        return runner.Spike(new SpikeRequest(opts.Spike, from, to, opts.Calls!, opts.As, opts.Verbose, opts.TimeoutSeconds),
+                            asProfile, Console.Out, Console.Error);
+    }
+    catch (Exception ex)
+    {
+        Console.Error.WriteLine($"sql-test: FATAL: spike failed: {ex.Message}");
         return 2;
     }
 }
