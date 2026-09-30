@@ -434,8 +434,10 @@ public class Runner
                 {
                     control = new AseConnection(BuildConnectionString(_opts.Database));
                     control.Open();
+                    // Restore has no deadline: giving up leaves the test's writes in the product table.
                     writer = WriterSession.Begin(new AseSqlExec(control, _opts.TimeoutSeconds),
-                                                 _opts.Database, tc.LogicalName, tc.Restores!);
+                                                 _opts.Database, tc.LogicalName, tc.Restores!,
+                                                 restoreX: new AseSqlExec(control, 0));
                 }
                 catch (WriterHeldException ex)
                 {
@@ -469,8 +471,9 @@ public class Runner
                 // mask the test's own outcome).
                 if (tc.Capture != null)
                     TryExec(conn, $"delete from {tc.Capture.IntoTable}");
-                if (tc.TeardownProc != null)
-                    TryExec(conn, $"exec {tc.TeardownProc}", _opts.TimeoutSeconds);
+                if (tc.TeardownProc != null
+                    && TryExec(conn, $"exec {tc.TeardownProc}", _opts.TimeoutSeconds) is CommandTimeoutException te)
+                    Console.Error.WriteLine($"sql-test: warning: {tc.LogicalName}: teardown {tc.TeardownProc} cut off: {te.Message}");
                 // Not best-effort: a leaked product row is the failure writer mode exists to prevent.
                 if (writer != null)
                 {
@@ -498,7 +501,7 @@ public class Runner
                     using var cmd = new AseCommand("select @@trancount", conn);
                     if (tx != null) cmd.Transaction = tx;
                     cmd.CommandTimeout = _opts.TimeoutSeconds;
-                    actual = Convert.ToInt32(cmd.ExecuteScalar());
+                    actual = Convert.ToInt32(CommandDeadline.Run(cmd, _opts.TimeoutSeconds, cmd.ExecuteScalar));
                 }
                 catch { return null; }   // connection unusable: keep the original outcome
                 if (actual == expected) return null;
@@ -568,7 +571,7 @@ public class Runner
                     using var off = new AseCommand(meter.DisableSql, conn);
                     if (tx != null) off.Transaction = tx;
                     off.CommandTimeout = DisableMeterTimeoutSeconds;
-                    off.ExecuteNonQuery();
+                    CommandDeadline.Run(off, DisableMeterTimeoutSeconds, off.ExecuteNonQuery);
                 }
                 catch { }
             }
@@ -595,7 +598,7 @@ public class Runner
                 using var cmd = new AseCommand(assertSql, conn);
                 if (tx != null) cmd.Transaction = tx;
                 cmd.CommandTimeout = _opts.TimeoutSeconds;
-                cmd.ExecuteNonQuery();
+                CommandDeadline.Run(cmd, _opts.TimeoutSeconds, cmd.ExecuteNonQuery);
                 regionEnd = messages.Count;
                 RunAfterRegion();
 
@@ -623,10 +626,11 @@ public class Runner
                 var violation = CheckTranCount();
                 Cleanup();
                 stopwatch.Stop();
-                var outcome = ex.Message.Contains("timeout", StringComparison.OrdinalIgnoreCase)
-                    ? Outcome.TIMEOUT : Outcome.ERROR;
+                var outcome = ClassifyUnexpected(ex);
+                // Keep what the proc printed before the cancel, for --verbose.
+                var output = ex is CommandTimeoutException ? $"{JoinMessages(messages)}\n{ex}" : ex.ToString();
                 return WithRestore(WithTranCheck(WithMeasure(new TestResult(tc.LogicalName, outcome, ex.Message,
-                    stopwatch.Elapsed.TotalSeconds, ex.ToString())), violation), restoreError);
+                    stopwatch.Elapsed.TotalSeconds, output)), violation), restoreError);
             }
         }
         finally
@@ -637,16 +641,17 @@ public class Runner
     }
 
     // Best-effort statement on the test connection; swallows errors so cleanup
-    // can never turn a PASS into a spurious failure.
-    private static void TryExec(AseConnection conn, string sql, int? timeout = null)
+    // can never turn a PASS into a spurious failure. Returns the swallowed error.
+    private static Exception? TryExec(AseConnection conn, string sql, int? timeout = null)
     {
         try
         {
             using var cmd = new AseCommand(sql, conn);
             if (timeout is int t) cmd.CommandTimeout = t;
-            cmd.ExecuteNonQuery();
+            CommandDeadline.Run(cmd, timeout ?? 0, cmd.ExecuteNonQuery);
+            return null;
         }
-        catch { }
+        catch (Exception ex) { return ex; }
     }
 
     private void RunCapturePhase(AseConnection conn, AseTransaction? tx,
@@ -669,13 +674,25 @@ public class Runner
         if (tx != null) cmd.Transaction = tx;
         cmd.CommandTimeout = timeout;
 
-        using var reader = cmd.ExecuteReader();
-        do
+        var rows = CommandDeadline.Run(cmd, timeout, () =>
         {
-            if (!ResultSetMatchesSchema(reader, tableSchema)) continue;
-            CopyResultSetIntoTable(reader, conn, tx, insertSql);
-        } while (reader.NextResult());
+            var read = new List<object[]>();
+            using var reader = cmd.ExecuteReader();
+            do
+            {
+                if (!ResultSetMatchesSchema(reader, tableSchema)) continue;
+                read.AddRange(ReadRows(reader));
+            } while (reader.NextResult());
+            return read;
+        });
+        // No deadline: each insert is one small row, and a cancel between them would be a no-op anyway.
+        InsertRows(rows, conn, tx, insertSql);
     }
+
+    // Non-AseException failures: our deadline, or a driver/socket timeout reported by message.
+    internal static Outcome ClassifyUnexpected(Exception ex) =>
+        ex is TimeoutException || ex.Message.Contains("timeout", StringComparison.OrdinalIgnoreCase)
+            ? Outcome.TIMEOUT : Outcome.ERROR;
 
     private static bool ResultSetMatchesSchema(IDataReader reader, CaptureTableSchema schema)
     {
@@ -685,18 +702,25 @@ public class Runner
         return true;
     }
 
-    private static void CopyResultSetIntoTable(IDataReader reader, AseConnection conn,
-                                                AseTransaction? tx, string insertSql)
+    private static IEnumerable<object[]> ReadRows(IDataReader reader)
     {
         while (reader.Read())
         {
+            var row = new object[reader.FieldCount];
+            for (int i = 0; i < row.Length; i++)
+                row[i] = reader.IsDBNull(i) ? DBNull.Value : reader.GetValue(i);
+            yield return row;
+        }
+    }
+
+    private static void InsertRows(List<object[]> rows, AseConnection conn, AseTransaction? tx, string insertSql)
+    {
+        foreach (var row in rows)
+        {
             using var insertCmd = new AseCommand(insertSql, conn);
             if (tx != null) insertCmd.Transaction = tx;
-            for (int i = 0; i < reader.FieldCount; i++)
-            {
-                var val = reader.IsDBNull(i) ? DBNull.Value : reader.GetValue(i);
-                insertCmd.Parameters.Add($"@p{i}", val);
-            }
+            for (int i = 0; i < row.Length; i++)
+                insertCmd.Parameters.Add($"@p{i}", row[i]);
             insertCmd.ExecuteNonQuery();
         }
     }

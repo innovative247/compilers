@@ -59,28 +59,31 @@ public sealed class AseSqlExec : ISqlExec
     public int Exec(string sql)
     {
         using var cmd = Cmd(sql);
-        return cmd.ExecuteNonQuery();
+        return CommandDeadline.Run(cmd, _timeoutSeconds, cmd.ExecuteNonQuery);
     }
 
     public object? Scalar(string sql)
     {
         using var cmd = Cmd(sql);
-        var v = cmd.ExecuteScalar();
+        var v = CommandDeadline.Run(cmd, _timeoutSeconds, cmd.ExecuteScalar);
         return v is DBNull ? null : v;
     }
 
     public List<object?[]> Rows(string sql)
     {
         using var cmd = Cmd(sql);
-        using var reader = cmd.ExecuteReader();
-        var rows = new List<object?[]>();
-        while (reader.Read())
+        return CommandDeadline.Run(cmd, _timeoutSeconds, () =>
         {
-            var row = new object?[reader.FieldCount];
-            for (int i = 0; i < row.Length; i++) row[i] = reader.IsDBNull(i) ? null : reader.GetValue(i);
-            rows.Add(row);
-        }
-        return rows;
+            using var reader = cmd.ExecuteReader();
+            var rows = new List<object?[]>();
+            while (reader.Read())
+            {
+                var row = new object?[reader.FieldCount];
+                for (int i = 0; i < row.Length; i++) row[i] = reader.IsDBNull(i) ? null : reader.GetValue(i);
+                rows.Add(row);
+            }
+            return rows;
+        });
     }
 }
 
@@ -323,6 +326,7 @@ internal static class WriterJournal
 public sealed class WriterSession
 {
     private readonly ISqlExec _x;
+    private readonly ISqlExec _restoreX;
     private readonly string _home;
     private readonly List<JournalItem> _items = new();
 
@@ -330,15 +334,17 @@ public sealed class WriterSession
     public IReadOnlyList<JournalItem> Items => _items;
     public List<string> Warnings { get; } = new();
 
-    private WriterSession(ISqlExec x, string home) { _x = x; _home = home; }
+    private WriterSession(ISqlExec x, ISqlExec restoreX, string home) { _x = x; _restoreX = restoreX; _home = home; }
 
     /// <summary>
     /// Commits the recipe before the test writes. A part-way failure undoes what
     /// it created and rethrows; nothing on the product database has changed yet.
+    /// <paramref name="restoreX"/> runs Restore; defaults to <paramref name="x"/>.
     /// </summary>
-    public static WriterSession Begin(ISqlExec x, string home, string testName, IReadOnlyList<RestoreSpec> specs)
+    public static WriterSession Begin(ISqlExec x, string home, string testName, IReadOnlyList<RestoreSpec> specs,
+                                      ISqlExec? restoreX = null)
     {
-        var s = new WriterSession(x, home);
+        var s = new WriterSession(x, restoreX ?? x, home);
         var snaps = new List<string>();
         WriterJournal.EnsureTables(x, home);
         try
@@ -395,5 +401,5 @@ public sealed class WriterSession
     }
 
     /// <summary>Null on success, else `restore failed: ...; journal row <id> kept`.</summary>
-    public string? Restore() => WriterJournal.Restore(_x, _home, JournalId, _items, Warnings);
+    public string? Restore() => WriterJournal.Restore(_restoreX, _home, JournalId, _items, Warnings);
 }

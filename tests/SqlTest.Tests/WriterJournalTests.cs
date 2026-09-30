@@ -256,6 +256,19 @@ public class WriterJournalTests
         Assert.DoesNotContain(x.Log, l => l.StartsWith("delete") || l.StartsWith("drop"));
     }
 
+    // Restore runs on its own exec (no deadline in production), never on Begin's.
+    [Fact]
+    public void Restore_uses_the_restore_exec()
+    {
+        var x = BeginExec();
+        var r = new FakeExec();
+        var s = WriterSession.Begin(x, "sbntest", "test_w", new[] { Spec }, restoreX: r);
+        var begun = x.Log.Count;
+        Assert.Null(s.Restore());
+        Assert.Equal(begun, x.Log.Count);
+        Assert.Contains(r.Log, l => l.StartsWith("drop table sbntest..tbl_test_snap_9_1"));
+    }
+
     [Fact]
     public void Begin_failure_part_way_undoes_its_own_snapshots_and_rows()
     {
