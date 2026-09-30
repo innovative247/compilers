@@ -176,6 +176,65 @@ public class RunnerTests
         Assert.Equal(new[] { w1, w2 }, serial);
     }
 
+    private const string VariantLine = "-- @variant: fe001=- as off chain x\n";
+
+    private static TestCase VariantCase(string name, string line)
+    {
+        var v = Variants.Parse(line, out var error);
+        Assert.Null(error);
+        return new TestCase(name, null, name, null) { Variant = v };
+    }
+
+    [Fact]
+    public void ResolveVariant_refuses_a_variant_under_bench()
+    {
+        Assert.Null(Runner.ResolveVariant(VariantLine, bench: true, out var error));
+        Assert.Equal(Runner.BenchVariantError, error);
+        Assert.NotNull(Runner.ResolveVariant(VariantLine, bench: false, out error));
+        Assert.Null(error);
+    }
+
+    [Fact]
+    public void ResolvePairVariant_refuses_a_variant_in_the_assert_proc()
+    {
+        Assert.Null(Runner.ResolvePairVariant("create proc x_capture", VariantLine, out var error));
+        Assert.Equal("@variant belongs in the _capture proc", error);
+
+        Assert.Null(Runner.ResolvePairVariant(VariantLine, "-- @variant-source: x = css/ss/a/pro_x.sql", out error));
+        Assert.Equal("@variant belongs in the _capture proc", error);
+
+        Assert.Equal("off", Runner.ResolvePairVariant(VariantLine, "create proc x_assert", out error)!.Tag);
+        Assert.Null(error);
+    }
+
+    [Fact]
+    public void MarkTagConflicts_errors_every_case_whose_spec_differs_for_its_tag()
+    {
+        var a = VariantCase("a", VariantLine);
+        var b = VariantCase("b", VariantLine);
+        var c = VariantCase("c", "-- @variant: fe001=+ as off chain x");
+        var d = VariantCase("d", "-- @variant: fe001=+ as on chain x");
+        var plain = new TestCase("p", null, "p", null);
+        var cases = new List<TestCase> { a, b, c, d, plain };
+        Runner.MarkTagConflicts(cases);
+        Assert.Equal("tag conflict: off differs in c", cases[0].Error);
+        Assert.Equal("tag conflict: off differs in c", cases[1].Error);
+        Assert.Equal("tag conflict: off differs in a, b", cases[2].Error);
+        Assert.Null(cases[3].Error);
+        Assert.Same(plain, cases[4]);
+        Assert.NotNull(cases[0].Variant);
+    }
+
+    [Fact]
+    public void PartitionWriters_moves_variant_tests_to_the_serial_list()
+    {
+        var a = new TestCase("a", null, "a", null);
+        var v = VariantCase("v", VariantLine);
+        var (parallel, serial) = Runner.PartitionWriters(new[] { a, v });
+        Assert.Equal(new[] { a }, parallel);
+        Assert.Equal(new[] { v }, serial);
+    }
+
     [Fact]
     public void PartitionWriters_without_writers_keeps_every_case_parallel()
     {

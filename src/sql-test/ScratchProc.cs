@@ -33,16 +33,20 @@ public interface IScratchCompiler
 
     /// <summary>Null on success, else the compiler output.</summary>
     string? Compile(ScratchCompile c);
+
+    /// <summary><paramref name="text"/> with its &amp;tokens&amp; replaced from the merged options for <paramref name="db"/>.</summary>
+    string Expand(string db, string text) => text;
 }
 
 /// <summary>The primitive shared by R7, R10 and R11: compile a renamed copy of a proc, journalled.</summary>
 public static class ScratchProc
 {
-    public const int MaxNameLength = 255; // sysobjects.name on GONZO; not yet confirmed live
+    public const int MaxNameLength = 255; // sysobjects.name, confirmed on ASE 16.0 SP04
 
     public const string IncludeRefusal = "variant contains $i include; not supported";
 
-    private static readonly Regex UseLine = new(@"^\s*use\s+\S", RegexOptions.Multiline | RegexOptions.IgnoreCase);
+    private static readonly Regex UseLine = new(@"^\s*use\s+\S", RegexOptions.IgnoreCase);
+    private static readonly Regex BlockComment = new(@"/\*.*?\*/", RegexOptions.Singleline);
     // `\b` keeps `$ir` (Runcreate's) out; Runsql passes a `$i` line to the server verbatim.
     private static readonly Regex IncludeLine = new(@"^\s*\$i\b", RegexOptions.Multiline);
 
@@ -52,17 +56,24 @@ public static class ScratchProc
     /// </summary>
     public static ScratchHandle Compile(ScratchSpec spec, ScratchSession session)
     {
+        if (Precheck(spec, session.Compiler) is { } refusal) throw new ScratchRefusedException(refusal);
+        return session.Add(spec, Render(spec));
+    }
+
+    /// <summary>
+    /// The §3.8 refusals that need no database; null when none applies. Run over a whole chain
+    /// before the first compile, so such a refusal compiles nothing.
+    /// </summary>
+    internal static string? Precheck(ScratchSpec spec, IScratchCompiler compiler)
+    {
         foreach (var id in new[] { spec.ScratchName, spec.Db })
-            if (!WriterJournal.IsIdent(id)) throw new ScratchRefusedException($"invalid scratch identifier: {id}");
+            if (!WriterJournal.IsIdent(id)) return $"invalid scratch identifier: {id}";
         if (spec.ScratchName.Length > MaxNameLength)
-            throw new ScratchRefusedException(
-                $"scratch name {spec.ScratchName} is {spec.ScratchName.Length} characters; the limit is {MaxNameLength}");
+            return $"scratch name {spec.ScratchName} is {spec.ScratchName.Length} characters; the limit is {MaxNameLength}";
         foreach (var o in spec.CompileOptions.Keys)
-            if (!session.Compiler.HasOption(spec.Db, o))
-                throw new ScratchRefusedException($"unknown compile option {o}: no c: line in the merged options");
-        var text = Render(spec);
-        if (IncludeLine.IsMatch(text)) throw new ScratchRefusedException(IncludeRefusal);
-        return session.Add(spec, text);
+            if (!compiler.HasOption(spec.Db, o))
+                return $"unknown compile option {o}: no c: line in the merged options";
+        return IncludeLine.IsMatch(Render(spec)) ? IncludeRefusal : null;
     }
 
     /// <summary>Selected batches (§3.4), then BatchEdit, then the whole-word rename, rejoined with `go`.</summary>
@@ -76,12 +87,43 @@ public static class ScratchProc
         return string.Concat(batches.Select(b => Rename(b, renames) + "\ngo\n"));
     }
 
-    /// <summary>Every `use` batch and every batch naming <paramref name="proc"/> as a whole word.</summary>
+    // Same shape as Variant.cs CreateRe, so selection and SourceLocator agree on what "creates" means.
+    private static readonly Regex CreateProcLine = new(@"^\s*create\s+(?:or\s+replace\s+)?proc(?:edure)?\s+(\w+)\b", RegexOptions.Multiline | RegexOptions.IgnoreCase);
+
+    /// <summary>
+    /// Every `use` batch, the batch creating <paramref name="proc"/>, and every other batch naming it
+    /// as a whole word unless that batch creates a different proc. Throws <see cref="ScratchRefusedException"/>
+    /// when such a batch also names another proc the file creates.
+    /// </summary>
     internal static List<string> SelectBatches(string text, string proc)
     {
         var word = new Regex($@"\b{Regex.Escape(proc)}\b", RegexOptions.IgnoreCase);
-        return SplitBatches(text).Where(b => UseLine.IsMatch(b) || word.IsMatch(b)).ToList();
+        var batches = SplitBatches(text);
+        var others = batches.SelectMany(b => CreateProcLine.Matches(b).Select(m => m.Groups[1].Value))
+                            .Where(n => !string.Equals(n, proc, StringComparison.OrdinalIgnoreCase))
+                            .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        return batches.Where(Keep).ToList();
+
+        bool Keep(string b)
+        {
+            var creates = CreateProcLine.Matches(b).Select(m => m.Groups[1].Value).ToList();
+            // A caller's body names the callee; taking it would compile an unjournaled <caller>__<tag>.
+            if (creates.Count > 0) return creates.Contains(proc, StringComparer.OrdinalIgnoreCase);
+            if (IsUseBatch(b)) return true;
+            if (!word.IsMatch(b)) return false;
+            // Renamed, it would still act on the other proc's shared copy.
+            var shared = others.FirstOrDefault(o => Regex.IsMatch(b, $@"\b{Regex.Escape(o)}\b", RegexOptions.IgnoreCase));
+            if (shared != null)
+                throw new ScratchRefusedException($"a batch naming {proc} also names {shared}, which the same file creates; not supported");
+            return true;
+        }
     }
+
+    // First statement only, so a comment line starting with `use` never keeps a batch.
+    private static bool IsUseBatch(string b) =>
+        BlockComment.Replace(b, "").Split('\n').Select(l => l.Trim())
+            .FirstOrDefault(l => l.Length > 0 && !l.StartsWith("--", StringComparison.Ordinal)) is { } first
+        && UseLine.IsMatch(first);
 
     // Runsql's splitter is private; a `go` line ends a batch, blank batches are dropped.
     internal static List<string> SplitBatches(string text)
@@ -273,31 +315,26 @@ public sealed class ScratchHandle : IDisposable
 /// <summary>The in-process compile of design §3.5, through <c>runsql_main.Run</c>.</summary>
 public sealed class RunsqlScratchCompiler(ResolvedProfile profile, string server) : IScratchCompiler
 {
-    public bool HasOption(string db, string option)
+    public bool HasOption(string db, string option) => WithOptions(db, o => o.GetCompileOption(option) != null);
+
+    public string Expand(string db, string text) => WithOptions(db, o => o.ReplaceWord(text));
+
+    // The option chatter goes to a throwaway file, not stdout.
+    private T WithOptions<T>(string db, Func<ibsCompiler.Options, T> use)
     {
         var vars = Vars(db, "");
-        vars.OutFile = Path.Combine(Path.GetTempPath(), $"sql-test-options-{Environment.ProcessId}-{Guid.NewGuid():N}.out"); // keeps option chatter off stdout
+        vars.OutFile = Path.Combine(Path.GetTempPath(), $"sql-test-options-{Environment.ProcessId}-{Guid.NewGuid():N}.out");
         try
         {
             var opts = new ibsCompiler.Options(vars, profile);
-            return HasToken(opts, option);
+            if (!opts.GenerateOptionFiles()) throw new ScratchRefusedException("compile options could not be generated");
+            return use(opts);
         }
         finally { try { File.Delete(vars.OutFile); } catch { /* temp file */ } }
     }
 
-    private static bool HasToken(ibsCompiler.Options opts, string option)
-    {
-        if (!opts.GenerateOptionFiles()) throw new ScratchRefusedException("compile options could not be generated");
-        // No lookup API: a known c: option expands its &if_<name>& token.
-        var token = $"&if_{option}&";
-        return opts.ReplaceWord(token) != token;
-    }
-
     public string? Compile(ScratchCompile c)
     {
-        // Forcing an option needs Options.SetCompileOption (design §3.5), which W4 adds with the R7 consumer.
-        if (c.Options.Count > 0) return "compile options are not supported until Options.SetCompileOption exists";
-
         var stem = Path.Combine(Path.GetTempPath(), $"sql-test-variant-{Environment.ProcessId}-{c.ScratchName}");
         var (sql, outFile, errFile) = (stem + ".sql", stem + ".out", stem + ".err");
         try
@@ -308,6 +345,7 @@ public sealed class RunsqlScratchCompiler(ResolvedProfile profile, string server
             cmdvars.ErrFile = errFile;
             var opts = new ibsCompiler.Options(cmdvars, profile);
             if (!opts.GenerateOptionFiles()) return "options could not be generated";
+            if (ForceOptions(opts, c.Options) is { } bad) return bad;
             using var exec = SqlExecutorFactory.Create(profile);
             if (new runsql_main().Run(cmdvars, profile, exec, existingOptions: opts)) return null;
             var err = StripFraming(File.Exists(errFile) ? File.ReadAllText(errFile) : "");
@@ -318,6 +356,14 @@ public sealed class RunsqlScratchCompiler(ResolvedProfile profile, string server
             foreach (var f in new[] { sql, outFile, errFile })
                 try { File.Delete(f); } catch { /* temp file */ }
         }
+    }
+
+    /// <summary>Null when every option was forced, else the refusal for the first unknown one.</summary>
+    internal static string? ForceOptions(ibsCompiler.Options opts, IReadOnlyDictionary<string, bool> options)
+    {
+        foreach (var (k, v) in options)
+            if (!opts.SetCompileOption(k, v)) return $"unknown compile option {k}: no c: line in the merged options";
+        return null;
     }
 
     private static readonly Regex Framing = new(@"^(Running( \d+ of \d+)?:|Elapsed:).*$\n?", RegexOptions.Multiline);

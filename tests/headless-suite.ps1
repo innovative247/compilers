@@ -2748,7 +2748,9 @@ function Test-SqlTest {
              'sql-test.writer.error','sql-test.writer.timeout','sql-test.writer.serial','sql-test.writer.refuse.notran',
              'sql-test.writer.refuse.table','sql-test.writer.refuse.trigger','sql-test.writer.refuse.held',
              'sql-test.writer.sweep','sql-test.writer.bench','sql-test.writer.trancount',
-             'sql-test.writer.bench.refused','sql-test.writer.verbose')
+             'sql-test.writer.bench.refused','sql-test.writer.verbose',
+             'sql-test.variant.on','sql-test.variant.off','sql-test.variant.drop','sql-test.variant.refuse.unknown-opt',
+             'sql-test.variant.refuse.chain-break','sql-test.variant.refuse.tag-conflict','sql-test.variant.sweep')
     if (-not (Get-Profile $SybaseProfile)) {
         foreach ($id in $ids) { Skip-Case $id "profile '$SybaseProfile' not in settings.json - needs a live Sybase profile with sbntest (-SybaseProfile)" }
         return
@@ -3061,6 +3063,152 @@ function Test-SqlTest {
         Assert-ExitCode $r 1
         Assert-WriterOutcome $r 'FAIL' 'selftest_framework_writer_trancount' 'transaction left open by the test (@@trancount='
         if ((Get-WriterDump) -notmatch 'writer-journal-rows: 0\b') { throw "writer journal not empty after a trancount FAIL. dump: $(Get-WriterDump)" }
+    }
+
+    # ---- Variant cases (R7 @variant) -------------------------------------------------------------
+    # PROFILE: a variant compile requires the login to be dbo in sbntest ("scratch compile needs dbo
+    # in sbntest (run as GONZO_TEST)"). These cases deploy, run and sweep as $variantProfile, never
+    # as -SybaseProfile, whose default GONZO login (JKOLIND) is not dbo there.
+    # Sources: --source-root fixtures/sql, where css/ss/test/pro_test_variant_fx.sql holds the whole
+    # two-member chain (entry and gated callee in one file) and pro_test_variant_fx_nocall.sql the
+    # chain-break member. Option adspl is a c: line in options.def/options.101.
+    $variantProfile = 'GONZO_TEST'
+    $variantRoot    = Join-Path $PSScriptRoot 'fixtures/sql'
+    $variantIds     = $ids | Where-Object { $_ -like 'sql-test.variant.*' }
+    $variantReady   = [bool](Get-Profile $variantProfile)
+    if (-not $variantReady) {
+        foreach ($id in $variantIds) { Skip-Case $id "profile '$variantProfile' not in settings.json - variant compiles need a login that is dbo in sbntest" }
+    }
+    $script:VariantFixtureDeployed = $false
+    function Initialize-VariantFixture {
+        if ($script:VariantFixtureDeployed) { return }
+        $r = Invoke-Cli runsql (Join-Path $PSScriptRoot 'fixtures/sql/sql-test-variant.sql') $db $variantProfile '--changelog:n'
+        Assert-ExitCode $r
+        $script:VariantFixtureDeployed = $true
+    }
+    function Get-VariantDump {
+        $r = Invoke-Cli isqlline 'sbntest..pro_test_variant_dump' $db $variantProfile
+        Assert-ExitCode $r
+        "$($r.StdOut)`n$($r.StdErr)"
+    }
+    # No leftover variant proc, 'V' item or journal row for a selftest_framework_variant_* test.
+    function Assert-VariantClean([string]$When) {
+        $d = Get-VariantDump
+        foreach ($k in @('variant-procs', 'variant-journal-rows', 'variant-items')) {
+            if ($d -notmatch "$k`: 0\b") { throw "$k not 0 $When. dump: $d" }
+        }
+    }
+    # Runs one sql-test pattern as $variantProfile; the fixture must be clean before and after.
+    function Invoke-VariantCase([string]$Pattern, [string[]]$Extra = @()) {
+        Initialize-VariantFixture
+        Assert-VariantClean "before $Pattern"
+        $r = Invoke-Cli sql-test $db $variantProfile '--pattern' ($Pattern -replace '_', '\_') '--source-root' $variantRoot '--timeout' '30' @Extra
+        Assert-VariantClean "after $Pattern (stderr: $($r.StdErr))"
+        $r
+    }
+
+    if ($variantReady) {
+        Test-Case 'sql-test.variant.on' {
+            $r = Invoke-VariantCase 'selftest_framework_variant_on' @('--verbose')
+            Assert-ExitCode $r
+            Assert-WriterOutcome $r 'PASS' 'selftest_framework_variant_on'
+            # Same-file chain: both members come from the one file, each with the forced option.
+            $src = 'from css[/\\]ss[/\\]test[/\\]pro_test_variant_fx\.sql, adspl=\+'
+            foreach ($m in @('pro_test_variant_fx__on', 'pro_test_variant_fx_entry__on')) {
+                if ($r.StdErr -notmatch "sql-test: selftest_framework_variant_on: variant $m $src") { throw "no --verbose variant line for $m. stderr: $($r.StdErr)" }
+            }
+            $l = Invoke-Cli sql-test $db $variantProfile '--pattern' 'selftest\_framework\_variant\_on' '--source-root' $variantRoot '--list'
+            Assert-ExitCode $l
+            if ("$($l.StdOut)`n$($l.StdErr)" -notmatch [regex]::Escape('[variant on: pro_test_variant_fx_entry > pro_test_variant_fx]')) {
+                throw "--list does not describe the variant. output: $($l.StdOut)$($l.StdErr)"
+            }
+        }
+        Test-Case 'sql-test.variant.off' {
+            $r = Invoke-VariantCase 'selftest_framework_variant_off'
+            Assert-ExitCode $r
+            Assert-WriterOutcome $r 'PASS' 'selftest_framework_variant_off'
+        }
+        Test-Case 'sql-test.variant.drop' {
+            # Invoke-VariantCase proves no variant proc, item or journal row survives either outcome.
+            $r = Invoke-VariantCase 'selftest_framework_variant_drop_pass'
+            Assert-ExitCode $r
+            Assert-WriterOutcome $r 'PASS' 'selftest_framework_variant_drop_pass'
+            $r = Invoke-VariantCase 'selftest_framework_variant_drop_fail'
+            Assert-ExitCode $r 1
+            Assert-WriterOutcome $r 'FAIL' 'selftest_framework_variant_drop_fail' 'FAIL: variant-drop-fail after on'
+            if ($r.StdErr -match 'not dropped') { throw "variant drop reported an error. stderr: $($r.StdErr)" }
+        }
+        Test-Case 'sql-test.variant.refuse.unknown-opt' {
+            $r = Invoke-VariantCase 'selftest_framework_variant_refuse_unknown'
+            Assert-ExitCode $r 1
+            Assert-WriterOutcome $r 'ERROR' 'selftest_framework_variant_refuse_unknown' 'unknown compile option zzvnope: no c: line in the merged options'
+            if ($r.StdErr -match 'variant-refuse-unknown ran') { throw "refused test body ran. stderr: $($r.StdErr)" }
+        }
+        Test-Case 'sql-test.variant.refuse.chain-break' {
+            $r = Invoke-VariantCase 'selftest_framework_variant_refuse_chain'
+            Assert-ExitCode $r 1
+            Assert-WriterOutcome $r 'ERROR' 'selftest_framework_variant_refuse_chain' 'chain break: pro_test_variant_fx_nocall does not call pro_test_variant_fx'
+            if ($r.StdErr -match 'variant-refuse-chain ran') { throw "refused test body ran. stderr: $($r.StdErr)" }
+        }
+        Test-Case 'sql-test.variant.refuse.tag-conflict' {
+            # Alone, each side is a valid variant; discovered together, both are refused.
+            $r = Invoke-VariantCase 'selftest_framework_variant_conflict_a'
+            Assert-ExitCode $r
+            Assert-WriterOutcome $r 'PASS' 'selftest_framework_variant_conflict_a'
+            $r = Invoke-VariantCase 'selftest_framework_variant_conflict_%'
+            Assert-ExitCode $r 1
+            Assert-WriterOutcome $r 'ERROR' 'selftest_framework_variant_conflict_a' 'tag conflict: cfl differs in selftest_framework_variant_conflict_b'
+            Assert-WriterOutcome $r 'ERROR' 'selftest_framework_variant_conflict_b' 'tag conflict: cfl differs in selftest_framework_variant_conflict_a'
+        }
+
+        # Sweep: a runner killed mid-test leaves a scratch-only journal row with 'V' items.
+        # Returns the victim's runner once both variant procs exist and its row is live.
+        function Start-VariantVictim {
+            Initialize-VariantFixture
+            $exe = Join-Path $script:Bin 'sql-test.exe'
+            $script:VariantVictimOut = [IO.Path]::GetTempFileName()
+            $script:VariantVictimErr = [IO.Path]::GetTempFileName()
+            # --timeout above the proc's 90 s wait: a client deadline would drop the variants and defeat the kill.
+            $p = Start-Process -FilePath $exe -NoNewWindow -PassThru `
+                 -ArgumentList @($db, $variantProfile, '--pattern', 'selftest\_framework\_variant\_victim', '--source-root', $variantRoot, '--timeout', '150') `
+                 -RedirectStandardOutput $script:VariantVictimOut -RedirectStandardError $script:VariantVictimErr
+            for ($i = 0; $i -lt 30; $i++) {
+                $d = Get-VariantDump
+                if ($d -match 'variant-procs: 2\b' -and $d -match 'variant-journal-live: 1\b') { return $p }
+                Start-Sleep -Seconds 1
+            }
+            $err = Get-Content $script:VariantVictimErr -Raw -EA SilentlyContinue
+            Stop-VariantVictim $p
+            throw "variant victim never compiled its chain. stderr: $err"
+        }
+        # Kill, not Ctrl-C, so no drop runs; bounded wait until neither victim spid is live.
+        function Stop-VariantVictim($p) {
+            try {
+                if (-not $p.HasExited) { $p.Kill(); $null = $p.WaitForExit(10000) }
+                for ($i = 0; $i -lt 120; $i++) {
+                    if ((Get-VariantDump) -match 'variant-journal-live: 0\b') { return }
+                    Start-Sleep -Seconds 1
+                }
+                throw "variant victim spid still live 120s after the kill. dump: $(Get-VariantDump)"
+            } finally { Remove-Item $script:VariantVictimOut, $script:VariantVictimErr -ErrorAction SilentlyContinue }
+        }
+
+        Test-Case 'sql-test.variant.sweep' {
+            Initialize-VariantFixture
+            Assert-VariantClean 'before the victim'
+            Stop-VariantVictim (Start-VariantVictim)
+            $dead = Get-VariantDump
+            if ($dead -notmatch 'variant-journal-rows: 1\b') { throw "expected one dead victim row. dump: $dead" }
+            if ($dead -notmatch 'variant-items: 2\b') { throw "expected the victim's two 'V' items. dump: $dead" }
+            if ($dead -notmatch 'variant-procs: 2\b') { throw "expected the victim's two variant procs. dump: $dead" }
+            $r = Invoke-Cli sql-test $db $variantProfile '--sweep-writer-journal'
+            Assert-ExitCode $r
+            if ($r.StdErr -notmatch 'writer journal row \d+ \(selftest_framework_variant_victim, [^)]*\) restored') {
+                throw "sweep did not clear the victim row. stderr: $($r.StdErr)"
+            }
+            if ($r.StdErr -match 'holds variant items; left for a later sweep') { throw "sweep left the variant row. stderr: $($r.StdErr)" }
+            Assert-VariantClean 'after --sweep-writer-journal'
+        }
     }
 }
 

@@ -222,15 +222,19 @@ public class ScratchProcTests
     public void Compile_run_and_drop_on_normal_exit_and_on_exception(bool throws)
     {
         var e = new Env();
-        using (var s = e.Open())
+        ScratchHandle? h = null;
+        var s = e.Open();
+        using (s)
         {
             try
             {
-                using var h = ScratchProc.Compile(Spec(), s);
+                using var handle = h = ScratchProc.Compile(Spec(), s);
                 if (throws) throw new InvalidOperationException("test batch blew up");
             }
             catch (InvalidOperationException) when (throws) { }
         }
+        Assert.True(h!.Dropped);
+        Assert.Empty(s.Handles);
         var log = e.X.Log;
         int drop = log.FindIndex(l => l == "if object_id('x__t') is not null drop proc x__t");
         int item = log.FindIndex(l => l.StartsWith("delete sbntest..tbl_test_writer_item"));
@@ -295,6 +299,7 @@ public class ScratchProcTests
         var drops = e.X.Log.Where(l => l.Contains("drop proc")).ToList();
         Assert.EndsWith("drop proc caller__t", drops[0]);
         Assert.EndsWith("drop proc callee__t", drops[1]);
+        Assert.Empty(s.Handles);
         Assert.Single(e.X.Log, l => l.StartsWith("delete sbntest..tbl_test_writer_journal"));
     }
 
@@ -345,13 +350,86 @@ public class ScratchProcTests
         Assert.DoesNotContain(e.C.Compiled, c => c.ScratchName == "b__t");
     }
 
+    // ---- chains (Variants.CompileAll) ----
+
+    private const string Chain = "use sbntest\ngo\ncreate proc a as exec b\ngo\ncreate proc b as select 1\ngo\n";
+    private static readonly (string, string)[] ChainRenames = { ("a", "a__t"), ("b", "b__t") };
+
+    private static ScratchSpec Member(string proc, IReadOnlyDictionary<string, bool>? opts = null) =>
+        new(proc, "sbntest", Chain, proc + "__t", opts ?? new Dictionary<string, bool>(), ChainRenames);
+
     [Fact]
-    public void Runsql_compiler_refuses_forced_options_before_touching_a_server()
+    public void Precheck_refuses_a_whole_chain_before_any_compile()
     {
-        var c = new RunsqlScratchCompiler(null!, "srv");
-        var opts = new Dictionary<string, bool> { ["fe001"] = true };
-        Assert.Equal("compile options are not supported until Options.SetCompileOption exists",
-                     c.Compile(new ScratchCompile("sbntest", "x", "x__t", "", opts)));
+        var e = new Env();
+        e.C.Known.Add("fe001");
+        using var s = e.Open();
+        var specs = new[] { Member("b", new Dictionary<string, bool> { ["fe001"] = false }),
+                            Member("a", new Dictionary<string, bool> { ["zz999"] = true }) };
+        Assert.Equal("unknown compile option zz999: no c: line in the merged options",
+                     Refusal(() => Variants.CompileAll(specs, s)));
+        Assert.Empty(e.X.Log);
+        Assert.Empty(e.C.Compiled);
+    }
+
+    [Fact]
+    public void CompileAll_compiles_callee_first_with_every_member_renamed()
+    {
+        var e = new Env();
+        using var s = e.Open();
+        var handles = Variants.CompileAll(new[] { Member("b"), Member("a") }, s);
+        Assert.Equal(new[] { "b__t", "a__t" }, handles.Select(h => h.Name));
+        Assert.Equal("use sbntest\ngo\ncreate proc a__t as exec b__t\ngo\n", e.C.Compiled[1].Text);
+    }
+
+    [Fact]
+    public void CompileAll_on_a_same_file_chain_compiles_each_name_once()
+    {
+        var e = new Env();
+        using var s = e.Open();
+        Variants.CompileAll(new[] { Member("b"), Member("a") }, s);
+        Assert.Equal(new[] { "b__t", "a__t" }, e.C.Compiled.Select(c => c.ScratchName));
+        Assert.Equal("use sbntest\ngo\ncreate proc b__t as select 1\ngo\n", e.C.Compiled[0].Text);
+        Assert.Equal("use sbntest\ngo\ncreate proc a__t as exec b__t\ngo\n", e.C.Compiled[1].Text);
+    }
+
+    [Fact]
+    public void A_collision_on_a_later_member_drops_the_earlier_members()
+    {
+        var e = new Env();
+        var scalar = e.X.OnScalar;
+        e.X.OnScalar = sql => sql.Contains("sysobjects where name = 'a__t'") ? 1 : scalar(sql);
+        using var s = e.Open();
+        Assert.Equal("scratch name sbntest..a__t already exists and is not a writer journal leftover",
+                     Refusal(() => Variants.CompileAll(new[] { Member("b"), Member("a") }, s)));
+        Assert.Contains("if object_id('b__t') is not null drop proc b__t", e.X.Log);
+        Assert.Empty(s.Handles);
+        Assert.Single(e.C.Compiled);
+    }
+
+    [Fact]
+    public void A_compile_failure_on_a_later_member_drops_the_earlier_members()
+    {
+        var e = new Env();
+        e.C.OnCompile = c => c.ScratchName == "a__t" ? "Msg 102" : null;
+        using var s = e.Open();
+        Assert.Equal("compile of sbntest..a__t failed: Msg 102",
+                     Refusal(() => Variants.CompileAll(new[] { Member("b"), Member("a") }, s)));
+        Assert.Contains("if object_id('b__t') is not null drop proc b__t", e.X.Log);
+        Assert.Empty(s.Handles);
+    }
+
+    [Fact]
+    public void A_batch_naming_two_members_refuses_the_chain_before_any_compile()
+    {
+        var e = new Env();
+        using var s = e.Open();
+        var text = Chain + "grant execute on a to public\ngrant execute on b to public\ngo\n";
+        var specs = new[] { Member("b") with { SourceText = text }, Member("a") with { SourceText = text } };
+        Assert.Equal("a batch naming b also names a, which the same file creates; not supported",
+                     Refusal(() => Variants.CompileAll(specs, s)));
+        Assert.Empty(e.C.Compiled);
+        Assert.Empty(s.Handles);
     }
 
     [Fact]
@@ -414,6 +492,91 @@ public class ScratchProcTests
         Assert.DoesNotContain(e.X.Log, l => l.StartsWith("delete sbntest..tbl_test_writer_journal"));
         Assert.Null(j.Restore());
         Assert.Equal(JournalDelete, e.X.Log[^1]);
+    }
+
+    // ---- Runner.VariantLifecycle ----
+
+    private static readonly TestResult Passed = new("t", Outcome.PASS, "", 1, "");
+    private const string DropB = "if object_id('b__t') is not null drop proc b__t";
+
+    [Fact]
+    public void Lifecycle_drops_the_chain_after_a_pass()
+    {
+        var e = new Env();
+        using var s = e.Open();
+        var r = Runner.VariantLifecycle("t", s, new[] { Member("b"), Member("a") }, null, new System.Diagnostics.Stopwatch(),
+            drop =>
+            {
+                Assert.Equal(2, s.Handles.Count);
+                drop();
+                Assert.Empty(s.Handles);
+                return Passed;
+            });
+        Assert.Same(Passed, r);
+        Assert.Contains(DropB, e.X.Log);
+        Assert.Equal(JournalDelete, e.X.Log[^1]);
+    }
+
+    [Fact]
+    public void Lifecycle_drops_the_chain_when_the_run_throws()
+    {
+        var e = new Env();
+        using var s = e.Open();
+        Assert.Throws<InvalidOperationException>(() =>
+            Runner.VariantLifecycle("t", s, new[] { Member("b"), Member("a") }, null, new System.Diagnostics.Stopwatch(),
+                _ => throw new InvalidOperationException("boom")));
+        Assert.Empty(s.Handles);
+        Assert.Contains(DropB, e.X.Log);
+        Assert.Equal(JournalDelete, e.X.Log[^1]);
+    }
+
+    [Fact]
+    public void Lifecycle_folds_a_drop_error_into_the_result()
+    {
+        var e = new Env();
+        using var s = e.Open();
+        var r = Runner.VariantLifecycle("t", s, new[] { Member("b") }, null, new System.Diagnostics.Stopwatch(), drop =>
+        {
+            e.X.FailOn = "drop proc b__t";
+            drop();
+            return Passed;
+        });
+        Assert.Equal(Outcome.ERROR, r.Outcome);
+        Assert.StartsWith("scratch proc sbntest..b__t not dropped:", r.Message);
+        Assert.Single(s.Handles);
+        Assert.DoesNotContain(e.X.Log, l => l.StartsWith("delete sbntest..tbl_test_writer_"));
+    }
+
+    [Fact]
+    public void Lifecycle_reports_no_drop_error_when_the_retry_after_release_succeeds()
+    {
+        var e = new Env();
+        using var s = e.Open();
+        var r = Runner.VariantLifecycle("t", s, new[] { Member("b") }, null, new System.Diagnostics.Stopwatch(), drop =>
+        {
+            e.X.FailOn = "drop proc b__t";
+            drop();
+            Assert.Single(s.Handles);
+            return Passed;
+        }, release: () => e.X.FailOn = null);
+        Assert.Same(Passed, r);
+        Assert.Empty(s.Handles);
+        Assert.Equal(JournalDelete, e.X.Log[^1]);
+    }
+
+    [Fact]
+    public void Lifecycle_refusal_compiles_nothing_and_closes_a_scratch_only_row()
+    {
+        var e = new Env();
+        using var s = e.Open();
+        var ran = false;
+        var r = Runner.VariantLifecycle("t", s, new[] { Member("b", new Dictionary<string, bool> { ["fe001"] = false }) }, null,
+            new System.Diagnostics.Stopwatch(), _ => { ran = true; return Passed; });
+        Assert.False(ran);
+        Assert.Equal(Outcome.ERROR, r.Outcome);
+        Assert.Contains("fe001", r.Message);
+        Assert.Empty(e.C.Compiled);
+        Assert.Equal(new[] { JournalDelete }, e.X.Log);
     }
 
     // ---- helpers ----

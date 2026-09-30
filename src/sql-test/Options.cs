@@ -21,6 +21,7 @@ public class Options
     public string? BenchBaseline { get; set; }
     public bool BenchUpdateBaseline { get; set; }
     public bool SweepWriterJournal { get; set; }
+    public string? SourceRoot { get; set; }
 
     public const string Usage =
         "Usage: sql-test <database> <server/profile>\n" +
@@ -39,6 +40,7 @@ public class Options
         "                [--bench-baseline <file>] (compare against a --bench-out file; exit 1 when flagged)\n" +
         "                [--bench-update-baseline] (then merge PASS results into the --bench-baseline file; created if missing)\n" +
         "                [--sweep-writer-journal] (restore dead runners' writer journal rows, then exit)\n" +
+        "                [--source-root <dir>] (SBN_IR tree for @variant sources; default: the profile's IR path)\n" +
         "                [-U user] [-P pass]";
 
     public static Options? Parse(string[] argv)
@@ -71,6 +73,7 @@ public class Options
                 case "--bench-baseline":             benchOnly.Add(a); opts.BenchBaseline           = Next(a); break;
                 case "--bench-update-baseline":      benchOnly.Add(a); opts.BenchUpdateBaseline = true; break;
                 case "--sweep-writer-journal":       opts.SweepWriterJournal      = true; break;
+                case "--source-root":                notWithSweep.Add(a); opts.SourceRoot              = Next(a); break;
                 case "-h":
                 case "--help":                       return null;
                 default:

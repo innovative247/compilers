@@ -181,6 +181,38 @@ namespace ibsCompiler
             return true;
         }
 
+        /// <summary>
+        /// The merged value of the <c>c:</c> option <paramref name="name"/> (an empty
+        /// <c>&amp;if_name&amp;</c> means on), or null when no <c>c:</c> line defines it.
+        /// Call after <see cref="GenerateOptionFiles"/>.
+        /// </summary>
+        public bool? GetCompileOption(string name)
+        {
+            var i = IndexOfKey($"&if_{name}&");
+            return i < 0 ? null : _arrOptions[i].Substring(40).Trim().Length == 0;
+        }
+
+        /// <summary>
+        /// Forces the <c>c:</c> option <paramref name="name"/> on or off for this instance only;
+        /// the resolved cache on disk is never rewritten. False when the option is unknown.
+        /// </summary>
+        public bool SetCompileOption(string name, bool on)
+        {
+            if (GetCompileOption(name) == null) return false;
+            var (open, close) = on ? ("", "") : ("/*", "*/");
+            var (openN, closeN) = on ? ("/*", "*/") : ("", "");
+            foreach (var (key, value) in new[] { ($"&if_{name}&", open), ($"&endif_{name}&", close),
+                                                 ($"&ifn_{name}&", openN), ($"&endifn_{name}&", closeN) })
+            {
+                var i = IndexOfKey(key);
+                if (i >= 0) _arrOptions[i] = _arrOptions[i].Substring(0, 40) + value.PadRight(200);
+            }
+            return true;
+        }
+
+        private int IndexOfKey(string key) =>
+            _arrOptions.FindIndex(l => l.Length >= 40 && l.Substring(0, 40).Trim() == key);
+
         public string ReplaceWord(string myText)
         {
             if (_arrOptions.Count == 0) return myText;

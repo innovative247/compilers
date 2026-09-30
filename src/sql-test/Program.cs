@@ -101,9 +101,9 @@ if (opts.ListOnly)
     foreach (var c in cases)
     {
         if (c.CaptureProc != null)
-            Console.WriteLine($"{c.LogicalName}  (capture: {c.CaptureProc} -> {c.Capture!.IntoTable}; assert: {c.AssertProc})");
+            Console.WriteLine($"{c.LogicalName}  (capture: {c.CaptureProc} -> {c.Capture!.IntoTable}; assert: {c.AssertProc})" + (c.Variant != null ? $"  [{c.Variant.Describe}]" : ""));
         else
-            Console.WriteLine(c.LogicalName);
+            Console.WriteLine(c.LogicalName + (c.Variant != null ? $"  [{c.Variant.Describe}]" : ""));
     }
     return 0;
 }

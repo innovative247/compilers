@@ -50,6 +50,9 @@ public record TestCase(
     /// <summary>Writer test: snapshot before the batch, restore after it on a control connection.</summary>
     public bool IsWriter => Restores is { Count: > 0 };
 
+    /// <summary>`-- @variant:` line; the chain is compiled before the batch and dropped after it.</summary>
+    public VariantSpec? Variant { get; init; }
+
     /// <summary>Parsed bench-shape directives; owned by sql-bench-shape.</summary>
     public object? Shape { get; init; }
 

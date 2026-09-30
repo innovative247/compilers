@@ -545,4 +545,16 @@ public sealed class WriterSession
         _closed = err == null;
         return err;
     }
+
+    /// <summary>
+    /// Deletes a scratch-only row once nothing is journalled on it, as after a refusal before
+    /// any compile. Null on success; a row with items left stays for the sweep.
+    /// </summary>
+    public string? CloseIfEmpty()
+    {
+        if (_closed || _restorePending || _variants.Count > 0) return null;
+        var err = WriterJournal.DeleteJournalRow(_x, _home, JournalId);
+        _closed = err == null;
+        return err;
+    }
 }

@@ -22,6 +22,15 @@ public class OptionsTests
     }
 
     [Fact]
+    public void Source_root_parses_and_defaults_to_null()
+    {
+        Assert.Equal("/src/SBN_IR", Options.Parse(new[] { "sbntest", "G", "--source-root", "/src/SBN_IR" })!.SourceRoot);
+        Assert.Null(Options.Parse(new[] { "sbntest", "G" })!.SourceRoot);
+        Assert.Throws<ArgumentException>(() => Options.Parse(new[] { "sbntest", "G", "--source-root" }));
+        Assert.Contains("--source-root", Options.Usage);
+    }
+
+    [Fact]
     public void Bench_update_baseline_parses()
     {
         var o = Options.Parse(new[] { "sbntest", "G", "--bench", "bench\\_%", "--bench-baseline", "b.json", "--bench-update-baseline" })!;

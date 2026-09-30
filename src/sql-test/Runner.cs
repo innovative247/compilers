@@ -59,6 +59,8 @@ public class Runner
 
     private readonly ResolvedProfile _profile;
     private readonly Options _opts;
+    private readonly SourceLocator _locator;
+    private readonly IScratchCompiler _scratchCompiler;
 
     // One mode per invocation: --bench replaces --pattern.
     private string Pattern => _opts.BenchPattern ?? _opts.Pattern;
@@ -93,6 +95,8 @@ public class Runner
     {
         _profile = profile;
         _opts = opts;
+        _locator = new SourceLocator(opts.SourceRoot ?? profile.IRPath);
+        _scratchCompiler = new RunsqlScratchCompiler(profile, opts.Server);
         // Sybase TDS may negotiate a non-UTF8 charset (e.g. cp850); without this
         // the InfoMessage stream throws "unsupported charset" on connection.
         Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
@@ -137,9 +141,11 @@ public class Runner
             var assertBody = bodies.GetValueOrDefault(assertName);
             var budgetError = HasBudget(body) || HasBudget(assertBody) ? PairBudgetError : null;
             var restores = ResolvePairRestores(body, assertBody, noTran, out var restoreError);
+            var variant = ResolvePairVariant(body, assertBody, out var variantError);
             cases.Add(new TestCase(baseName, name, assertName, spec,
                                    ResolvePretest(baseName, pretests), noTran, teardown,
-                                   Error: budgetError ?? restoreError, Restores: restores));
+                                   Error: budgetError ?? restoreError ?? variantError, Restores: restores)
+                      { Variant = variant });
             consumed.Add(name);
             consumed.Add(assertName);
         }
@@ -154,9 +160,11 @@ public class Runner
             string? thresholdError = null;
             var threshold = _opts.BenchPattern != null ? ParseBenchThreshold(body, out thresholdError) : null;
             var restores = ResolveRestores(body, noTran, out var restoreError);
+            var variant = ResolveVariant(body, _opts.BenchPattern != null, out var variantError);
             cases.Add(new TestCase(name, null, name, null,
                                    ResolvePretest(name, pretests), noTran, teardown,
-                                   threshold, HasBudget(body), thresholdError ?? restoreError, restores));
+                                   threshold, HasBudget(body), thresholdError ?? restoreError ?? variantError, restores)
+                      { Variant = variant });
         }
 
         // Before the probe, so an excluded writer neither probes nor creates the journal tables.
@@ -165,6 +173,7 @@ public class Runner
             var rx = new Regex(_opts.Exclude);
             cases.RemoveAll(c => rx.IsMatch(c.LogicalName));
         }
+        MarkTagConflicts(cases);
 
         // Only writers open the probe connection: plain runs stay as they were.
         if (cases.Any(c => c.IsWriter && c.Error == null))
@@ -208,6 +217,40 @@ public class Runner
         return specs;
     }
 
+    internal const string AssertVariantError = "@variant belongs in the _capture proc";
+    internal const string BenchVariantError = "@variant is not supported with --bench";
+
+    internal static VariantSpec? ResolveVariant(string? body, bool bench, out string? error)
+    {
+        var v = Variants.Parse(body, out error);
+        if (v != null && bench) { error = BenchVariantError; return null; }
+        return v;
+    }
+
+    // The chain wraps the whole pair, so it is read from the capture proc only.
+    internal static VariantSpec? ResolvePairVariant(string? captureBody, string? assertBody, out string? error)
+    {
+        var v = ResolveVariant(captureBody, false, out error);
+        if (error == null && (Variants.Parse(assertBody, out var assertError) != null || assertError != null))
+        { error = AssertVariantError; return null; }
+        return v;
+    }
+
+    // Tests sharing a tag share scratch names, so their specs must match (design §3.2).
+    internal static void MarkTagConflicts(List<TestCase> cases)
+    {
+        var byTag = cases.Where(c => c.Variant != null).GroupBy(c => c.Variant!.Tag).ToList();
+        for (int i = 0; i < cases.Count; i++)
+        {
+            var c = cases[i];
+            if (c.Variant == null) continue;
+            var others = byTag.Single(g => g.Key == c.Variant.Tag)
+                              .Where(o => !o.Variant!.SameAs(c.Variant)).Select(o => o.LogicalName).ToList();
+            if (others.Count > 0)
+                cases[i] = c with { Error = c.Error ?? $"tag conflict: {c.Variant.Tag} differs in {string.Join(", ", others)}" };
+        }
+    }
+
     // One control connection for every probe; the first refused spec becomes the case's Error.
     private void ProbeWriters(List<TestCase> cases)
     {
@@ -229,10 +272,6 @@ public class Runner
         }
     }
 
-    /// <summary>
-    /// Writers commit, so two at once could collide on a table; they run serially
-    /// after the parallel batch.
-    /// </summary>
     /// <summary>Restore failure outranks every outcome; the original is kept in the message.</summary>
     internal static TestResult WithRestore(TestResult r, string? restoreError)
     {
@@ -241,11 +280,15 @@ public class Runner
         return r with { Outcome = Outcome.ERROR, Message = restoreError + original };
     }
 
+    /// <summary>
+    /// Writers commit, so two at once could collide on a table; they run serially
+    /// after the parallel batch. Same-tag variant tests would refuse each other as held.
+    /// </summary>
     internal static (List<TestCase> Parallel, List<TestCase> Serial) PartitionWriters(IEnumerable<TestCase> cases)
     {
         var parallel = new List<TestCase>();
         var serial = new List<TestCase>();
-        foreach (var c in cases) (c.IsWriter ? serial : parallel).Add(c);
+        foreach (var c in cases) (c.IsWriter || c.Variant != null ? serial : parallel).Add(c);
         return (parallel, serial);
     }
 
@@ -449,6 +492,28 @@ public class Runner
         IIoMeter? diagMeter = diagnose && meter == null ? IoMeters.For(_profile.ServerType) : null;
         var batchMeter = meter ?? diagMeter;
 
+        // Built before any connection: a locate or chain refusal touches nothing.
+        var variantSpecs = new List<ScratchSpec>();
+        if (tc.Variant != null)
+        {
+            try
+            {
+                foreach (var (spec, relPath) in Variants.Build(tc.Variant, _locator, _scratchCompiler, _opts.Database))
+                {
+                    variantSpecs.Add(spec);
+                    if (_opts.Verbose)
+                        Console.Error.WriteLine($"sql-test: {tc.LogicalName}: variant {spec.ScratchName} from {relPath}, " +
+                                                string.Join(" ", spec.CompileOptions.Select(o => $"{o.Key}={(o.Value ? "+" : "-")}")));
+                }
+            }
+            catch (Exception ex)
+            {
+                return new TestResult(tc.LogicalName, Outcome.ERROR,
+                    ex is ScratchRefusedException ? ex.Message : $"variant setup failed: {ex.Message}",
+                    stopwatch.Elapsed.TotalSeconds, ex.ToString());
+            }
+        }
+
         // Step 0 (pre-tran): ensure the capture table exists. DDL must
         // happen outside the test's begin tran/rollback wrap because
         // ddl in tran is off on sbntest.
@@ -465,6 +530,7 @@ public class Runner
 
         var conn = new AseConnection(BuildConnectionString(_opts.Database));
         AseConnection? control = null;
+        ScratchSession? scratch = null;
         try
         {
             conn.InfoMessage += (_, e) =>
@@ -492,7 +558,7 @@ public class Runner
             // Separate connection so the restore still runs when the test connection
             // timed out, was killed or hangs. Begin commits the recipe before any write.
             WriterSession? writer = null;
-            if (tc.IsWriter)
+            if (tc.IsWriter || tc.Variant != null)
             {
                 try
                 {
@@ -510,9 +576,14 @@ public class Runner
                         control = new AseConnection(BuildConnectionString(_opts.Database));
                         control.Open();
                         // Restore has no deadline: giving up leaves the test's writes in the product table.
-                        writer = WriterSession.Begin(new AseSqlExec(control, _opts.TimeoutSeconds),
-                                                     _opts.Database, tc.LogicalName, tc.Restores!, spid, kpid,
-                                                     restoreX: new AseSqlExec(control, 0));
+                        var journal = WriterSession.Begin(new AseSqlExec(control, _opts.TimeoutSeconds),
+                                                          _opts.Database, tc.LogicalName, tc.Restores ?? [], spid, kpid,
+                                                          restoreX: new AseSqlExec(control, 0));
+                        // Cleanup restores only a writer's row; a scratch-only row closes with its last drop.
+                        writer = tc.IsWriter ? journal : null;
+                        if (tc.Variant != null)
+                            scratch = new ScratchSession(new AseSqlExec(control, _opts.TimeoutSeconds), _opts.Database,
+                                                         journal, _scratchCompiler);
                     }
                 }
                 catch (WriterHeldException ex)
@@ -527,210 +598,255 @@ public class Runner
                         stopwatch.Elapsed.TotalSeconds, ex.ToString());
                 }
             }
-            string? restoreError = null;
+            return VariantLifecycle(tc.LogicalName, scratch, variantSpecs, writer, stopwatch, RunBatch,
+                                    release: () => { try { conn.Dispose(); } catch { } });
 
-            // Read-only report builders do `select ... into #tmp`, which Sybase forbids
-            // inside a multi-statement transaction (Msg 226). A `-- @no-transaction`
-            // test runs WITHOUT begin tran/rollback so those procs are runnable; since
-            // it can't lean on rollback to undo writes, isolation is explicit: clear
-            // the capture table and run the `<base>_teardown` hook in Cleanup().
-            AseTransaction? tx = tc.NoTransaction ? null : conn.BeginTransaction();
-
-            var tranHandled = false;
-            // Region ends when the batch returns or throws; later @@trancount/rollback stat lines are not fed.
-            int regionEnd = -1;
-
-            void Cleanup()
+            TestResult RunBatch(Action dropVariants)
             {
-                if (tx != null) { if (!tranHandled) try { tx.Rollback(); } catch { } return; }
-                // No-transaction path: undo by hand (best-effort; failures here must not
-                // mask the test's own outcome).
-                if (tc.Capture != null)
-                    TryExec(conn, $"delete from {tc.Capture.IntoTable}");
-                if (tc.TeardownProc != null
-                    && TryExec(conn, $"exec {tc.TeardownProc}", _opts.TimeoutSeconds) is CommandTimeoutException te)
-                    Console.Error.WriteLine($"sql-test: warning: {tc.LogicalName}: teardown {tc.TeardownProc} cut off: {te.Message}");
-                // Not best-effort: a leaked product row is the failure writer mode exists to prevent.
-                if (writer != null)
+                string? restoreError = null;
+
+                // Read-only report builders do `select ... into #tmp`, which Sybase forbids
+                // inside a multi-statement transaction (Msg 226). A `-- @no-transaction`
+                // test runs WITHOUT begin tran/rollback so those procs are runnable; since
+                // it can't lean on rollback to undo writes, isolation is explicit: clear
+                // the capture table and run the `<base>_teardown` hook in Cleanup().
+                AseTransaction? tx = tc.NoTransaction ? null : conn.BeginTransaction();
+
+                var tranHandled = false;
+                // Region ends when the batch returns or throws; later @@trancount/rollback stat lines are not fed.
+                int regionEnd = -1;
+
+                void Cleanup()
                 {
-                    restoreError = bench != null ? bench.RestoreKeep() : writer.Restore();
-                    foreach (var w in writer.Warnings) Console.Error.WriteLine($"sql-test: warning: {tc.LogicalName}: {w}");
-                    writer.Warnings.Clear(); // a bench session outlives this run
+                    if (tx != null) { if (!tranHandled) try { tx.Rollback(); } catch { } return; }
+                    // No-transaction path: undo by hand (best-effort; failures here must not
+                    // mask the test's own outcome).
+                    if (tc.Capture != null)
+                        TryExec(conn, $"delete from {tc.Capture.IntoTable}");
+                    if (tc.TeardownProc != null
+                        && TryExec(conn, $"exec {tc.TeardownProc}", _opts.TimeoutSeconds) is CommandTimeoutException te)
+                        Console.Error.WriteLine($"sql-test: warning: {tc.LogicalName}: teardown {tc.TeardownProc} cut off: {te.Message}");
+                    // Not best-effort: a leaked product row is the failure writer mode exists to prevent.
+                    if (writer != null)
+                    {
+                        restoreError = bench != null ? bench.RestoreKeep() : writer.Restore();
+                        foreach (var w in writer.Warnings) Console.Error.WriteLine($"sql-test: warning: {tc.LogicalName}: {w}");
+                        writer.Warnings.Clear(); // a bench session outlives this run
+                    }
                 }
-            }
 
-            // After the region is fixed; a meter turned on only for this drops its stat lines from the output.
-            void Diagnose()
-            {
-                if (!diagnose || batchMeter == null) return;
-                var acc = new MeasureAccumulator(batchMeter);
-                int end = regionEnd < 0 ? messages.Count : regionEnd;
-                for (int i = 0; i < end; i++)
-                    acc.Feed(messages[i].MessageNumber, messages[i].Message ?? "");
-                foreach (var t in WriterJournal.TouchedNotRestored(acc.Current.Tables.Select(t => t.Table), tc.Restores!))
-                    Console.Error.WriteLine($"sql-test: {tc.LogicalName}: {WriterJournal.TouchedLine(t)}");
-                if (diagMeter != null) messages.RemoveAll(m => diagMeter.IsStatMessage(m.MessageNumber));
-            }
-
-            // Hooks for sql-bench-shape; null by default. A hook failure after an
-            // aborted batch must not mask the batch's own error.
-            var afterRegionRan = false;
-            void RunAfterRegion()
-            {
-                if (afterRegionRan || tc.AfterRegion == null) return;
-                afterRegionRan = true;
-                tc.AfterRegion(conn, regionEnd);
-            }
-
-            // See class doc for why this check exists.
-            string? CheckTranCount()
-            {
-                int expected = tx == null ? 0 : 1, actual;
-                try
+                // After the region is fixed; a meter turned on only for this drops its stat lines from the output.
+                void Diagnose()
                 {
-                    using var cmd = new AseCommand("select @@trancount", conn);
-                    if (tx != null) cmd.Transaction = tx;
-                    cmd.CommandTimeout = _opts.TimeoutSeconds;
-                    actual = Convert.ToInt32(CommandDeadline.Run(cmd, _opts.TimeoutSeconds, cmd.ExecuteScalar));
+                    if (!diagnose || batchMeter == null) return;
+                    var acc = new MeasureAccumulator(batchMeter);
+                    int end = regionEnd < 0 ? messages.Count : regionEnd;
+                    for (int i = 0; i < end; i++)
+                        acc.Feed(messages[i].MessageNumber, messages[i].Message ?? "");
+                    foreach (var t in WriterJournal.TouchedNotRestored(acc.Current.Tables.Select(t => t.Table), tc.Restores!))
+                        Console.Error.WriteLine($"sql-test: {tc.LogicalName}: {WriterJournal.TouchedLine(t)}");
+                    if (diagMeter != null) messages.RemoveAll(m => diagMeter.IsStatMessage(m.MessageNumber));
                 }
-                catch { return null; }   // connection unusable: keep the original outcome
-                if (actual == expected) return null;
 
-                tranHandled = true;
-                var msg = actual < expected
-                    ? $"transaction ended inside the test (rollback tran or server abort; @@trancount={actual}, expected {expected}): later statements were not rolled back"
-                    : $"transaction left open by the test (@@trancount={actual}, expected {expected}): rolled back";
-                if (actual > 0)
+                // Hooks for sql-bench-shape; null by default. A hook failure after an
+                // aborted batch must not mask the batch's own error.
+                var afterRegionRan = false;
+                void RunAfterRegion()
                 {
+                    if (afterRegionRan || tc.AfterRegion == null) return;
+                    afterRegionRan = true;
+                    tc.AfterRegion(conn, regionEnd);
+                }
+
+                // See class doc for why this check exists.
+                string? CheckTranCount()
+                {
+                    int expected = tx == null ? 0 : 1, actual;
                     try
                     {
-                        if (tx != null) tx.Rollback();
-                        else { using var rb = new AseCommand("rollback tran", conn); rb.ExecuteNonQuery(); }
+                        using var cmd = new AseCommand("select @@trancount", conn);
+                        if (tx != null) cmd.Transaction = tx;
+                        cmd.CommandTimeout = _opts.TimeoutSeconds;
+                        actual = Convert.ToInt32(CommandDeadline.Run(cmd, _opts.TimeoutSeconds, cmd.ExecuteScalar));
                     }
-                    catch (Exception ex) { msg += $"; rollback failed: {ex.Message}"; }
+                    catch { return null; }   // connection unusable: keep the original outcome
+                    if (actual == expected) return null;
+
+                    tranHandled = true;
+                    var msg = actual < expected
+                        ? $"transaction ended inside the test (rollback tran or server abort; @@trancount={actual}, expected {expected}): later statements were not rolled back"
+                        : $"transaction left open by the test (@@trancount={actual}, expected {expected}): rolled back";
+                    if (actual > 0)
+                    {
+                        try
+                        {
+                            if (tx != null) tx.Rollback();
+                            else { using var rb = new AseCommand("rollback tran", conn); rb.ExecuteNonQuery(); }
+                        }
+                        catch (Exception ex) { msg += $"; rollback failed: {ex.Message}"; }
+                    }
+                    return msg;
                 }
-                return msg;
-            }
 
-            // Only PASS/SKIP get promoted to FAIL; ERROR/TIMEOUT (server already aborted
-            // the tran, e.g. deadlock victim) keep their outcome with the note prefixed.
-            TestResult WithTranCheck(TestResult r, string? violation)
-            {
-                if (violation == null) return r;
-                var outcome = r.Outcome is Outcome.PASS or Outcome.SKIP ? Outcome.FAIL : r.Outcome;
-                return r with
+                // Only PASS/SKIP get promoted to FAIL; ERROR/TIMEOUT (server already aborted
+                // the tran, e.g. deadlock victim) keep their outcome with the note prefixed.
+                TestResult WithTranCheck(TestResult r, string? violation)
                 {
-                    Outcome = outcome,
-                    Message = string.IsNullOrEmpty(r.Message) ? violation : $"{violation} | {r.Message}"
-                };
-            }
-
-            // Budget violations promote like the tran check; a budget without a start marker is an ERROR.
-            TestResult WithMeasure(TestResult r)
-            {
-                if (meter == null) return CheckUnmeteredMarker(r, messages.Select(m => m.Message ?? ""));
-                var acc = new MeasureAccumulator(meter);
-                int end = regionEnd < 0 ? messages.Count : regionEnd;
-                for (int i = 0; i < end; i++)
-                    acc.Feed(messages[i].MessageNumber, messages[i].Message ?? "");
-
-                // Report the budget that failed; with none failing, the last one checked.
-                var shown = acc.Budgets.FirstOrDefault(b => b.Failed) ?? (acc.Budgets.Count > 0 ? acc.Budgets[^1] : null);
-                r = r with
-                {
-                    Io = shown != null && !measure ? acc.Current with { LogicalReads = shown.Actual } : acc.Current,
-                    MaxReads = shown?.MaxReads,
-                };
-                if (r.Outcome is not (Outcome.PASS or Outcome.SKIP)) return r;
-                if (acc.Error != null)
-                    return r with { Outcome = Outcome.ERROR, Message = string.IsNullOrEmpty(r.Message) ? acc.Error : $"{acc.Error} | {r.Message}" };
-                if (acc.Failures.Count > 0)
-                {
-                    var fail = string.Join(" | ", acc.Failures.Select(f => "FAIL: " + f));
-                    return r with { Outcome = Outcome.FAIL, Message = string.IsNullOrEmpty(r.Message) ? fail : $"{fail} | {r.Message}" };
+                    if (violation == null) return r;
+                    var outcome = r.Outcome is Outcome.PASS or Outcome.SKIP ? Outcome.FAIL : r.Outcome;
+                    return r with
+                    {
+                        Outcome = outcome,
+                        Message = string.IsNullOrEmpty(r.Message) ? violation : $"{violation} | {r.Message}"
+                    };
                 }
-                return r;
-            }
 
-            // An aborted batch skips the trailing DisableSql; turn it off so the tran check's output stays clean.
-            void DisableMeterAfterAbort()
-            {
-                if (batchMeter == null) return;
+                // Budget violations promote like the tran check; a budget without a start marker is an ERROR.
+                TestResult WithMeasure(TestResult r)
+                {
+                    if (meter == null) return CheckUnmeteredMarker(r, messages.Select(m => m.Message ?? ""));
+                    var acc = new MeasureAccumulator(meter);
+                    int end = regionEnd < 0 ? messages.Count : regionEnd;
+                    for (int i = 0; i < end; i++)
+                        acc.Feed(messages[i].MessageNumber, messages[i].Message ?? "");
+
+                    // Report the budget that failed; with none failing, the last one checked.
+                    var shown = acc.Budgets.FirstOrDefault(b => b.Failed) ?? (acc.Budgets.Count > 0 ? acc.Budgets[^1] : null);
+                    r = r with
+                    {
+                        Io = shown != null && !measure ? acc.Current with { LogicalReads = shown.Actual } : acc.Current,
+                        MaxReads = shown?.MaxReads,
+                    };
+                    if (r.Outcome is not (Outcome.PASS or Outcome.SKIP)) return r;
+                    if (acc.Error != null)
+                        return r with { Outcome = Outcome.ERROR, Message = string.IsNullOrEmpty(r.Message) ? acc.Error : $"{acc.Error} | {r.Message}" };
+                    if (acc.Failures.Count > 0)
+                    {
+                        var fail = string.Join(" | ", acc.Failures.Select(f => "FAIL: " + f));
+                        return r with { Outcome = Outcome.FAIL, Message = string.IsNullOrEmpty(r.Message) ? fail : $"{fail} | {r.Message}" };
+                    }
+                    return r;
+                }
+
+                // An aborted batch skips the trailing DisableSql; turn it off so the tran check's output stays clean.
+                void DisableMeterAfterAbort()
+                {
+                    if (batchMeter == null) return;
+                    try
+                    {
+                        using var off = new AseCommand(batchMeter.DisableSql, conn);
+                        if (tx != null) off.Transaction = tx;
+                        off.CommandTimeout = DisableMeterTimeoutSeconds;
+                        CommandDeadline.Run(off, DisableMeterTimeoutSeconds, off.ExecuteNonQuery);
+                    }
+                    catch { }
+                }
+
                 try
                 {
-                    using var off = new AseCommand(batchMeter.DisableSql, conn);
-                    if (tx != null) off.Transaction = tx;
-                    off.CommandTimeout = DisableMeterTimeoutSeconds;
-                    CommandDeadline.Run(off, DisableMeterTimeoutSeconds, off.ExecuteNonQuery);
+                    // No-transaction capture tests can't rely on rollback to start clean,
+                    // so defensively clear any rows a crashed prior test left this session.
+                    if (tx == null && tc.Capture != null)
+                        TryExec(conn, $"delete from {tc.Capture.IntoTable}");
+
+                    // Paired: pretest runs in the capture batch (it feeds @tstuser to
+                    // the capture proc); the assert proc only reads the capture table.
+                    // Singleton: pretest runs in the test batch.
+                    if (tc.CaptureProc != null && tc.Capture != null)
+                        RunCapturePhase(conn, tx, tc.CaptureProc, tc.Capture, tc.Pretest, _opts.TimeoutSeconds, diagMeter);
+
+                    var assertSql = tc.CaptureProc != null
+                        ? $"exec {tc.AssertProc}"
+                        : WithPretest(tc.Pretest, tc.AssertProc);
+                    if (batchMeter != null)
+                        assertSql = $"{batchMeter.EnableSql}\n{assertSql}\n{batchMeter.DisableSql}";
+                    tc.BeforeBatch?.Invoke(conn);
+                    using var cmd = new AseCommand(assertSql, conn);
+                    if (tx != null) cmd.Transaction = tx;
+                    cmd.CommandTimeout = _opts.TimeoutSeconds;
+                    CommandDeadline.Run(cmd, _opts.TimeoutSeconds, cmd.ExecuteNonQuery);
+                    regionEnd = messages.Count;
+                    RunAfterRegion();
+
+                    var violation = CheckTranCount();
+                    Cleanup();
+                    dropVariants();
+                    Diagnose();
+                    stopwatch.Stop();
+                    return WithRestore(WithTranCheck(WithMeasure(new TestResult(tc.LogicalName, Outcome.PASS, "",
+                        stopwatch.Elapsed.TotalSeconds, JoinMessages(messages))), violation), restoreError);
                 }
-                catch { }
-            }
-
-            try
-            {
-                // No-transaction capture tests can't rely on rollback to start clean,
-                // so defensively clear any rows a crashed prior test left this session.
-                if (tx == null && tc.Capture != null)
-                    TryExec(conn, $"delete from {tc.Capture.IntoTable}");
-
-                // Paired: pretest runs in the capture batch (it feeds @tstuser to
-                // the capture proc); the assert proc only reads the capture table.
-                // Singleton: pretest runs in the test batch.
-                if (tc.CaptureProc != null && tc.Capture != null)
-                    RunCapturePhase(conn, tx, tc.CaptureProc, tc.Capture, tc.Pretest, _opts.TimeoutSeconds, diagMeter);
-
-                var assertSql = tc.CaptureProc != null
-                    ? $"exec {tc.AssertProc}"
-                    : WithPretest(tc.Pretest, tc.AssertProc);
-                if (batchMeter != null)
-                    assertSql = $"{batchMeter.EnableSql}\n{assertSql}\n{batchMeter.DisableSql}";
-                tc.BeforeBatch?.Invoke(conn);
-                using var cmd = new AseCommand(assertSql, conn);
-                if (tx != null) cmd.Transaction = tx;
-                cmd.CommandTimeout = _opts.TimeoutSeconds;
-                CommandDeadline.Run(cmd, _opts.TimeoutSeconds, cmd.ExecuteNonQuery);
-                regionEnd = messages.Count;
-                RunAfterRegion();
-
-                var violation = CheckTranCount();
-                Cleanup();
-                Diagnose();
-                stopwatch.Stop();
-                return WithRestore(WithTranCheck(WithMeasure(new TestResult(tc.LogicalName, Outcome.PASS, "",
-                    stopwatch.Elapsed.TotalSeconds, JoinMessages(messages))), violation), restoreError);
-            }
-            catch (AseException ex)
-            {
-                if (regionEnd < 0) regionEnd = messages.Count;
-                DisableMeterAfterAbort();
-                try { RunAfterRegion(); } catch { }
-                var violation = CheckTranCount();
-                Cleanup();
-                Diagnose();
-                stopwatch.Stop();
-                return WithRestore(WithTranCheck(WithMeasure(Classify(tc.LogicalName, ex, messages, stopwatch.Elapsed.TotalSeconds, batchMeter != null)), violation), restoreError);
-            }
-            catch (Exception ex)
-            {
-                if (regionEnd < 0) regionEnd = messages.Count;
-                DisableMeterAfterAbort();
-                try { RunAfterRegion(); } catch { }
-                var violation = CheckTranCount();
-                Cleanup();
-                Diagnose();
-                stopwatch.Stop();
-                var outcome = ClassifyUnexpected(ex);
-                // Keep what the proc printed before the cancel, for --verbose.
-                var output = ex is CommandTimeoutException ? $"{JoinMessages(messages)}\n{ex}" : ex.ToString();
-                return WithRestore(WithTranCheck(WithMeasure(new TestResult(tc.LogicalName, outcome, ex.Message,
-                    stopwatch.Elapsed.TotalSeconds, output)), violation), restoreError);
+                catch (AseException ex)
+                {
+                    if (regionEnd < 0) regionEnd = messages.Count;
+                    DisableMeterAfterAbort();
+                    try { RunAfterRegion(); } catch { }
+                    var violation = CheckTranCount();
+                    Cleanup();
+                    dropVariants();
+                    Diagnose();
+                    stopwatch.Stop();
+                    return WithRestore(WithTranCheck(WithMeasure(Classify(tc.LogicalName, ex, messages, stopwatch.Elapsed.TotalSeconds, batchMeter != null)), violation), restoreError);
+                }
+                catch (Exception ex)
+                {
+                    if (regionEnd < 0) regionEnd = messages.Count;
+                    DisableMeterAfterAbort();
+                    try { RunAfterRegion(); } catch { }
+                    var violation = CheckTranCount();
+                    Cleanup();
+                    dropVariants();
+                    Diagnose();
+                    stopwatch.Stop();
+                    var outcome = ClassifyUnexpected(ex);
+                    // Keep what the proc printed before the cancel, for --verbose.
+                    var output = ex is CommandTimeoutException ? $"{JoinMessages(messages)}\n{ex}" : ex.ToString();
+                    return WithRestore(WithTranCheck(WithMeasure(new TestResult(tc.LogicalName, outcome, ex.Message,
+                        stopwatch.Elapsed.TotalSeconds, output)), violation), restoreError);
+                }
             }
         }
         finally
         {
             try { conn.Dispose(); } catch { }
+            // Backstop; DropAll is a no-op once the run has dropped.
+            try { scratch?.DropAll(); } catch { }
             try { control?.Dispose(); } catch { }
         }
+    }
+
+    /// <summary>
+    /// Compiles the variant chain, runs the batch, and drops the chain in every outcome.
+    /// <paramref name="run"/> calls the drop it is handed right after its Cleanup; the finally
+    /// calls <paramref name="release"/>, then retries, and a drop error reaches the result only
+    /// if handles remain. A refusal compiles nothing, then restores a writer's row or closes a
+    /// scratch-only one.
+    /// </summary>
+    internal static TestResult VariantLifecycle(string test, ScratchSession? scratch, IReadOnlyList<ScratchSpec> specs,
+                                                WriterSession? writer, Stopwatch stopwatch, Func<Action, TestResult> run,
+                                                Action? release = null)
+    {
+        if (scratch != null)
+        {
+            try { Variants.CompileAll(specs, scratch); }
+            catch (Exception ex)
+            {
+                var reason = ex is ScratchRefusedException ? ex.Message : $"variant setup failed: {ex.Message}";
+                var close = writer != null ? writer.Restore() : scratch.Journal.CloseIfEmpty();
+                return WithRestore(new TestResult(test, Outcome.ERROR, reason, stopwatch.Elapsed.TotalSeconds, ex.ToString()), close);
+            }
+        }
+        TestResult result;
+        string? dropError;
+        try { result = run(() => scratch?.DropAll()); }
+        finally
+        {
+            // A timed-out batch can still hold the proc until its connection closes.
+            if (scratch != null) release?.Invoke();
+            dropError = scratch?.DropAll();
+        }
+        // An earlier drop failure that this retry cleared is not an error.
+        return scratch is { Handles.Count: > 0 } ? WithRestore(result, dropError) : result;
     }
 
     // Best-effort statement on the test connection; swallows errors so cleanup
