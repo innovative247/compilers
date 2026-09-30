@@ -81,4 +81,10 @@ public class RunnerTests
         var pass = new TestResult("test_x", Outcome.PASS, "", 0.1, "out");
         Assert.Same(pass, Runner.CheckUnmeteredMarker(pass, new[] { "@sql-test:measure-start", "assert-max-reads 1", "FAIL: x" }));
     }
+
+    [Theory]
+    [InlineData("1st", "[1st]")]
+    [InlineData("a1", "a1")]
+    public void QuoteIdent_brackets_digit_leading_names(string name, string expected) =>
+        Assert.Equal(expected, Runner.QuoteIdent(name));
 }

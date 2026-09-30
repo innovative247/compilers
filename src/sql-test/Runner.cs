@@ -695,11 +695,13 @@ public class Runner
         return $"varchar({size})";
     }
 
-    private static string QuoteIdent(string name)
+    internal static string QuoteIdent(string name)
     {
         // Sybase identifiers: reject control chars; otherwise return bare.
         // For column names with spaces or reserved words, wrap in brackets.
-        if (name.All(c => char.IsLetterOrDigit(c) || c == '_' || c == '#')) return name;
+        // A leading digit does not parse as a bare identifier.
+        if (name.Length > 0 && !char.IsDigit(name[0])
+            && name.All(c => char.IsLetterOrDigit(c) || c == '_' || c == '#')) return name;
         return $"[{name.Replace("]", "]]")}]";
     }
 
