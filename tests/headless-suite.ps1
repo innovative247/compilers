@@ -2750,7 +2750,8 @@ function Test-SqlTest {
              'sql-test.writer.sweep','sql-test.writer.bench','sql-test.writer.trancount',
              'sql-test.writer.bench.refused','sql-test.writer.verbose',
              'sql-test.variant.on','sql-test.variant.off','sql-test.variant.drop','sql-test.variant.refuse.unknown-opt',
-             'sql-test.variant.refuse.chain-break','sql-test.variant.refuse.tag-conflict','sql-test.variant.sweep')
+             'sql-test.variant.refuse.chain-break','sql-test.variant.refuse.tag-conflict','sql-test.variant.sweep',
+             'sql-test.variant.refuse.drift','sql-test.variant.profile')
     if (-not (Get-Profile $SybaseProfile)) {
         foreach ($id in $ids) { Skip-Case $id "profile '$SybaseProfile' not in settings.json - needs a live Sybase profile with sbntest (-SybaseProfile)" }
         return
@@ -3208,6 +3209,56 @@ function Test-SqlTest {
             }
             if ($r.StdErr -match 'holds variant items; left for a later sweep') { throw "sweep left the variant row. stderr: $($r.StdErr)" }
             Assert-VariantClean 'after --sweep-writer-journal'
+        }
+
+        # Test procs for the drift and --variant-profile cases; runsql is idempotent, so each case deploys them.
+        function Initialize-VariantProfileDriftFixture {
+            Initialize-VariantFixture
+            $r = Invoke-Cli runsql (Join-Path $PSScriptRoot 'fixtures/sql/sql-test-variant-profile-drift.sql') $db $variantProfile '--changelog:n'
+            Assert-ExitCode $r
+        }
+
+        Test-Case 'sql-test.variant.refuse.drift' {
+            Initialize-VariantProfileDriftFixture
+            try {
+                # Deployed text spans three syscomments rows with a blank at a row boundary.
+                $r = Invoke-Cli runsql (Join-Path $variantRoot 'css/ss/test/pro_test_variant_fx_drift.sql') $db $variantProfile '--changelog:n'
+                Assert-ExitCode $r
+                $r = Invoke-VariantCase 'selftest_framework_variant_drift_refuse'
+                Assert-ExitCode $r 1
+                Assert-WriterOutcome $r 'ERROR' 'selftest_framework_variant_drift_refuse' 'first difference at character'
+                if ($r.StdErr -notmatch 'variant source for pro_test_variant_fx_drift differs from the deployed proc \(drift[/\\]pro_test_variant_fx_drift\.sql\)') {
+                    throw "no drift refusal. stderr: $($r.StdErr)"
+                }
+                if ($r.StdErr -match 'variant-drift-refuse ran') { throw "refused test body ran. stderr: $($r.StdErr)" }
+                # Same text: proves the syscomments read keeps the blank at the row boundary.
+                $r = Invoke-VariantCase 'selftest_framework_variant_drift_same'
+                Assert-ExitCode $r
+                Assert-WriterOutcome $r 'PASS' 'selftest_framework_variant_drift_same'
+            } finally {
+                $d = Invoke-Cli runsql (Join-Path $PSScriptRoot 'fixtures/sql/sql-test-variant-drift-drop.sql') $db $variantProfile '--changelog:n'
+                Assert-ExitCode $d
+                if ("$($d.StdOut)`n$($d.StdErr)" -notmatch 'drift-procs: 0\b') { throw "drift proc not dropped. output: $($d.StdOut)$($d.StdErr)" }
+            }
+        }
+        if (-not (Get-Profile 'GONZO')) {
+            Skip-Case 'sql-test.variant.profile' 'needs the GONZO profile: its options layer is the one with sv099 on'
+        } else {
+            Test-Case 'sql-test.variant.profile' {
+                # sv099 is '+' only in the GONZO options layer; the runner's GONZO_TEST layer has it '-'.
+                Initialize-VariantProfileDriftFixture
+                $r = Invoke-VariantCase 'selftest_framework_variant_prof_on' @('--variant-profile', 'GONZO')
+                Assert-ExitCode $r
+                Assert-WriterOutcome $r 'PASS' 'selftest_framework_variant_prof_on'
+                $r = Invoke-VariantCase 'selftest_framework_variant_prof_off'
+                Assert-ExitCode $r
+                Assert-WriterOutcome $r 'PASS' 'selftest_framework_variant_prof_off'
+                $r = Invoke-VariantCase 'selftest_framework_variant_prof_on' @('--variant-profile', 'NOSUCH')
+                Assert-ExitCode $r 2
+                if ("$($r.StdOut)`n$($r.StdErr)" -notmatch 'unknown --variant-profile NOSUCH') {
+                    throw "expected the unknown-profile refusal. output: $($r.StdOut)$($r.StdErr)"
+                }
+            }
         }
     }
 }

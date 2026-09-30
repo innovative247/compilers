@@ -14,6 +14,7 @@ public class ScratchProcTests
         public List<ScratchCompile> Compiled = new();
         public bool HasOption(string db, string option) => Known.Contains(option);
         public string? Compile(ScratchCompile c) { Compiled.Add(c); return OnCompile(c); }
+        public string? DeployedText(string db, string proc) => null;
     }
 
     // Journal insert gets identity 9; a name exists in sysobjects only when Exists; a live holder answers the held query.

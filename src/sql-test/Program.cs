@@ -22,6 +22,13 @@ catch (Exception ex)
 
 var profileMgr = new ProfileManager();
 if (!profileMgr.ValidateProfile(opts.Server)) return 2;
+// Before Resolve, which can prompt for a password, and before the banner.
+try { Runner.PrecheckVariantProfile(profileMgr, opts.VariantProfile, opts.Server); }
+catch (ArgumentException ex)
+{
+    Console.Error.WriteLine($"sql-test: {ex.Message}");
+    return 2;
+}
 
 var cmdvars = new ibsCompiler.CommandVariables
 {
@@ -32,11 +39,19 @@ var cmdvars = new ibsCompiler.CommandVariables
 };
 var profile = profileMgr.Resolve(cmdvars);
 
+ResolvedProfile variantProfile;
+try { variantProfile = Runner.ResolveVariantProfile(profileMgr, opts.VariantProfile, profile); }
+catch (ArgumentException ex)
+{
+    Console.Error.WriteLine($"sql-test: {ex.Message}");
+    return 2;
+}
+
 Console.Error.WriteLine(opts.BenchPattern == null
     ? $"sql-test: pattern='{opts.Pattern}' db={opts.Database} profile={profile.ProfileName}"
     : $"sql-test: bench='{opts.BenchPattern}' db={opts.Database} profile={profile.ProfileName}");
 
-var runner = new Runner(profile, opts);
+var runner = new Runner(profile, opts, variantProfile);
 
 // Rows that cannot be restored are warnings, not failures: exit 2 only when the sweep could not run.
 if (opts.SweepWriterJournal)

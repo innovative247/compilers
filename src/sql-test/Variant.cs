@@ -130,6 +130,46 @@ public static class Variants
     }
 
     /// <summary>
+    /// Refuses when a deployed member's create batch, expanded with unmodified options, differs
+    /// from its syscomments text beyond whitespace within lines: the variant would then test code nobody runs.
+    /// </summary>
+    public static void CheckDrift(IReadOnlyList<(ScratchSpec Spec, string RelPath)> specs, IScratchCompiler compiler,
+                                  Action<string>? verbose = null)
+    {
+        foreach (var (spec, relPath) in specs)
+        {
+            var deployed = compiler.DeployedText(spec.Db, spec.Proc);
+            if (deployed == null)
+            {
+                verbose?.Invoke($"{spec.Proc} is not deployed in {spec.Db}; drift check skipped");
+                continue;
+            }
+            var local = compiler.Expand(spec.Db, ScratchProc.CreateBatch(spec.SourceText, spec.Proc) ?? "");
+            if (DriftExcerpt(local, deployed) is { } excerpt)
+                throw new ScratchRefusedException(
+                    $"variant source for {spec.Proc} differs from the deployed proc ({relPath}); update the working copy or redeploy, or pass --variant-profile <deploying profile>; {excerpt}");
+        }
+    }
+
+    private static readonly Regex LineBreak = new(@"\s*\n\s*");
+    private static readonly Regex Blanks = new(@"[ \t]+");
+
+    // Line breaks survive: a `--` comment ends at one, so joining lines could hide code in a comment.
+    private static string Normalise(string s) => Blanks.Replace(LineBreak.Replace(s, "\n"), " ").Trim();
+
+    /// <summary>Null when the texts match after normalising whitespace within lines, else the first difference in context.</summary>
+    internal static string? DriftExcerpt(string local, string deployed)
+    {
+        var (a, b) = (Normalise(local), Normalise(deployed));
+        if (a == b) return null;
+        var i = 0;
+        while (i < a.Length && i < b.Length && a[i] == b[i]) i++;
+        var start = Math.Max(0, i - 30);
+        string Cut(string s) => s.Substring(Math.Min(start, s.Length), Math.Min(60, Math.Max(0, s.Length - start))).Replace("\n", "\\n");
+        return $"first difference at character {i}: local \"{Cut(a)}\", deployed \"{Cut(b)}\"";
+    }
+
+    /// <summary>
     /// Prechecks every spec, then compiles in order. A pre-DB refusal compiles nothing; any later
     /// failure drops every member compiled so far and rethrows.
     /// </summary>

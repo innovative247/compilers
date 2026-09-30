@@ -10,8 +10,11 @@ public class VariantTests
     {
         public Dictionary<string, string> Tokens = new();
         public bool HasOption(string db, string option) => true;
-        public string? Compile(ScratchCompile c) => null;
+        public int Compiles;
+        public string? Compile(ScratchCompile c) { Compiles++; return null; }
         public string Expand(string db, string text) => Tokens.Aggregate(text, (t, kv) => t.Replace(kv.Key, kv.Value));
+        public Dictionary<string, string> Deployed = new();
+        public string? DeployedText(string db, string proc) => Deployed.GetValueOrDefault(proc);
     }
 
     private static VariantSpec? Parse(string body, out string? error) => Variants.Parse(body, out error);
@@ -234,5 +237,196 @@ public class VariantTests
             Assert.Equal("use sbnmaster", rc.Expand("sbntest", "use &dbinpr3&"));
         }
         finally { File.Delete(cachePath); }
+    });
+
+    // ---- --variant-profile (design §9 decision 2) ----
+
+    private static string OptionsCache(ResolvedProfile p, params (string k, string v)[] lines)
+    {
+        var path = new ibsCompiler.Options(new CommandVariables { Server = "srv", Database = "sbntest", Command = "" }, p).ResolvedOptionsPath;
+        File.WriteAllLines(path, lines.Select(l => l.k.PadRight(40) + l.v.PadRight(200)));
+        return path;
+    }
+
+    [Fact]
+    public void Variant_profile_supplies_the_options_layer_while_the_compile_connects_as_the_runner() => TestScratch.Use(root =>
+    {
+        var runner = new ResolvedProfile { IsProfile = true, ProfileName = $"sqltest-run-{Guid.NewGuid():N}", IRPath = root };
+        var prod = new ResolvedProfile { IsProfile = true, ProfileName = $"sqltest-prod-{Guid.NewGuid():N}", IRPath = root };
+        var caches = new[]
+        {
+            OptionsCache(runner, ("&dbinpr3&", "sbntestdb")),
+            OptionsCache(prod, ("&if_fe001&", ""), ("&endif_fe001&", ""), ("&ifn_fe001&", "/*"), ("&endifn_fe001&", "*/"),
+                         ("&dbinpr3&", "sbnmaster")),
+        };
+        try
+        {
+            var calls = new List<(string what, string profile)>();
+            var control = new FakeExec { OnScalar = _ => null };
+            var rc = new RunsqlScratchCompiler(runner, "srv", prod, withControl: use => use(control),
+                run: (vars, p, opts) =>
+                {
+                    calls.Add(("run", p.ProfileName));
+                    calls.Add(("options", opts.ReplaceWord("&dbinpr3& &if_fe001&on&endif_fe001&")));
+                    return true;
+                });
+            Assert.True(rc.HasOption("sbntest", "fe001"));
+            Assert.Equal("use sbnmaster", rc.Expand("sbntest", "use &dbinpr3&"));
+            Assert.Null(rc.Compile(new ScratchCompile("sbntest", "p", "p__t", "select 1", new Dictionary<string, bool> { ["fe001"] = false })));
+            Assert.Null(rc.DeployedText("sbntest", "p"));
+            Assert.Equal(new[] { ("run", runner.ProfileName), ("options", "sbnmaster /*on*/") }, calls);
+            // The drift read goes through the runner's control connection, not a compile.
+            Assert.Equal(new[] { "select object_id('sbntest.dbo.p')" }, control.Log);
+
+            // Without the flag the runner's own layer applies, as before W4b.
+            var plain = new RunsqlScratchCompiler(runner, "srv");
+            Assert.False(plain.HasOption("sbntest", "fe001"));
+            Assert.Equal("use sbntestdb", plain.Expand("sbntest", "use &dbinpr3&"));
+        }
+        finally { foreach (var c in caches) File.Delete(c); }
+    });
+
+    [Fact]
+    public void ResolveVariantProfile_refuses_an_unknown_name_and_keeps_the_runner_source() => TestScratch.Use(root =>
+    {
+        var settings = Path.Combine(root, "settings.json");
+        File.WriteAllText(settings, "{\"Profiles\":{\"GONZO\":{\"Company\":\"202\",\"Host\":\"h\",\"Port\":5000,\"Password\":\"x\"}," +
+                                    "\"SAME\":{\"Host\":\"h\",\"Password\":\"x\",\"SQL_SOURCE\":\"/src/ir/\"}}}");
+        var mgr = new ProfileManager(settings);
+        var runner = new ResolvedProfile { IsProfile = true, ProfileName = "GONZO_TEST", IRPath = "/src/ir", Pass = "p" };
+
+        Assert.Same(runner, Runner.ResolveVariantProfile(mgr, null, runner));
+        Assert.Equal("unknown --variant-profile NOPE: no such profile",
+                     Assert.Throws<ArgumentException>(() => Runner.ResolveVariantProfile(mgr, "NOPE", runner)).Message);
+        var p = Runner.ResolveVariantProfile(mgr, "gonzo", runner);
+        Assert.Equal(("GONZO", "202", "/src/ir", true), (p.ProfileName, p.Company, p.IRPath, p.IsProfile));
+        Assert.Equal("/src/ir", Runner.ResolveVariantProfile(mgr, "SAME", runner).IRPath);
+    });
+
+    [Fact]
+    public void ResolveVariantProfile_refuses_another_sql_source_naming_both_paths() => TestScratch.Use(root =>
+    {
+        var settings = Path.Combine(root, "settings.json");
+        File.WriteAllText(settings, "{\"Profiles\":{\"PROD\":{\"Host\":\"h\",\"Password\":\"x\",\"SQL_SOURCE\":\"/prod/ir\"}}}");
+        var runner = new ResolvedProfile { IsProfile = true, ProfileName = "GONZO_TEST", IRPath = "/src/ir", Pass = "p" };
+
+        Assert.Equal("--variant-profile PROD has SQL source /prod/ir, but profile GONZO_TEST has /src/ir; " +
+                     "the variant profile must share the runner's SQL source",
+                     Assert.Throws<ArgumentException>(() => Runner.ResolveVariantProfile(new ProfileManager(settings), "PROD", runner)).Message);
+    });
+
+    [Fact]
+    public void PrecheckVariantProfile_refuses_unknown_names_and_other_server_types_from_settings_alone() => TestScratch.Use(root =>
+    {
+        var settings = Path.Combine(root, "settings.json");
+        File.WriteAllText(settings, "{\"Profiles\":{\"RUN\":{\"Host\":\"h\"},\"SYB\":{\"Host\":\"h\",\"PLATFORM\":\"SYBASE\"}," +
+                                    "\"PG\":{\"Host\":\"h\",\"PLATFORM\":\"POSTGRES\"}}}");
+        var mgr = new ProfileManager(settings);
+
+        Runner.PrecheckVariantProfile(mgr, null, "RUN");
+        Runner.PrecheckVariantProfile(mgr, "syb", "RUN");
+        Assert.Equal("unknown --variant-profile NOPE: no such profile",
+                     Assert.Throws<ArgumentException>(() => Runner.PrecheckVariantProfile(mgr, "NOPE", "RUN")).Message);
+        Assert.Equal("--variant-profile PG is POSTGRES but profile RUN is SYBASE; an options layer only fits its own server type",
+                     Assert.Throws<ArgumentException>(() => Runner.PrecheckVariantProfile(mgr, "PG", "RUN")).Message);
+    });
+
+    // ---- drift refusal (design §9 decision 3) ----
+
+    private const string DriftSource = "use &dbpro&\ngo\n-- header p\ncreate proc p as\n  select &one&\ngo\ngrant execute on p to public\ngo\n";
+
+    private static List<(ScratchSpec, string)> DriftSpecs(params string[] procs) =>
+        procs.Select(p => (new ScratchSpec(p, "sbntest", DriftSource.Replace(" p", $" {p}"), $"{p}__t",
+                                            new Dictionary<string, bool> { ["fe001"] = false }, []),
+                           $"css/ss/x/pro_{p}.sql")).ToList();
+
+    private static FakeCompiler DriftCompiler(string? deployed)
+    {
+        var c = new FakeCompiler { Tokens = { ["&dbpro&"] = "sbntest", ["&one&"] = "1" } };
+        if (deployed != null) c.Deployed["p"] = deployed;
+        return c;
+    }
+
+    [Theory]
+    [InlineData("-- header p\ncreate proc p as\n  select 1")]
+    [InlineData("  -- header p\r\n create   proc p as\r\n\n\tselect 1\n")]
+    public void Drift_passes_identical_and_whitespace_only_differences(string deployed) =>
+        Variants.CheckDrift(DriftSpecs("p"), DriftCompiler(deployed));
+
+    [Fact]
+    public void Drift_refuses_code_joined_onto_a_comment_line()
+    {
+        // Joined, `create proc p as` sits inside the `--` comment: a different proc, not whitespace.
+        Assert.Contains("first difference at character 11",
+                        Refusal(() => Variants.CheckDrift(DriftSpecs("p"), DriftCompiler("  -- header p create   proc p as\r\n\tselect 1\n"))));
+    }
+
+    [Fact]
+    public void Drift_refuses_a_real_difference_with_an_excerpt()
+    {
+        Assert.Equal("variant source for p differs from the deployed proc (css/ss/x/pro_p.sql); update the working copy or redeploy, " +
+                     "or pass --variant-profile <deploying profile>; " +
+                     "first difference at character 36: local \"der p\\ncreate proc p as\\nselect 1\", deployed \"der p\\ncreate proc p as\\nselect 2\"",
+                     Refusal(() => Variants.CheckDrift(DriftSpecs("p"), DriftCompiler("-- header p\ncreate proc p as\n  select 2"))));
+        // Case matters: only whitespace is normalised.
+        Refusal(() => Variants.CheckDrift(DriftSpecs("p"), DriftCompiler("-- header p\nCREATE proc p as\n  select 1")));
+    }
+
+    [Fact]
+    public void Drift_skips_a_member_that_is_not_deployed_and_notes_it_under_verbose()
+    {
+        var notes = new List<string>();
+        Variants.CheckDrift(DriftSpecs("q", "p"), DriftCompiler("-- header p\ncreate proc p as\nselect 1"), notes.Add);
+        Assert.Equal(new[] { "q is not deployed in sbntest; drift check skipped" }, notes);
+    }
+
+    [Fact]
+    public void ReadDeployed_concatenates_colid_rows_for_dbo_and_returns_null_when_absent()
+    {
+        var x = new FakeExec
+        {
+            OnScalar = _ => 42,
+            OnRows = _ => new() { new object?[] { "-- header p\ncreate proc p a", 0 }, new object?[] { "s\n  sel", 0 }, new object?[] { "ect 1", DBNull.Value } },
+        };
+        Assert.Equal("-- header p\ncreate proc p as\n  select 1", ScratchProc.ReadDeployed(x, "sbntest", "p"));
+        Assert.Equal(new[] { "select object_id('sbntest.dbo.p')",
+                             "select text, status from sbntest..syscomments where id = object_id('sbntest.dbo.p') and number = 1 order by colid2, colid" },
+                     x.Log);
+
+        var absent = new FakeExec { OnScalar = _ => DBNull.Value };
+        Assert.Null(ScratchProc.ReadDeployed(absent, "sbntest", "p"));
+        Assert.Single(absent.Log);
+        Assert.Throws<ScratchRefusedException>(() => ScratchProc.ReadDeployed(absent, "sbntest", "p;drop"));
+    }
+
+    [Fact]
+    public void ReadDeployed_refuses_hidden_text_rather_than_reporting_drift()
+    {
+        var x = new FakeExec { OnScalar = _ => 42, OnRows = _ => new() { new object?[] { "", 0 }, new object?[] { "", (short)1 } } };
+        Assert.Equal("deployed text of p is hidden (sp_hidetext); drift cannot be checked",
+                     Refusal(() => ScratchProc.ReadDeployed(x, "sbntest", "p")));
+    }
+
+    // ---- pre-connection block of RunOne ----
+
+    [Fact]
+    public void PrepareVariant_drift_refusal_returns_ERROR_before_any_compile() => TestScratch.Use(root =>
+    {
+        Write(root, "css/ss/x/pro_p.sql", DriftSource);
+        var c = DriftCompiler("-- header p\ncreate proc p as\n  select 2");
+        var tc = new TestCase("test_v", null, "test_v", null) { Variant = Parse("-- @variant: fe001=- as t chain p", out _) };
+        var specs = new List<ScratchSpec>();
+
+        var r = Runner.PrepareVariant(tc, new SourceLocator(root), c, "sbntest", false, specs, System.Diagnostics.Stopwatch.StartNew());
+        Assert.NotNull(r);
+        Assert.Equal(Outcome.ERROR, r.Outcome);
+        Assert.StartsWith("variant source for p differs from the deployed proc", r.Message);
+        // No specs reach RunOne, which returns before its connection, journal row and compile.
+        Assert.Equal((0, 0), (specs.Count, c.Compiles));
+
+        c.Deployed["p"] = "-- header p\ncreate proc p as\n  select 1";
+        Assert.Null(Runner.PrepareVariant(tc, new SourceLocator(root), c, "sbntest", false, specs, System.Diagnostics.Stopwatch.StartNew()));
+        Assert.Equal(new[] { "p__t" }, specs.Select(s => s.ScratchName));
+        Assert.Null(Runner.PrepareVariant(tc with { Variant = null }, new SourceLocator(root), c, "sbntest", false, specs, System.Diagnostics.Stopwatch.StartNew()));
     });
 }

@@ -101,4 +101,14 @@ public class OptionsTests
     [InlineData(new[] { "--print-capture-ddl" }, null)]
     public void Discover_sweeps_with_the_timeout_except_in_read_only_modes(string[] flags, int? expected) =>
         Assert.Equal(expected, Runner.DiscoverSweepRestoreTimeout(Options.Parse(new[] { "sbntest", "G" }.Concat(flags).ToArray())!));
+
+    [Fact]
+    public void Variant_profile_parses_and_defaults_to_null()
+    {
+        Assert.Equal("GONZO", Options.Parse(new[] { "sbntest", "G", "--variant-profile", "GONZO" })!.VariantProfile);
+        Assert.Null(Options.Parse(new[] { "sbntest", "G" })!.VariantProfile);
+        Assert.Throws<ArgumentException>(() => Options.Parse(new[] { "sbntest", "G", "--variant-profile" }));
+        Assert.Throws<ArgumentException>(() => Options.Parse(new[] { "sbntest", "G", "--sweep-writer-journal", "--variant-profile", "GONZO" }));
+        Assert.Contains("--variant-profile", Options.Usage);
+    }
 }

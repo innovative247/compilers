@@ -36,6 +36,9 @@ public interface IScratchCompiler
 
     /// <summary><paramref name="text"/> with its &amp;tokens&amp; replaced from the merged options for <paramref name="db"/>.</summary>
     string Expand(string db, string text) => text;
+
+    /// <summary>dbo's <paramref name="proc"/> text from <paramref name="db"/>..syscomments; null when it is not deployed.</summary>
+    string? DeployedText(string db, string proc);
 }
 
 /// <summary>The primitive shared by R7, R10 and R11: compile a renamed copy of a proc, journalled.</summary>
@@ -117,6 +120,28 @@ public static class ScratchProc
                 throw new ScratchRefusedException($"a batch naming {proc} also names {shared}, which the same file creates; not supported");
             return true;
         }
+    }
+
+    /// <summary>The batch creating <paramref name="proc"/>, as selected for the variant; null when the text has none.</summary>
+    internal static string? CreateBatch(string text, string proc) =>
+        SelectBatches(text, proc).FirstOrDefault(b => CreateProcLine.Matches(b)
+            .Any(m => string.Equals(m.Groups[1].Value, proc, StringComparison.OrdinalIgnoreCase)));
+
+    /// <summary>
+    /// dbo's proc text, rows concatenated in colid order; null when <c>object_id</c> is null.
+    /// ASE splits long text over colid, and past 32767 rows over colid2; number 1 is the ungrouped proc.
+    /// </summary>
+    internal static string? ReadDeployed(ISqlExec x, string db, string proc)
+    {
+        foreach (var id in new[] { db, proc })
+            if (!WriterJournal.IsIdent(id)) throw new ScratchRefusedException($"invalid scratch identifier: {id}");
+        var obj = WriterJournal.Lit($"{db}.dbo.{proc}");
+        if (x.Scalar($"select object_id({obj})") is null or DBNull) return null;
+        var rows = x.Rows($"select text, status from {db}..syscomments where id = object_id({obj}) and number = 1 order by colid2, colid");
+        // Hidden text is unreadable, so drift cannot be ruled out; refusing beats a silent pass.
+        if (rows.Any(r => r[1] is not (null or DBNull) && (Convert.ToInt32(r[1], CultureInfo.InvariantCulture) & 1) != 0))
+            throw new ScratchRefusedException($"deployed text of {proc} is hidden (sp_hidetext); drift cannot be checked");
+        return string.Concat(rows.Select(r => r[0] as string ?? ""));
     }
 
     // First statement only, so a comment line starting with `use` never keeps a batch.
@@ -312,12 +337,29 @@ public sealed class ScratchHandle : IDisposable
     public void Dispose() => Drop();
 }
 
-/// <summary>The in-process compile of design §3.5, through <c>runsql_main.Run</c>.</summary>
-public sealed class RunsqlScratchCompiler(ResolvedProfile profile, string server) : IScratchCompiler
+/// <summary>
+/// The in-process compile of design §3.5, through <c>runsql_main.Run</c>. <paramref name="optionsProfile"/>
+/// (the <c>--variant-profile</c>) supplies only the options layer; the compile connects as <paramref name="profile"/>,
+/// whose dbo login keeps owner resolution for the drop and the sweep correct.
+/// </summary>
+public sealed class RunsqlScratchCompiler(
+    ResolvedProfile profile, string server, ResolvedProfile? optionsProfile = null,
+    Action<Action<ISqlExec>>? withControl = null,
+    Func<CommandVariables, ResolvedProfile, ibsCompiler.Options, bool>? run = null) : IScratchCompiler
 {
+    private ResolvedProfile OptionsProfile => optionsProfile ?? profile;
+
     public bool HasOption(string db, string option) => WithOptions(db, o => o.GetCompileOption(option) != null);
 
     public string Expand(string db, string text) => WithOptions(db, o => o.ReplaceWord(text));
+
+    public string? DeployedText(string db, string proc)
+    {
+        if (withControl == null) throw new InvalidOperationException("no control connection for the drift check");
+        string? text = null;
+        withControl(x => text = ScratchProc.ReadDeployed(x, db, proc));
+        return text;
+    }
 
     // The option chatter goes to a throwaway file, not stdout.
     private T WithOptions<T>(string db, Func<ibsCompiler.Options, T> use)
@@ -326,7 +368,7 @@ public sealed class RunsqlScratchCompiler(ResolvedProfile profile, string server
         vars.OutFile = Path.Combine(Path.GetTempPath(), $"sql-test-options-{Environment.ProcessId}-{Guid.NewGuid():N}.out");
         try
         {
-            var opts = new ibsCompiler.Options(vars, profile);
+            var opts = new ibsCompiler.Options(vars, OptionsProfile);
             if (!opts.GenerateOptionFiles()) throw new ScratchRefusedException("compile options could not be generated");
             return use(opts);
         }
@@ -343,11 +385,10 @@ public sealed class RunsqlScratchCompiler(ResolvedProfile profile, string server
             var cmdvars = Vars(c.Db, sql);
             cmdvars.OutFile = outFile;   // runsql reports errors to files, not its return value
             cmdvars.ErrFile = errFile;
-            var opts = new ibsCompiler.Options(cmdvars, profile);
+            var opts = new ibsCompiler.Options(cmdvars, OptionsProfile);
             if (!opts.GenerateOptionFiles()) return "options could not be generated";
             if (ForceOptions(opts, c.Options) is { } bad) return bad;
-            using var exec = SqlExecutorFactory.Create(profile);
-            if (new runsql_main().Run(cmdvars, profile, exec, existingOptions: opts)) return null;
+            if ((run ?? Runsql)(cmdvars, profile, opts)) return null;
             var err = StripFraming(File.Exists(errFile) ? File.ReadAllText(errFile) : "");
             return err.Length > 0 ? err : StripFraming(File.Exists(outFile) ? File.ReadAllText(outFile) : "") is { Length: > 0 } o ? o : "runsql failed";
         }
@@ -370,6 +411,12 @@ public sealed class RunsqlScratchCompiler(ResolvedProfile profile, string server
 
     // runsql brackets its errors with a `Running: <temp path>` line and an `Elapsed:` line.
     internal static string StripFraming(string text) => Framing.Replace(text, "").Trim();
+
+    private static bool Runsql(CommandVariables cmdvars, ResolvedProfile p, ibsCompiler.Options opts)
+    {
+        using var exec = SqlExecutorFactory.Create(p);
+        return new runsql_main().Run(cmdvars, p, exec, existingOptions: opts);
+    }
 
     private CommandVariables Vars(string db, string command) =>
         new() { Server = server, Database = db, Command = command };

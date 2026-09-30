@@ -91,12 +91,17 @@ public class Runner
         }
     }
 
-    public Runner(ResolvedProfile profile, Options opts)
+    public Runner(ResolvedProfile profile, Options opts, ResolvedProfile? variantProfile = null)
     {
         _profile = profile;
         _opts = opts;
         _locator = new SourceLocator(opts.SourceRoot ?? profile.IRPath);
-        _scratchCompiler = new RunsqlScratchCompiler(profile, opts.Server);
+        _scratchCompiler = new RunsqlScratchCompiler(profile, opts.Server, variantProfile, use =>
+        {
+            using var conn = new AseConnection(BuildConnectionString(_opts.Database));
+            conn.Open();
+            use(new AseSqlExec(conn, _opts.TimeoutSeconds));
+        });
         // Sybase TDS may negotiate a non-UTF8 charset (e.g. cp850); without this
         // the InfoMessage stream throws "unsupported charset" on connection.
         Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
@@ -492,27 +497,9 @@ public class Runner
         IIoMeter? diagMeter = diagnose && meter == null ? IoMeters.For(_profile.ServerType) : null;
         var batchMeter = meter ?? diagMeter;
 
-        // Built before any connection: a locate or chain refusal touches nothing.
         var variantSpecs = new List<ScratchSpec>();
-        if (tc.Variant != null)
-        {
-            try
-            {
-                foreach (var (spec, relPath) in Variants.Build(tc.Variant, _locator, _scratchCompiler, _opts.Database))
-                {
-                    variantSpecs.Add(spec);
-                    if (_opts.Verbose)
-                        Console.Error.WriteLine($"sql-test: {tc.LogicalName}: variant {spec.ScratchName} from {relPath}, " +
-                                                string.Join(" ", spec.CompileOptions.Select(o => $"{o.Key}={(o.Value ? "+" : "-")}")));
-                }
-            }
-            catch (Exception ex)
-            {
-                return new TestResult(tc.LogicalName, Outcome.ERROR,
-                    ex is ScratchRefusedException ? ex.Message : $"variant setup failed: {ex.Message}",
-                    stopwatch.Elapsed.TotalSeconds, ex.ToString());
-            }
-        }
+        if (PrepareVariant(tc, _locator, _scratchCompiler, _opts.Database, _opts.Verbose, variantSpecs, stopwatch) is { } refused)
+            return refused;
 
         // Step 0 (pre-tran): ensure the capture table exists. DDL must
         // happen outside the test's begin tran/rollback wrap because
@@ -1100,6 +1087,35 @@ public class Runner
         return new TestResult(name, Outcome.ERROR, headline, duration, JoinMessages(info, ex.Errors, metered));
     }
 
+    /// <summary>
+    /// Builds and drift-checks <paramref name="tc"/>'s variant into <paramref name="specs"/>; an ERROR result on refusal.
+    /// It takes no connection, so a locate, chain or drift refusal journals and compiles nothing.
+    /// </summary>
+    internal static TestResult? PrepareVariant(TestCase tc, SourceLocator locator, IScratchCompiler compiler, string db,
+                                               bool verbose, List<ScratchSpec> specs, Stopwatch stopwatch)
+    {
+        if (tc.Variant == null) return null;
+        try
+        {
+            var built = Variants.Build(tc.Variant, locator, compiler, db);
+            Variants.CheckDrift(built, compiler, verbose ? m => Console.Error.WriteLine($"sql-test: {tc.LogicalName}: {m}") : null);
+            foreach (var (spec, relPath) in built)
+            {
+                specs.Add(spec);
+                if (verbose)
+                    Console.Error.WriteLine($"sql-test: {tc.LogicalName}: variant {spec.ScratchName} from {relPath}, " +
+                                            string.Join(" ", spec.CompileOptions.Select(o => $"{o.Key}={(o.Value ? "+" : "-")}")));
+            }
+            return null;
+        }
+        catch (Exception ex)
+        {
+            return new TestResult(tc.LogicalName, Outcome.ERROR,
+                ex is ScratchRefusedException ? ex.Message : $"variant setup failed: {ex.Message}",
+                stopwatch.Elapsed.TotalSeconds, ex.ToString());
+        }
+    }
+
     private static string? LastMatching(List<AseError> messages, string prefix)
     {
         for (int i = messages.Count - 1; i >= 0; i--)
@@ -1121,6 +1137,49 @@ public class Runner
                 if (!metered || e.MessageNumber is not (StatTableMessage or StatWritesMessage))
                     sb.AppendLine($"Msg {e.MessageNumber}, Level {e.Severity}: {(e.Message ?? "").TrimEnd()}");
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// Refuses an unknown <c>--variant-profile</c>, or one of another server type than <paramref name="runnerServer"/>.
+    /// It reads settings only, so it runs before any Resolve can prompt.
+    /// </summary>
+    public static void PrecheckVariantProfile(ProfileManager mgr, string? name, string runnerServer)
+    {
+        if (name == null) return;
+        if (mgr.ResolveProfile(name) is not { } v)
+            throw new ArgumentException($"unknown --variant-profile {name}: no such profile");
+        if (mgr.ResolveProfile(runnerServer) is { } r)
+        {
+            var (vt, rt) = (ibsCompiler.ibs_compiler_common.ParsePlatform(v.Profile.Platform),
+                            ibsCompiler.ibs_compiler_common.ParsePlatform(r.Profile.Platform));
+            if (vt != rt)
+                throw new ArgumentException($"--variant-profile {v.ProfileName} is {vt} but profile {r.ProfileName} is {rt}; " +
+                                            "an options layer only fits its own server type");
+        }
+    }
+
+    /// <summary>
+    /// The profile whose options layer variants compile with: <paramref name="name"/>, else the runner's.
+    /// Only its options layer is used, over the runner's SQL source, so the source and its options stay one tree.
+    /// </summary>
+    public static ResolvedProfile ResolveVariantProfile(ProfileManager mgr, string? name, ResolvedProfile runner)
+    {
+        if (name == null) return runner;
+        PrecheckVariantProfile(mgr, name, runner.ProfileName);
+        // The runner's password stops Resolve prompting for one; this profile never connects.
+        var p = mgr.Resolve(new ibsCompiler.CommandVariables { Server = name, Pass = string.IsNullOrEmpty(runner.Pass) ? "-" : runner.Pass });
+        // The options cache is keyed by profile name only: another tree would poison that profile's cache for runsql too.
+        if (!string.IsNullOrEmpty(p.IRPath) && !SamePath(p.IRPath, runner.IRPath))
+            throw new ArgumentException($"--variant-profile {p.ProfileName} has SQL source {p.IRPath}, but profile {runner.ProfileName} " +
+                                        $"has {runner.IRPath}; the variant profile must share the runner's SQL source");
+        p.IRPath = runner.IRPath;
+        return p;
+    }
+
+    private static bool SamePath(string a, string b)
+    {
+        static string Norm(string s) => string.IsNullOrEmpty(s) ? "" : Path.TrimEndingDirectorySeparator(Path.GetFullPath(s));
+        return string.Equals(Norm(a), Norm(b), OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
     }
 
     private string BuildConnectionString(string database)
