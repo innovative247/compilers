@@ -29,6 +29,12 @@ namespace SqlTest;
 ///   + IDataReader.GetSchemaTable). The assert proc then runs assertions
 ///   against the capture table. Both procs run inside the same transaction
 ///   wrap and the table is cleared by the rollback at end-of-test.
+///
+/// Writer mode: a `-- @no-transaction` test with `-- @restore: <db>..<table> where <pred>`
+/// lines commits its writes. Discovery refuses unsafe specs (see WriterJournal.RefuseReason);
+/// RunOne journals and snapshots the rows on a separate control connection before the
+/// batch and restores them there after it, whatever the outcome. A restore failure makes
+/// the result ERROR and keeps the journal row. Writers run serially under --parallel.
 /// </summary>
 public class Runner
 {
@@ -122,10 +128,12 @@ public class Runner
             var teardown = teardowns.Contains(baseName + "_teardown") ? baseName + "_teardown" : null;
 
             // The capture phase runs unmetered, so a pair's budget could never be checked.
-            var budgetError = HasBudget(body) || HasBudget(bodies.GetValueOrDefault(assertName)) ? PairBudgetError : null;
+            var assertBody = bodies.GetValueOrDefault(assertName);
+            var budgetError = HasBudget(body) || HasBudget(assertBody) ? PairBudgetError : null;
+            var restores = ResolvePairRestores(body, assertBody, noTran, out var restoreError);
             cases.Add(new TestCase(baseName, name, assertName, spec,
                                    ResolvePretest(baseName, pretests), noTran, teardown,
-                                   Error: budgetError));
+                                   Error: budgetError ?? restoreError, Restores: restores));
             consumed.Add(name);
             consumed.Add(assertName);
         }
@@ -139,12 +147,75 @@ public class Runner
             var teardown = teardowns.Contains(name + "_teardown") ? name + "_teardown" : null;
             string? thresholdError = null;
             var threshold = _opts.BenchPattern != null ? ParseBenchThreshold(body, out thresholdError) : null;
+            var restores = ResolveRestores(body, noTran, out var restoreError);
             cases.Add(new TestCase(name, null, name, null,
                                    ResolvePretest(name, pretests), noTran, teardown,
-                                   threshold, HasBudget(body), thresholdError));
+                                   threshold, HasBudget(body), thresholdError ?? restoreError, restores));
         }
 
+        // Only writers open the probe connection: plain runs stay as they were.
+        if (cases.Any(c => c.IsWriter && c.Error == null))
+            ProbeWriters(cases);
+
         return cases.OrderBy(c => c.LogicalName).ToList();
+    }
+
+    /// <summary>Null (not empty) for non-writers so their TestCase is unchanged.</summary>
+    internal static IReadOnlyList<RestoreSpec>? ResolveRestores(string? body, bool noTran, out string? error)
+    {
+        var specs = WriterJournal.ResolveWriter(body, noTran, out error);
+        return specs.Count > 0 ? specs : null;
+    }
+
+    internal const string AssertRestoreError = "@restore belongs in the _capture proc";
+
+    // The restore wraps the whole pair, so its recipe is read from the capture proc only.
+    internal static IReadOnlyList<RestoreSpec>? ResolvePairRestores(string? captureBody, string? assertBody, bool noTran, out string? error)
+    {
+        var specs = ResolveRestores(captureBody, noTran, out error);
+        if (error == null && WriterJournal.HasRestoreLine(assertBody)) error = AssertRestoreError;
+        return specs;
+    }
+
+    // One control connection for every probe; the first refused spec becomes the case's Error.
+    private void ProbeWriters(List<TestCase> cases)
+    {
+        using var conn = new AseConnection(BuildConnectionString(_opts.Database));
+        conn.Open();
+        var x = new AseSqlExec(conn, _opts.TimeoutSeconds);
+        for (int i = 0; i < cases.Count; i++)
+        {
+            var tc = cases[i];
+            if (!tc.IsWriter || tc.Error != null) continue;
+            string? reason = null;
+            foreach (var spec in tc.Restores!)
+            {
+                try { reason = WriterJournal.RefuseReason(spec, WriterJournal.Probe(x, spec, _opts.Database)); }
+                catch (Exception ex) { reason = $"@restore probe failed for {spec.FullName}: {ex.Message}"; }
+                if (reason != null) break;
+            }
+            if (reason != null) cases[i] = tc with { Error = reason };
+        }
+    }
+
+    /// <summary>
+    /// Writers commit, so two at once could collide on a table; they run serially
+    /// after the parallel batch.
+    /// </summary>
+    /// <summary>Restore failure outranks every outcome; the original is kept in the message.</summary>
+    internal static TestResult WithRestore(TestResult r, string? restoreError)
+    {
+        if (restoreError == null) return r;
+        var original = r.Outcome == Outcome.PASS ? "" : $" | was {r.Outcome}: {r.Message}";
+        return r with { Outcome = Outcome.ERROR, Message = restoreError + original };
+    }
+
+    internal static (List<TestCase> Parallel, List<TestCase> Serial) PartitionWriters(IEnumerable<TestCase> cases)
+    {
+        var parallel = new List<TestCase>();
+        var serial = new List<TestCase>();
+        foreach (var c in cases) (c.IsWriter ? serial : parallel).Add(c);
+        return (parallel, serial);
     }
 
     /// <summary>
@@ -329,6 +400,7 @@ public class Runner
         }
 
         var conn = new AseConnection(BuildConnectionString(_opts.Database));
+        AseConnection? control = null;
         try
         {
             conn.InfoMessage += (_, e) =>
@@ -353,6 +425,32 @@ public class Runner
                     stopwatch.Elapsed.TotalSeconds, ex.ToString());
             }
 
+            // Separate connection so the restore still runs when the test connection
+            // timed out, was killed or hangs. Begin commits the recipe before any write.
+            WriterSession? writer = null;
+            if (tc.IsWriter)
+            {
+                try
+                {
+                    control = new AseConnection(BuildConnectionString(_opts.Database));
+                    control.Open();
+                    writer = WriterSession.Begin(new AseSqlExec(control, _opts.TimeoutSeconds),
+                                                 _opts.Database, tc.LogicalName, tc.Restores!);
+                }
+                catch (WriterHeldException ex)
+                {
+                    return new TestResult(tc.LogicalName, Outcome.ERROR, ex.Message,
+                        stopwatch.Elapsed.TotalSeconds, ex.ToString());
+                }
+                catch (Exception ex)
+                {
+                    return new TestResult(tc.LogicalName, Outcome.ERROR,
+                        $"writer setup failed: {ex.Message}",
+                        stopwatch.Elapsed.TotalSeconds, ex.ToString());
+                }
+            }
+            string? restoreError = null;
+
             // Read-only report builders do `select ... into #tmp`, which Sybase forbids
             // inside a multi-statement transaction (Msg 226). A `-- @no-transaction`
             // test runs WITHOUT begin tran/rollback so those procs are runnable; since
@@ -361,6 +459,8 @@ public class Runner
             AseTransaction? tx = tc.NoTransaction ? null : conn.BeginTransaction();
 
             var tranHandled = false;
+            // Region ends when the batch returns or throws; later @@trancount/rollback stat lines are not fed.
+            int regionEnd = -1;
 
             void Cleanup()
             {
@@ -371,6 +471,22 @@ public class Runner
                     TryExec(conn, $"delete from {tc.Capture.IntoTable}");
                 if (tc.TeardownProc != null)
                     TryExec(conn, $"exec {tc.TeardownProc}", _opts.TimeoutSeconds);
+                // Not best-effort: a leaked product row is the failure writer mode exists to prevent.
+                if (writer != null)
+                {
+                    restoreError = writer.Restore();
+                    foreach (var w in writer.Warnings) Console.Error.WriteLine($"sql-test: warning: {tc.LogicalName}: {w}");
+                }
+            }
+
+            // Hooks for sql-bench-shape; null by default. A hook failure after an
+            // aborted batch must not mask the batch's own error.
+            var afterRegionRan = false;
+            void RunAfterRegion()
+            {
+                if (afterRegionRan || tc.AfterRegion == null) return;
+                afterRegionRan = true;
+                tc.AfterRegion(conn, regionEnd);
             }
 
             // See class doc for why this check exists.
@@ -415,9 +531,6 @@ public class Runner
                     Message = string.IsNullOrEmpty(r.Message) ? violation : $"{violation} | {r.Message}"
                 };
             }
-
-            // Region ends when the batch returns or throws; later @@trancount/rollback stat lines are not fed.
-            int regionEnd = -1;
 
             // Budget violations promote like the tran check; a budget without a start marker is an ERROR.
             TestResult WithMeasure(TestResult r)
@@ -478,43 +591,48 @@ public class Runner
                     : WithPretest(tc.Pretest, tc.AssertProc);
                 if (meter != null)
                     assertSql = $"{meter.EnableSql}\n{assertSql}\n{meter.DisableSql}";
+                tc.BeforeBatch?.Invoke(conn);
                 using var cmd = new AseCommand(assertSql, conn);
                 if (tx != null) cmd.Transaction = tx;
                 cmd.CommandTimeout = _opts.TimeoutSeconds;
                 cmd.ExecuteNonQuery();
                 regionEnd = messages.Count;
+                RunAfterRegion();
 
                 var violation = CheckTranCount();
                 Cleanup();
                 stopwatch.Stop();
-                return WithTranCheck(WithMeasure(new TestResult(tc.LogicalName, Outcome.PASS, "",
-                    stopwatch.Elapsed.TotalSeconds, JoinMessages(messages))), violation);
+                return WithRestore(WithTranCheck(WithMeasure(new TestResult(tc.LogicalName, Outcome.PASS, "",
+                    stopwatch.Elapsed.TotalSeconds, JoinMessages(messages))), violation), restoreError);
             }
             catch (AseException ex)
             {
                 if (regionEnd < 0) regionEnd = messages.Count;
                 DisableMeterAfterAbort();
+                try { RunAfterRegion(); } catch { }
                 var violation = CheckTranCount();
                 Cleanup();
                 stopwatch.Stop();
-                return WithTranCheck(WithMeasure(Classify(tc.LogicalName, ex, messages, stopwatch.Elapsed.TotalSeconds, meter != null)), violation);
+                return WithRestore(WithTranCheck(WithMeasure(Classify(tc.LogicalName, ex, messages, stopwatch.Elapsed.TotalSeconds, meter != null)), violation), restoreError);
             }
             catch (Exception ex)
             {
                 if (regionEnd < 0) regionEnd = messages.Count;
                 DisableMeterAfterAbort();
+                try { RunAfterRegion(); } catch { }
                 var violation = CheckTranCount();
                 Cleanup();
                 stopwatch.Stop();
                 var outcome = ex.Message.Contains("timeout", StringComparison.OrdinalIgnoreCase)
                     ? Outcome.TIMEOUT : Outcome.ERROR;
-                return WithTranCheck(WithMeasure(new TestResult(tc.LogicalName, outcome, ex.Message,
-                    stopwatch.Elapsed.TotalSeconds, ex.ToString())), violation);
+                return WithRestore(WithTranCheck(WithMeasure(new TestResult(tc.LogicalName, outcome, ex.Message,
+                    stopwatch.Elapsed.TotalSeconds, ex.ToString())), violation), restoreError);
             }
         }
         finally
         {
             try { conn.Dispose(); } catch { }
+            try { control?.Dispose(); } catch { }
         }
     }
 

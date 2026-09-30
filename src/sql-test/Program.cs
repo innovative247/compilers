@@ -123,8 +123,9 @@ if (opts.Parallel <= 1)
 }
 else
 {
+    var (parallelCases, writerCases) = Runner.PartitionWriters(cases);
     using var gate = new SemaphoreSlim(opts.Parallel);
-    var tasks = cases.Select(async c =>
+    var tasks = parallelCases.Select(async c =>
     {
         await gate.WaitAsync();
         try   { return await Task.Run(() => runner.RunOne(c)); }
@@ -134,6 +135,15 @@ else
     foreach (var t in tasks)
     {
         var r = await t;
+        results.Add(r);
+        PrintResult(r, opts.Verbose);
+    }
+
+    if (writerCases.Count > 0)
+        Console.Error.WriteLine($"sql-test: running {writerCases.Count} writer test(s) serially after the parallel batch");
+    foreach (var c in writerCases)
+    {
+        var r = runner.RunOne(c);
         results.Add(r);
         PrintResult(r, opts.Verbose);
     }

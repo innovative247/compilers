@@ -2744,7 +2744,9 @@ function Test-SqlTest {
     # SRM_LOCAL (MSSQL) has no sql-test procs; these need a live Sybase profile with sbntest.
     $ids = @('sql-test.bench.list','sql-test.bench.run','sql-test.bench.out','sql-test.bench.baseline',
              'sql-test.bench.update','sql-test.budget.pass','sql-test.budget.fail','sql-test.budget.no-start',
-             'sql-test.plain.unchanged')
+             'sql-test.plain.unchanged','sql-test.writer.pass','sql-test.writer.fail','sql-test.writer.skip',
+             'sql-test.writer.error','sql-test.writer.timeout','sql-test.writer.serial','sql-test.writer.refuse.notran',
+             'sql-test.writer.refuse.table','sql-test.writer.refuse.trigger')
     if (-not (Get-Profile $SybaseProfile)) {
         foreach ($id in $ids) { Skip-Case $id "profile '$SybaseProfile' not in settings.json - needs a live Sybase profile with sbntest (-SybaseProfile)" }
         return
@@ -2844,6 +2846,35 @@ function Test-SqlTest {
             throw "expected 'budget without pro_test_measure_start'. stderr: $($r.StdErr)"
         }
     }
+    # Writer fixture: each case runs selftest_framework_* fixture procs and compares the fixture dump
+    # before and after; the rows must be identical whatever the outcome.
+    $script:WriterFixtureDeployed = $false
+    function Initialize-WriterFixture {
+        if ($script:WriterFixtureDeployed) { return }
+        $r = Invoke-Cli runsql (Join-Path $PSScriptRoot 'fixtures/sql/sql-test-writer.sql') $db $SybaseProfile '--changelog:n'
+        Assert-ExitCode $r
+        $script:WriterFixtureDeployed = $true
+    }
+    function Get-WriterDump {
+        $r = Invoke-Cli isqlline 'sbntest..pro_test_writer_fixture_dump' $db $SybaseProfile
+        Assert-ExitCode $r
+        "$($r.StdOut)`n$($r.StdErr)"
+    }
+    # Returns the sql-test result; throws when the fixture rows changed.
+    function Invoke-WriterCase([string]$Proc, [string[]]$Extra = @('--timeout', '30')) {
+        Initialize-WriterFixture
+        $before = Get-WriterDump
+        $r = Invoke-Cli sql-test $db $SybaseProfile '--pattern' ($Proc -replace '_', '\_') @Extra
+        $after = Get-WriterDump
+        if ($after -ne $before) { throw "fixture rows changed by $Proc.`nbefore: $before`nafter: $after`nstderr: $($r.StdErr)" }
+        $r
+    }
+    function Assert-WriterOutcome($r, [string]$Outcome, [string]$Proc, [string]$Needle) {
+        if ($r.StdErr -notmatch "(?m)^\s+$Outcome\s+$Proc\b") { throw "expected $Proc to $Outcome. stderr: $($r.StdErr)" }
+        if ($Needle -and $r.StdErr -notmatch [regex]::Escape($Needle)) { throw "expected '$Needle'. stderr: $($r.StdErr)" }
+        if ($r.StdErr -match 'restore failed:') { throw "restore failed. stderr: $($r.StdErr)" }
+    }
+
     Test-Case 'sql-test.plain.unchanged' {
         # Tests without a budget must look as they did before bench mode, even with --verbose:
         # no table stats and no @sql-test: markers. --exclude drops the one budgeted test.
@@ -2856,6 +2887,65 @@ function Test-SqlTest {
         foreach ($needle in @('Table:', 'Total writes for this command', '@sql-test:')) {
             if ($combined -match [regex]::Escape($needle)) { throw "plain run leaked '$needle'. output: $combined" }
         }
+        # A no-tran test with a teardown and no @restore is not a writer: no journal, no restore.
+        $r = Invoke-WriterCase 'selftest_framework_notran_%' @('--timeout', '30', '--verbose')
+        Assert-ExitCode $r
+        Assert-WriterOutcome $r 'PASS' 'selftest_framework_notran_plain'
+        $combined = "$($r.StdOut)`n$($r.StdErr)"
+        if ($combined -notmatch '(?m)^1 tests \| 1 passed \|') { throw "expected one no-tran test (teardown not counted). output: $combined" }
+        if ($combined -match 'restore|journal|snapshot') { throw "no-tran run leaked writer output. output: $combined" }
+    }
+
+    Test-Case 'sql-test.writer.pass' {
+        $r = Invoke-WriterCase 'selftest_framework_writer_pass'
+        Assert-ExitCode $r
+        Assert-WriterOutcome $r 'PASS' 'selftest_framework_writer_pass'
+        if ((Get-WriterDump) -notmatch 'writer-journal-rows: 0\b') { throw "writer journal not empty after a PASS. dump: $(Get-WriterDump)" }
+    }
+    Test-Case 'sql-test.writer.fail' {
+        $r = Invoke-WriterCase 'selftest_framework_writer_fail'
+        Assert-ExitCode $r 1
+        Assert-WriterOutcome $r 'FAIL' 'selftest_framework_writer_fail' 'FAIL: writer-fail'
+    }
+    Test-Case 'sql-test.writer.skip' {
+        $r = Invoke-WriterCase 'selftest_framework_writer_skip'
+        Assert-ExitCode $r
+        Assert-WriterOutcome $r 'SKIP' 'selftest_framework_writer_skip' 'SKIP: writer-skip'
+    }
+    Test-Case 'sql-test.writer.error' {
+        $r = Invoke-WriterCase 'selftest_framework_writer_error'
+        Assert-ExitCode $r 1
+        Assert-WriterOutcome $r 'ERROR' 'selftest_framework_writer_error' 'writer-error'
+    }
+    Test-Case 'sql-test.writer.timeout' {
+        $r = Invoke-WriterCase 'selftest_framework_writer_timeout' @('--timeout', '5')
+        Assert-ExitCode $r 1
+        Assert-WriterOutcome $r 'TIMEOUT' 'selftest_framework_writer_timeout'
+    }
+    Test-Case 'sql-test.writer.serial' {
+        # Writers leave the parallel batch and run one at a time; each must still restore.
+        $r = Invoke-WriterCase 'selftest_framework_writer_%' @('--timeout', '5', '--parallel', '4')
+        Assert-ExitCode $r 1
+        Assert-WriterOutcome $r 'PASS' 'selftest_framework_writer_pass'
+        Assert-WriterOutcome $r 'FAIL' 'selftest_framework_writer_fail' 'FAIL: writer-fail'
+        Assert-WriterOutcome $r 'SKIP' 'selftest_framework_writer_skip' 'SKIP: writer-skip'
+        Assert-WriterOutcome $r 'TIMEOUT' 'selftest_framework_writer_timeout'
+        if ((Get-WriterDump) -notmatch 'writer-journal-rows: 0\b') { throw "writer journal not empty after --parallel 4. dump: $(Get-WriterDump)" }
+    }
+    Test-Case 'sql-test.writer.refuse.notran' {
+        $r = Invoke-WriterCase 'selftest_framework_writer_refuse_notran'
+        Assert-ExitCode $r 1
+        Assert-WriterOutcome $r 'ERROR' 'selftest_framework_writer_refuse_notran' '@restore requires @no-transaction'
+    }
+    Test-Case 'sql-test.writer.refuse.table' {
+        $r = Invoke-WriterCase 'selftest_framework_writer_refuse_table'
+        Assert-ExitCode $r 1
+        Assert-WriterOutcome $r 'ERROR' 'selftest_framework_writer_refuse_table' '@restore table not found: sbntest..tbl_test_writer_missing'
+    }
+    Test-Case 'sql-test.writer.refuse.trigger' {
+        $r = Invoke-WriterCase 'selftest_framework_writer_refuse_trigger'
+        Assert-ExitCode $r 1
+        Assert-WriterOutcome $r 'ERROR' 'selftest_framework_writer_refuse_trigger' '@restore table sbntest..tbl_test_writer_trig has trigger tri_test_writer_trig'
     }
 }
 
