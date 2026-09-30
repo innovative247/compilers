@@ -119,7 +119,7 @@ public static class Variants
         return specs;
     }
 
-    private static string DbOf(VariantSource src, IScratchCompiler compiler, string runnerDb)
+    internal static string DbOf(VariantSource src, IScratchCompiler compiler, string runnerDb)
     {
         var use = UseRe.Match(src.Text);
         if (!use.Success) return runnerDb;
@@ -204,6 +204,8 @@ public sealed class SourceLocator
 
     private readonly string _root;
     private readonly Lazy<Dictionary<string, List<string>>> _index;
+
+    public string Root => _root;
 
     public SourceLocator(string root)
     {

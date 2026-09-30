@@ -70,6 +70,17 @@ public class OptionsTests
         Assert.Contains("--bench", ex.Message);
     }
 
+    [Theory]
+    [InlineData("--count", "3")]
+    [InlineData("--bench-out", "o.json")]
+    [InlineData("--bench-baseline", "b.json")]
+    public void Bench_only_flags_are_refused_under_compare_rev(string flag, string value)
+    {
+        var args = new List<string> { "sbntest", "G", "--compare-rev", "123", "--proc", "pro_a", "--calls", "c.json", flag, value };
+        var ex = Assert.Throws<ArgumentException>(() => Options.Parse(args.ToArray()));
+        Assert.Equal($"{flag} requires --bench", ex.Message);
+    }
+
     [Fact]
     public void Sweep_writer_journal_parses()
     {
@@ -111,4 +122,85 @@ public class OptionsTests
         Assert.Throws<ArgumentException>(() => Options.Parse(new[] { "sbntest", "G", "--sweep-writer-journal", "--variant-profile", "GONZO" }));
         Assert.Contains("--variant-profile", Options.Usage);
     }
+
+
+    private static readonly string[] Compare = { "sbntest", "G", "--compare-rev", "123", "--proc", "pro_a", "--calls", "c.json" };
+
+    [Theory]
+    [InlineData("--compare-rev", "123")]
+    [InlineData("--proc", "pro_a")]
+    [InlineData("--calls", "c.json")]
+    public void Compare_flag_alone_is_refused(string flag, string value)
+    {
+        var ex = Assert.Throws<ArgumentException>(() => Options.Parse(new[] { "sbntest", "G", flag, value }));
+        Assert.Equal("--compare-rev, --proc and --calls go together", ex.Message);
+    }
+
+    [Fact]
+    public void Compare_flags_together_parse()
+    {
+        var o = Options.Parse(Compare)!;
+        Assert.Equal("123", o.CompareRev);
+        Assert.Equal("pro_a", o.Proc);
+        Assert.Equal("c.json", o.Calls);
+        Assert.False(o.ComparePrint);
+        Assert.True(Options.Parse(Compare.Append("--compare-print").ToArray())!.ComparePrint);
+        Assert.Contains("--compare-rev", Options.Usage);
+    }
+
+    [Theory]
+    [InlineData("HEAD")]
+    [InlineData("r123")]
+    [InlineData("-1")]
+    public void Compare_rev_must_be_numeric(string rev)
+    {
+        var args = (string[])Compare.Clone();
+        args[3] = rev;
+        var ex = Assert.Throws<ArgumentException>(() => Options.Parse(args));
+        Assert.Equal($"--compare-rev {rev}: not a revision number", ex.Message);
+    }
+
+    [Fact]
+    public void Compare_proc_must_be_an_identifier()
+    {
+        var args = (string[])Compare.Clone();
+        args[5] = "dbo.pro_a";
+        var ex = Assert.Throws<ArgumentException>(() => Options.Parse(args));
+        Assert.Equal("--proc dbo.pro_a: not an identifier", ex.Message);
+    }
+
+    [Theory]
+    [InlineData("--pattern", "test\\_x")]
+    [InlineData("--exclude", "x")]
+    [InlineData("--bench", "b")]
+    [InlineData("--list", null)]
+    [InlineData("--junit", "out.xml")]
+    [InlineData("--parallel", "2")]
+    [InlineData("--regenerate-capture-tables", null)]
+    [InlineData("--print-capture-ddl", null)]
+    public void Compare_rev_refuses_other_modes(string flag, string? value)
+    {
+        var args = Compare.Append(flag).ToList();
+        if (value != null) args.Add(value);
+        var ex = Assert.Throws<ArgumentException>(() => Options.Parse(args.ToArray()));
+        Assert.Equal($"--compare-rev runs alone; drop {flag}", ex.Message);
+    }
+
+    [Fact]
+    public void Compare_rev_with_sweep_is_refused()
+    {
+        // The sweep check fires first, so only the throw is asserted.
+        Assert.Throws<ArgumentException>(() => Options.Parse(Compare.Append("--sweep-writer-journal").ToArray()));
+    }
+
+    [Fact]
+    public void Compare_print_alone_is_refused()
+    {
+        var ex = Assert.Throws<ArgumentException>(() => Options.Parse(new[] { "sbntest", "G", "--compare-print" }));
+        Assert.Equal("--compare-print requires --compare-rev", ex.Message);
+    }
+
+    [Fact]
+    public void Compare_rev_accepts_variant_profile() =>
+        Assert.Equal("GONZO", Options.Parse(Compare.Concat(new[] { "--variant-profile", "GONZO" }).ToArray())!.VariantProfile);
 }

@@ -2751,7 +2751,8 @@ function Test-SqlTest {
              'sql-test.writer.bench.refused','sql-test.writer.verbose',
              'sql-test.variant.on','sql-test.variant.off','sql-test.variant.drop','sql-test.variant.refuse.unknown-opt',
              'sql-test.variant.refuse.chain-break','sql-test.variant.refuse.tag-conflict','sql-test.variant.sweep',
-             'sql-test.variant.refuse.drift','sql-test.variant.profile')
+             'sql-test.variant.refuse.drift','sql-test.variant.profile',
+             'sql-test.compare.same','sql-test.compare.diff','sql-test.compare.refuse')
     if (-not (Get-Profile $SybaseProfile)) {
         foreach ($id in $ids) { Skip-Case $id "profile '$SybaseProfile' not in settings.json - needs a live Sybase profile with sbntest (-SybaseProfile)" }
         return
@@ -3259,6 +3260,129 @@ function Test-SqlTest {
                     throw "expected the unknown-profile refusal. output: $($r.StdOut)$($r.StdErr)"
                 }
             }
+        }
+    }
+
+    # --compare-rev: a scratch compile of the proc as of an SVN revision, so it needs the dbo login
+    # ($variantProfile) and svn/svnadmin. Each case builds a throwaway repo: r1 is
+    # css/ss/test/pro_test_compare_fx.sql, r2 is compare/pro_test_compare_fx.sql over it ('order by id desc'),
+    # and the working copy is updated back to r1 and deployed, so the current side is r1.
+    $compareIds   = $ids | Where-Object { $_ -like 'sql-test.compare.*' }
+    $compareCalls = Join-Path $PSScriptRoot 'fixtures/sql/compare-calls.json'
+    $compareSvn   = (Get-Command svn -ErrorAction SilentlyContinue) -and (Get-Command svnadmin -ErrorAction SilentlyContinue)
+    if (-not $variantReady) {
+        foreach ($id in $compareIds) { Skip-Case $id "profile '$variantProfile' not in settings.json - compare scratch compiles need a login that is dbo in sbntest" }
+    } elseif (-not $compareSvn) {
+        foreach ($id in $compareIds) { Skip-Case $id 'svn and svnadmin not on PATH - --compare-rev reads the old text with svn cat' }
+    } else {
+        # One-shot svn/svnadmin call; file:// repos never prompt, and --non-interactive refuses if one would.
+        function Invoke-CompareSvn([string]$Exe, [string[]]$SvnArgs) {
+            $ErrorActionPreference = 'Continue'
+            $out = (& $Exe @SvnArgs 2>&1 | Out-String)
+            if ($LASTEXITCODE -ne 0) { throw "$Exe $($SvnArgs -join ' ') exited $LASTEXITCODE`: $out" }
+            $out
+        }
+        function New-CompareDirName { Join-Path ([IO.Path]::GetTempPath()) "sqltest-compare-$([Guid]::NewGuid().ToString('N').Substring(0,8))" }
+        # Builds the repo under $t; $t/wc holds css/ss/test/pro_test_compare_fx.sql at r1, deployed.
+        function Initialize-CompareRepo([string]$t) {
+            $null = New-Item -ItemType Directory -Path $t
+            $repo = Join-Path $t 'repo'
+            $wc   = Join-Path $t 'wc'
+            $null = Invoke-CompareSvn svnadmin @('create', $repo)
+            # file:///C:/... on Windows, file:///private/... on macOS; blanks are escaped.
+            $url = [Uri]::new($repo).AbsoluteUri
+            $null = Invoke-CompareSvn svn @('checkout', '--non-interactive', '-q', $url, $wc)
+            $dir  = Join-Path $wc 'css/ss/test'
+            $null = New-Item -ItemType Directory -Path $dir -Force
+            $file = Join-Path $dir 'pro_test_compare_fx.sql'
+            Copy-Item (Join-Path $PSScriptRoot 'fixtures/sql/css/ss/test/pro_test_compare_fx.sql') $file
+            $null = Invoke-CompareSvn svn @('add', '--non-interactive', '-q', (Join-Path $wc 'css'))
+            $null = Invoke-CompareSvn svn @('commit', '--non-interactive', '-q', '-m', 'r1', $wc)
+            Copy-Item (Join-Path $PSScriptRoot 'fixtures/sql/compare/pro_test_compare_fx.sql') $file -Force
+            $null = Invoke-CompareSvn svn @('commit', '--non-interactive', '-q', '-m', 'r2', $wc)
+            $null = Invoke-CompareSvn svn @('update', '--non-interactive', '-q', '-r', '1', $wc)
+            $rev = (Invoke-CompareSvn svn @('info', '--non-interactive', '--show-item', 'last-changed-revision', $file)).Trim()
+            if ($rev -ne '1') { throw "working copy not at r1 after update: last-changed-revision '$rev'" }
+            $r = Invoke-Cli runsql $file $db $variantProfile '--changelog:n'
+            Assert-ExitCode $r
+        }
+        # Drops the deployed proc and the temp dir, then fails if any pro_test_compare_fx% object is left.
+        function Remove-CompareRepo([string]$Dir) {
+            $d = Invoke-Cli runsql (Join-Path $PSScriptRoot 'fixtures/sql/sql-test-compare-drop.sql') $db $variantProfile '--changelog:n'
+            if ($Dir -and (Test-Path -LiteralPath $Dir)) { Remove-Item -LiteralPath $Dir -Recurse -Force -ErrorAction SilentlyContinue }
+            Assert-ExitCode $d
+            if ("$($d.StdOut)`n$($d.StdErr)" -notmatch 'compare-objects: 0\b') { throw "pro_test_compare_fx objects left. output: $($d.StdOut)$($d.StdErr)" }
+        }
+        # No scratch proc, journal row or 'V' item for a compare-rev pro_test_compare_fx run.
+        function Assert-CompareClean([string]$When) {
+            $r = Invoke-Cli runsql (Join-Path $PSScriptRoot 'fixtures/sql/sql-test-compare-dump.sql') $db $variantProfile '--changelog:n'
+            Assert-ExitCode $r
+            $d = "$($r.StdOut)`n$($r.StdErr)"
+            foreach ($k in @('compare-scratch', 'compare-journal-rows', 'compare-items')) {
+                if ($d -notmatch "$k`: 0\b") { throw "$k not 0 $When. dump: $d" }
+            }
+        }
+        function Invoke-Compare([string]$Dir, [string]$Rev, [string]$Proc, [string]$Calls = $compareCalls) {
+            Invoke-Cli sql-test $db $variantProfile '--compare-rev' $Rev '--proc' $Proc '--calls' $Calls `
+                '--source-root' (Join-Path $Dir 'wc') '--timeout' '30'
+        }
+
+        Test-Case 'sql-test.compare.same' {
+            $t = New-CompareDirName
+            try {
+                Initialize-CompareRepo $t
+                Assert-CompareClean 'before --compare-rev 1'
+                $r = Invoke-Compare $t '1' 'pro_test_compare_fx'
+                $out = "$($r.StdOut)`n$($r.StdErr)"
+                Assert-ExitCode $r
+                foreach ($c in @('one', 'two')) {
+                    if ($out -notmatch "(?m)^compare $c`: same\s*$") { throw "expected 'compare $c`: same'. output: $out" }
+                }
+                if ($out -match 'differs at byte') { throw "r1 against r1 must not differ. output: $out" }
+                Assert-CompareClean "after --compare-rev 1 (output: $out)"
+            } finally { Remove-CompareRepo $t }
+        }
+        Test-Case 'sql-test.compare.diff' {
+            $t = New-CompareDirName
+            try {
+                Initialize-CompareRepo $t
+                Assert-CompareClean 'before --compare-rev 2'
+                $r = Invoke-Compare $t '2' 'pro_test_compare_fx'
+                $out = "$($r.StdOut)`n$($r.StdErr)"
+                Assert-ExitCode $r 1
+                # r2 orders the second result set descending, so both calls differ.
+                foreach ($c in @('one', 'two')) {
+                    if ($out -notmatch "(?m)^compare $c`: differs at byte \d+") { throw "expected 'compare $c`: differs at byte'. output: $out" }
+                }
+                Assert-CompareClean "after --compare-rev 2 (output: $out)"
+            } finally { Remove-CompareRepo $t }
+        }
+        Test-Case 'sql-test.compare.refuse' {
+            $t = New-CompareDirName
+            try {
+                Initialize-CompareRepo $t
+                Assert-CompareClean 'before the refusals'
+                $r = Invoke-Compare $t '99' 'pro_test_compare_fx'
+                $out = "$($r.StdOut)`n$($r.StdErr)"
+                Assert-ExitCode $r 2
+                if ($r.StdErr -notmatch 'svn: E\d+') { throw "expected svn's error on stderr for r99. output: $out" }
+                if ($out -match '(?m)^compare \w+:') { throw "r99 compared a call. output: $out" }
+                Assert-CompareClean "after --compare-rev 99 (output: $out)"
+
+                $r = Invoke-Compare $t '1' 'pro_test_nosuch'
+                $out = "$($r.StdOut)`n$($r.StdErr)"
+                Assert-ExitCode $r 2
+                if ($out -match '(?m)^compare \w+:') { throw "an unlocatable proc compared a call. output: $out" }
+                Assert-CompareClean "after --proc pro_test_nosuch (output: $out)"
+
+                # An unrestored writer must not run twice (ruling 10).
+                $r = Invoke-Compare $t '1' 'pro_test_compare_fx' (Join-Path $PSScriptRoot 'fixtures/sql/compare-calls-notran.json')
+                $out = "$($r.StdOut)`n$($r.StdErr)"
+                Assert-ExitCode $r 2
+                if ($out -notmatch 'call one: no_tran requires restore lines') { throw "expected the no_tran refusal. output: $out" }
+                if ($out -match '(?m)^compare \w+:') { throw "a refused no_tran call ran. output: $out" }
+                Assert-CompareClean "after the no_tran call list (output: $out)"
+            } finally { Remove-CompareRepo $t }
         }
     }
 }

@@ -117,6 +117,9 @@ internal static class WriterJournal
         return specs;
     }
 
+    // Call-list restore lines carry no `-- @restore:` prefix; LineRe needs the colon.
+    internal static RestoreSpec? ParseRestoreLine(string line) => ParseLine(": " + line.Trim());
+
     private static RestoreSpec? ParseLine(string rest)
     {
         var m = LineRe.Match(rest);

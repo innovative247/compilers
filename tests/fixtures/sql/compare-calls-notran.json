@@ -1,0 +1,7 @@
+{
+  "schema": 1,
+  "database": "sbntest",
+  "calls": [
+    { "name": "one", "sql": "exec {proc} @n = 1", "no_tran": true }
+  ]
+}

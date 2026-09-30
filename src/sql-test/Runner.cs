@@ -1176,6 +1176,100 @@ public class Runner
         return p;
     }
 
+    /// <summary>R10: runs the call list against <c>req.Proc</c> at an SVN revision and at the working copy. 0 same, 1 differs, 2 failure.</summary>
+    public int CompareRev(CompareRequest req, ISvnSource svn, TextWriter report, TextWriter? error = null)
+    {
+        var deps = new CompareDeps(svn, _locator, _scratchCompiler, _opts.Database,
+            OpenControl: () =>
+            {
+                var conn = new AseConnection(BuildConnectionString(_opts.Database));
+                try { conn.Open(); }
+                catch { conn.Dispose(); throw; }
+                // Restores run to completion: a cancelled restore leaves product rows dirty.
+                return (new AseSqlExec(conn, _opts.TimeoutSeconds), new AseSqlExec(conn, 0), conn);
+            },
+            RunSide: (db, tran, sql, includePrint, onOpen) => RunCompareSide(db, tran, sql, includePrint, onOpen, req.TimeoutSeconds),
+            Sweep: () => { if (DiscoverSweepRestoreTimeout(_opts) is { } t) SweepWriterJournal(t); });
+        return SqlTest.CompareRev.Run(req, deps, report, error);
+    }
+
+    // A fresh connection per side, so no session state of the old side reaches the new one.
+    private CallRun RunCompareSide(string? db, bool tran, string sql, bool includePrint, Action<int, int> onOpen, int timeout)
+    {
+        var writer = new CanonicalWriter(includePrint);
+        int spid = 0, kpid = 0;
+        int? trancount = null, raised = null;
+        AseTransaction? tx = null;
+        using var conn = new AseConnection(BuildConnectionString(db ?? _opts.Database));
+        conn.InfoMessage += (_, e) =>
+        {
+            foreach (AseError err in e.Errors)
+            {
+                if (err.Severity >= 11) continue;
+                var msg = err.Message ?? "";
+                if (msg.StartsWith("Changed client character set") ||
+                    msg.StartsWith("Changed database context") ||
+                    msg.StartsWith("Changed language setting"))
+                    continue;
+                writer.Print(msg);
+            }
+        };
+        try
+        {
+            conn.Open();
+            var me = new AseSqlExec(conn, timeout).Rows("select @@spid, kpid from master..sysprocesses where spid = @@spid").Single();
+            spid = Convert.ToInt32(me[0], CultureInfo.InvariantCulture);
+            kpid = Convert.ToInt32(me[1], CultureInfo.InvariantCulture);
+            onOpen(spid, kpid);
+            if (tran) tx = conn.BeginTransaction();
+
+            using (var cmd = new AseCommand(sql, conn) { CommandTimeout = timeout })
+            {
+                if (tx != null) cmd.Transaction = tx;
+                try { CommandDeadline.Run(cmd, timeout, () => { using var r = cmd.ExecuteReader(); return CompareOutput.Drain(r, writer); }); }
+                catch (AseException ex)
+                {
+                    raised = ex.Errors.Cast<AseError>().FirstOrDefault(e => e.Severity >= 11)?.MessageNumber
+                             ?? (ex.Errors.Count > 0 ? ex.Errors[0].MessageNumber : 0);
+                    // The driver can repeat one server error across its collection.
+                    var seen = new HashSet<(int, string)>();
+                    foreach (AseError err in ex.Errors)
+                        if (err.Severity >= 11 && seen.Add((err.MessageNumber, err.Message ?? "")))
+                            writer.Error(err.MessageNumber, err.Severity, err.Message ?? "");
+                }
+            }
+
+            // A proc that ends or leaves open a transaction behaves differently; the stream must show it.
+            int expected = tran ? 1 : 0;
+            try
+            {
+                using var check = new AseCommand("select @@trancount", conn) { CommandTimeout = timeout };
+                if (tx != null) check.Transaction = tx;
+                trancount = Convert.ToInt32(CommandDeadline.Run(check, timeout, check.ExecuteScalar), CultureInfo.InvariantCulture);
+            }
+            catch { /* connection unusable: the output so far stands */ }
+            if (trancount is { } actual && actual != expected) writer.TranCount(actual, expected);
+            return SqlTest.CompareRev.Classify(writer.ToBytes(), spid, kpid, raised, trancount, expected, writer.HasReturnCode);
+        }
+        catch (Exception ex)
+        {
+            return new CallRun(writer.ToBytes(), spid, kpid, ex);
+        }
+        finally
+        {
+            try
+            {
+                if (tx != null) tx.Rollback();
+                else if (trancount > 0)
+                {
+                    using var rb = new AseCommand("rollback tran", conn) { CommandTimeout = timeout };
+                    CommandDeadline.Run(rb, timeout, () => rb.ExecuteNonQuery());
+                }
+            }
+            catch { /* closing the connection rolls back what is left */ }
+        }
+    }
+
     private static bool SamePath(string a, string b)
     {
         static string Norm(string s) => string.IsNullOrEmpty(s) ? "" : Path.TrimEndingDirectorySeparator(Path.GetFullPath(s));

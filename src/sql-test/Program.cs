@@ -47,8 +47,9 @@ catch (ArgumentException ex)
     return 2;
 }
 
-Console.Error.WriteLine(opts.BenchPattern == null
-    ? $"sql-test: pattern='{opts.Pattern}' db={opts.Database} profile={profile.ProfileName}"
+Console.Error.WriteLine(
+    opts.CompareRev != null ? $"sql-test: compare-rev r{opts.CompareRev} proc={opts.Proc} db={opts.Database} profile={profile.ProfileName}"
+    : opts.BenchPattern == null ? $"sql-test: pattern='{opts.Pattern}' db={opts.Database} profile={profile.ProfileName}"
     : $"sql-test: bench='{opts.BenchPattern}' db={opts.Database} profile={profile.ProfileName}");
 
 var runner = new Runner(profile, opts, variantProfile);
@@ -60,6 +61,20 @@ if (opts.SweepWriterJournal)
     catch (Exception ex)
     {
         Console.Error.WriteLine($"sql-test: FATAL: writer journal sweep could not run: {ex.Message}");
+        return 2;
+    }
+}
+
+if (opts.CompareRev != null)
+{
+    try
+    {
+        return runner.CompareRev(new CompareRequest(opts.CompareRev, opts.Proc!, opts.Calls!, opts.ComparePrint, opts.Verbose, opts.TimeoutSeconds),
+                                 new SvnCli(), Console.Out, Console.Error);
+    }
+    catch (Exception ex)
+    {
+        Console.Error.WriteLine($"sql-test: FATAL: compare-rev failed: {ex.Message}");
         return 2;
     }
 }

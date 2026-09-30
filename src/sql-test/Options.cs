@@ -23,6 +23,10 @@ public class Options
     public bool SweepWriterJournal { get; set; }
     public string? SourceRoot { get; set; }
     public string? VariantProfile { get; set; }
+    public string? CompareRev { get; set; }
+    public string? Proc { get; set; }
+    public string? Calls { get; set; }
+    public bool ComparePrint { get; set; }
 
     public const string Usage =
         "Usage: sql-test <database> <server/profile>\n" +
@@ -43,6 +47,8 @@ public class Options
         "                [--sweep-writer-journal] (restore dead runners' writer journal rows, then exit)\n" +
         "                [--source-root <dir>] (SBN_IR tree for @variant sources; default: the profile's IR path)\n" +
         "                [--variant-profile <name>] (options layer @variant compiles with; default: the runner's profile)\n" +
+        "                [--compare-rev <rev> --proc <name> --calls <json>] (diff each call's output at <rev> and at the working copy; runs alone)\n" +
+        "                [--compare-print]    (with --compare-rev: include print output in the comparison)\n" +
         "                [-U user] [-P pass]";
 
     public static Options? Parse(string[] argv)
@@ -51,6 +57,7 @@ public class Options
         var positional = new List<string>();
         var benchOnly = new List<string>();
         var notWithSweep = new List<string>();
+        var seen = new HashSet<string>();
 
         for (int i = 0; i < argv.Length; i++)
         {
@@ -58,6 +65,7 @@ public class Options
             string Next(string flag) =>
                 i + 1 < argv.Length ? argv[++i] : throw new ArgumentException($"{flag} requires a value");
 
+            seen.Add(a);
             switch (a)
             {
                 case "--pattern":                    notWithSweep.Add(a); opts.Pattern                 = Next(a); break;
@@ -77,6 +85,10 @@ public class Options
                 case "--sweep-writer-journal":       opts.SweepWriterJournal      = true; break;
                 case "--source-root":                notWithSweep.Add(a); opts.SourceRoot              = Next(a); break;
                 case "--variant-profile":            notWithSweep.Add(a); opts.VariantProfile          = Next(a); break;
+                case "--compare-rev":                notWithSweep.Add(a); opts.CompareRev              = Next(a); break;
+                case "--proc":                       notWithSweep.Add(a); opts.Proc                    = Next(a); break;
+                case "--calls":                      notWithSweep.Add(a); opts.Calls                   = Next(a); break;
+                case "--compare-print":              notWithSweep.Add(a); opts.ComparePrint            = true; break;
                 case "-h":
                 case "--help":                       return null;
                 default:
@@ -99,6 +111,23 @@ public class Options
             throw new ArgumentException("--bench-update-baseline requires --bench-baseline <file>");
         if (opts.SweepWriterJournal && notWithSweep.Count > 0)
             throw new ArgumentException($"--sweep-writer-journal runs alone; drop {string.Join(", ", notWithSweep.Distinct())}");
+        var compareSet = new[] { "--compare-rev", "--proc", "--calls" }.Where(seen.Contains).ToList();
+        if (compareSet.Count is > 0 and < 3)
+            throw new ArgumentException("--compare-rev, --proc and --calls go together");
+        if (opts.ComparePrint && opts.CompareRev == null)
+            throw new ArgumentException("--compare-print requires --compare-rev");
+        if (opts.CompareRev != null)
+        {
+            if (!System.Text.RegularExpressions.Regex.IsMatch(opts.CompareRev, "^[0-9]{1,10}$"))
+                throw new ArgumentException($"--compare-rev {opts.CompareRev}: not a revision number");
+            if (!WriterJournal.IsIdent(opts.Proc!))
+                throw new ArgumentException($"--proc {opts.Proc}: not an identifier");
+            var excluded = new[] { "--pattern", "--exclude", "--bench", "--list", "--junit", "--parallel",
+                                   "--regenerate-capture-tables", "--print-capture-ddl", "--sweep-writer-journal" }
+                .Where(seen.Contains).ToList();
+            if (excluded.Count > 0)
+                throw new ArgumentException($"--compare-rev runs alone; drop {string.Join(", ", excluded)}");
+        }
         if (positional.Count < 2)
             throw new ArgumentException("missing <database> and/or <server/profile>");
         opts.Database = positional[0];
