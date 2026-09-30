@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Text.RegularExpressions;
 using ibsCompiler.Configuration;
 using SqlTest;
 
@@ -39,6 +38,17 @@ Console.Error.WriteLine(opts.BenchPattern == null
 
 var runner = new Runner(profile, opts);
 
+// Rows that cannot be restored are warnings, not failures: exit 2 only when the sweep could not run.
+if (opts.SweepWriterJournal)
+{
+    try { runner.SweepWriterJournal(); return 0; }
+    catch (Exception ex)
+    {
+        Console.Error.WriteLine($"sql-test: FATAL: writer journal sweep could not run: {ex.Message}");
+        return 2;
+    }
+}
+
 List<TestCase> cases;
 try
 {
@@ -48,12 +58,6 @@ catch (Exception ex)
 {
     Console.Error.WriteLine($"sql-test: FATAL: discovery failed: {ex.Message}");
     return 2;
-}
-
-if (!string.IsNullOrEmpty(opts.Exclude))
-{
-    var rx = new Regex(opts.Exclude);
-    cases = cases.Where(c => !rx.IsMatch(c.LogicalName)).ToList();
 }
 
 // --print-capture-ddl: dump generated DDL for every capture spec and exit.

@@ -229,11 +229,18 @@ internal static class WriterJournal
     {
         x.Exec($"if object_id('{home}..{JournalTable}') is null exec({Lit(JournalDdl(home))})");
         x.Exec($"if object_id('{home}..{ItemTable}') is null exec({Lit(ItemDdl(home))})");
+        EnsureTestPairColumns(x, home);
     }
+
+    // Tables created before the test pair existed gain it in place, so their rows stay visible to the sweep.
+    internal static void EnsureTestPairColumns(ISqlExec x, string home) =>
+        x.Exec($"if col_length('{home}..{JournalTable}', 'test_spid') is null " +
+               $"exec('alter table {home}..{JournalTable} add test_spid int null, test_kpid int null')");
 
     private static string JournalDdl(string home) => $@"create table {home}..{JournalTable} (
   journal_id numeric(18,0) identity,
   spid int not null, kpid int not null,
+  test_spid int null, test_kpid int null,
   login varchar(30) not null, hostname varchar(30) null,
   started datetime not null, test varchar(255) not null,
   state varchar(10) not null) lock datarows";
@@ -283,6 +290,15 @@ internal static class WriterJournal
     internal static string? Restore(ISqlExec x, string home, long journalId, IEnumerable<JournalItem> items,
                                     List<string>? warnings = null, bool tolerateMissingSnapshot = false)
     {
+        var detail = RestoreDetail(x, home, journalId, items, warnings, tolerateMissingSnapshot);
+        return detail == null ? null : $"restore failed: {detail}; journal row {journalId} kept";
+    }
+
+    /// <summary>As <see cref="Restore"/>, but returns the bare failure text; the sweep words its own warning.</summary>
+    internal static string? RestoreDetail(ISqlExec x, string home, long journalId, IEnumerable<JournalItem> items,
+                                          List<string>? warnings = null, bool tolerateMissingSnapshot = false,
+                                          bool deleteJournalRow = true)
+    {
         var failures = new List<string>();
         foreach (var it in items)
         {
@@ -293,6 +309,10 @@ internal static class WriterJournal
                 if (x.Scalar($"select object_id('{snap}')") == null)
                 {
                     if (!tolerateMissingSnapshot) { failures.Add($"snapshot {snap} missing"); continue; }
+                    // object_id sees only our own and dbo's objects; another owner's snapshot still holds the rows.
+                    if (Convert.ToInt32(x.Scalar($"select count(*) from {home}..sysobjects where name = {Lit(it.Snapshot)}"),
+                                        CultureInfo.InvariantCulture) > 0)
+                    { failures.Add($"snapshot {it.Snapshot} belongs to another owner"); continue; }
                     x.Exec(itemDelete);
                     continue;
                 }
@@ -302,10 +322,10 @@ internal static class WriterJournal
             try { x.Exec($"drop table {snap}"); }
             catch (Exception ex) { warnings?.Add($"snapshot {snap} not dropped: {ex.Message}"); }
         }
-        if (failures.Count > 0)
-            return $"restore failed: {string.Join(" | ", failures)}; journal row {journalId} kept";
+        if (failures.Count > 0) return string.Join(" | ", failures);
+        if (!deleteJournalRow) return null;
         try { x.Exec($"delete {home}..{JournalTable} where journal_id = {journalId}"); }
-        catch (Exception ex) { return $"restore failed: {ex.Message}; journal row {journalId} kept"; }
+        catch (Exception ex) { return ex.Message; }
         return null;
     }
 
@@ -340,9 +360,10 @@ public sealed class WriterSession
     /// Commits the recipe before the test writes. A part-way failure undoes what
     /// it created and rethrows; nothing on the product database has changed yet.
     /// <paramref name="restoreX"/> runs Restore; defaults to <paramref name="x"/>.
+    /// The test connection's spid/kpid keep the row alive while its batch still runs.
     /// </summary>
     public static WriterSession Begin(ISqlExec x, string home, string testName, IReadOnlyList<RestoreSpec> specs,
-                                      ISqlExec? restoreX = null)
+                                      int testSpid, int testKpid, ISqlExec? restoreX = null)
     {
         var s = new WriterSession(x, restoreX ?? x, home);
         var snaps = new List<string>();
@@ -350,8 +371,8 @@ public sealed class WriterSession
         try
         {
             s.JournalId = Convert.ToInt64(x.Scalar(
-                $"insert {home}..{WriterJournal.JournalTable} (spid, kpid, login, hostname, started, test, state) " +
-                $"select @@spid, p.kpid, suser_name(), p.hostname, getdate(), {WriterJournal.Lit(testName)}, 'pending' " +
+                $"insert {home}..{WriterJournal.JournalTable} (spid, kpid, test_spid, test_kpid, login, hostname, started, test, state) " +
+                $"select @@spid, p.kpid, {testSpid}, {testKpid}, suser_name(), p.hostname, getdate(), {WriterJournal.Lit(testName)}, 'pending' " +
                 $"from master..sysprocesses p where p.spid = @@spid " +
                 "select @@identity"), CultureInfo.InvariantCulture);
             if (s.JournalId == 0) throw new InvalidOperationException("journal insert returned no identity");

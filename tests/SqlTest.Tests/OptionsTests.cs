@@ -60,4 +60,36 @@ public class OptionsTests
         var ex = Assert.Throws<ArgumentException>(() => Options.Parse(args.ToArray()));
         Assert.Contains("--bench", ex.Message);
     }
+
+    [Fact]
+    public void Sweep_writer_journal_parses()
+    {
+        Assert.True(Options.Parse(new[] { "sbntest", "G", "--sweep-writer-journal" })!.SweepWriterJournal);
+        Assert.False(Options.Parse(new[] { "sbntest", "G" })!.SweepWriterJournal);
+        Assert.Contains("--sweep-writer-journal", Options.Usage);
+    }
+
+    [Theory]
+    [InlineData("--bench", "b")]
+    [InlineData("--list", null)]
+    [InlineData("--print-capture-ddl", null)]
+    [InlineData("--regenerate-capture-tables", null)]
+    [InlineData("--junit", "out.xml")]
+    [InlineData("--pattern", "test\\_x")]
+    [InlineData("--exclude", "x")]
+    [InlineData("--verbose", null)]
+    public void Sweep_writer_journal_refuses_other_modes(string flag, string? value)
+    {
+        var args = new List<string> { "sbntest", "G", "--sweep-writer-journal", flag };
+        if (value != null) args.Add(value);
+        var ex = Assert.Throws<ArgumentException>(() => Options.Parse(args.ToArray()));
+        Assert.Contains($"--sweep-writer-journal runs alone; drop {flag}", ex.Message);
+    }
+
+    [Theory]
+    [InlineData(new[] { "--timeout", "45" }, 45)]
+    [InlineData(new[] { "--list" }, null)]
+    [InlineData(new[] { "--print-capture-ddl" }, null)]
+    public void Discover_sweeps_with_the_timeout_except_in_read_only_modes(string[] flags, int? expected) =>
+        Assert.Equal(expected, Runner.DiscoverSweepRestoreTimeout(Options.Parse(new[] { "sbntest", "G" }.Concat(flags).ToArray())!));
 }

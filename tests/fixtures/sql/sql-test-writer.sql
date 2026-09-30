@@ -38,9 +38,19 @@ begin
   select k, val from tbl_test_writer_trig order by k
   -- The journal table is created by sql-test on first use, so it is read dynamically.
   if object_id('tbl_test_writer_journal') is null
+  begin
     print 'writer-journal-rows: 0'
+    print 'writer-journal-live: 0'
+  end
   else
-    exec ('declare @n int select @n = count(*) from tbl_test_writer_journal where test like ''selftest[_]framework[_]writer[_]%'' print ''writer-journal-rows: %1!'', @n')
+    -- live: the runner's control or test connection is still in sysprocesses, so no sweep may claim the row.
+    exec ('declare @n int, @l int
+      select @n = count(*) from tbl_test_writer_journal where test like ''selftest[_]framework[_]%''
+      select @l = count(*) from tbl_test_writer_journal j
+        where j.test like ''selftest[_]framework[_]%'' and exists (select 1 from master..sysprocesses p
+          where (p.spid = j.spid and p.kpid = j.kpid) or (p.spid = j.test_spid and p.kpid = j.test_kpid))
+      print ''writer-journal-rows: %1!'', @n
+      print ''writer-journal-live: %1!'', @l')
 end
 go
 
@@ -153,5 +163,20 @@ go
 create proc selftest_framework_notran_plain_teardown as
 begin
   delete tbl_test_writer_fixture where k = -1
+end
+go
+
+-- Outside selftest_framework_writer_%: only the sweep cases run it, then kill its runner mid-wait.
+if object_id('selftest_framework_sweep_victim') is not null drop proc selftest_framework_sweep_victim
+go
+create proc selftest_framework_sweep_victim as
+-- @no-transaction
+-- @restore: sbntest..tbl_test_writer_fixture where k > 0
+begin
+  update tbl_test_writer_fixture set val = 'victim' where k = 1
+  insert tbl_test_writer_fixture (k, val) values (7, 'victim')
+  waitfor delay '00:01:30'
+  -- Lands after a kill: the sweep must wait for this spid, or the row outlives the restore.
+  insert tbl_test_writer_fixture (k, val) values (8, 'late')
 end
 go

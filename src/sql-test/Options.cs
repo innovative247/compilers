@@ -20,6 +20,7 @@ public class Options
     public string? BenchOut { get; set; }
     public string? BenchBaseline { get; set; }
     public bool BenchUpdateBaseline { get; set; }
+    public bool SweepWriterJournal { get; set; }
 
     public const string Usage =
         "Usage: sql-test <database> <server/profile>\n" +
@@ -37,6 +38,7 @@ public class Options
         "                [--bench-out <file>] (write results as JSON)\n" +
         "                [--bench-baseline <file>] (compare against a --bench-out file; exit 1 when flagged)\n" +
         "                [--bench-update-baseline] (then merge PASS results into the --bench-baseline file; created if missing)\n" +
+        "                [--sweep-writer-journal] (restore dead runners' writer journal rows, then exit)\n" +
         "                [-U user] [-P pass]";
 
     public static Options? Parse(string[] argv)
@@ -44,6 +46,7 @@ public class Options
         var opts = new Options();
         var positional = new List<string>();
         var benchOnly = new List<string>();
+        var notWithSweep = new List<string>();
 
         for (int i = 0; i < argv.Length; i++)
         {
@@ -53,20 +56,21 @@ public class Options
 
             switch (a)
             {
-                case "--pattern":                    opts.Pattern                 = Next(a); break;
-                case "--exclude":                    opts.Exclude                 = Next(a); break;
+                case "--pattern":                    notWithSweep.Add(a); opts.Pattern                 = Next(a); break;
+                case "--exclude":                    notWithSweep.Add(a); opts.Exclude                 = Next(a); break;
                 case "--parallel":                   opts.Parallel                = int.Parse(Next(a)); break;
                 case "--timeout":                    opts.TimeoutSeconds          = int.Parse(Next(a)); break;
-                case "--junit":                      opts.JunitPath               = Next(a); break;
-                case "--list":                       opts.ListOnly                = true; break;
-                case "--verbose":                    opts.Verbose                 = true; break;
-                case "--regenerate-capture-tables":  opts.RegenerateCaptureTables = true; break;
-                case "--print-capture-ddl":          opts.PrintCaptureDdl         = true; break;
-                case "--bench":                      opts.BenchPattern            = Next(a); break;
+                case "--junit":                      notWithSweep.Add(a); opts.JunitPath               = Next(a); break;
+                case "--list":                       notWithSweep.Add(a); opts.ListOnly                = true; break;
+                case "--verbose":                    notWithSweep.Add(a); opts.Verbose                 = true; break;
+                case "--regenerate-capture-tables":  notWithSweep.Add(a); opts.RegenerateCaptureTables = true; break;
+                case "--print-capture-ddl":          notWithSweep.Add(a); opts.PrintCaptureDdl         = true; break;
+                case "--bench":                      notWithSweep.Add(a); opts.BenchPattern            = Next(a); break;
                 case "--count":                      benchOnly.Add(a); opts.Count                   = int.Parse(Next(a)); break;
                 case "--bench-out":                  benchOnly.Add(a); opts.BenchOut                = Next(a); break;
                 case "--bench-baseline":             benchOnly.Add(a); opts.BenchBaseline           = Next(a); break;
                 case "--bench-update-baseline":      benchOnly.Add(a); opts.BenchUpdateBaseline = true; break;
+                case "--sweep-writer-journal":       opts.SweepWriterJournal      = true; break;
                 case "-h":
                 case "--help":                       return null;
                 default:
@@ -87,6 +91,8 @@ public class Options
             throw new ArgumentException("--bench-out and --bench-baseline are the same file with --bench-update-baseline; use --bench-out alone for a full reset");
         if (opts.BenchUpdateBaseline && string.IsNullOrEmpty(opts.BenchBaseline))
             throw new ArgumentException("--bench-update-baseline requires --bench-baseline <file>");
+        if (opts.SweepWriterJournal && notWithSweep.Count > 0)
+            throw new ArgumentException($"--sweep-writer-journal runs alone; drop {string.Join(", ", notWithSweep.Distinct())}");
         if (positional.Count < 2)
             throw new ArgumentException("missing <database> and/or <server/profile>");
         opts.Database = positional[0];

@@ -161,8 +161,10 @@ public class WriterJournalTests
     {
         var x = new FakeExec();
         WriterJournal.EnsureTables(x, "sbntest");
-        Assert.Equal(2, x.Log.Count);
-        Assert.All(x.Log, sql =>
+        Assert.Equal(3, x.Log.Count);
+        Assert.Equal("if col_length('sbntest..tbl_test_writer_journal', 'test_spid') is null " +
+                     "exec('alter table sbntest..tbl_test_writer_journal add test_spid int null, test_kpid int null')", x.Log[2]);
+        Assert.All(x.Log.Take(2), sql =>
         {
             Assert.StartsWith("if object_id('sbntest..tbl_test_writer_", sql);
             Assert.Contains(") is null exec('create table sbntest..tbl_test_writer_", sql);
@@ -243,8 +245,10 @@ public class WriterJournalTests
     public void Begin_journals_items_then_checks_held_then_snapshots()
     {
         var x = BeginExec();
-        var s = WriterSession.Begin(x, "sbntest", "test_w", new[] { Spec, Spec2 });
+        var s = WriterSession.Begin(x, "sbntest", "test_w", new[] { Spec, Spec2 }, 21, 210);
         Assert.Equal(9L, s.JournalId);
+        Assert.Contains(x.Log, l => l.StartsWith("insert sbntest..tbl_test_writer_journal (spid, kpid, test_spid, test_kpid,")
+                                    && l.Contains("select @@spid, p.kpid, 21, 210,"));
         int At(string prefix) => x.Log.FindIndex(l => l.StartsWith(prefix));
         var journal = At("insert sbntest..tbl_test_writer_journal");
         var item2 = x.Log.FindIndex(l => l.StartsWith("insert sbntest..tbl_test_writer_item") && l.Contains("(9, 2,"));
@@ -262,7 +266,7 @@ public class WriterJournalTests
     {
         var x = BeginExec();
         var r = new FakeExec();
-        var s = WriterSession.Begin(x, "sbntest", "test_w", new[] { Spec }, restoreX: r);
+        var s = WriterSession.Begin(x, "sbntest", "test_w", new[] { Spec }, 21, 210, restoreX: r);
         var begun = x.Log.Count;
         Assert.Null(s.Restore());
         Assert.Equal(begun, x.Log.Count);
@@ -274,7 +278,7 @@ public class WriterJournalTests
     {
         var x = BeginExec();
         x.FailOn = "into sbntest..tbl_test_snap_9_2";
-        Assert.Throws<InvalidOperationException>(() => WriterSession.Begin(x, "sbntest", "test_w", new[] { Spec, Spec2 }));
+        Assert.Throws<InvalidOperationException>(() => WriterSession.Begin(x, "sbntest", "test_w", new[] { Spec, Spec2 }, 21, 210));
         var undo = x.Log.SkipWhile(l => !l.StartsWith("select a into sbntest..tbl_test_snap_9_2")).Skip(1).ToList();
         Assert.Equal(new[]
         {
@@ -291,7 +295,7 @@ public class WriterJournalTests
         var rows = x.OnRows;
         x.OnRows = sql => sql.StartsWith("select j.journal_id") && sql.Contains("'fe_bell'")
             ? new() { new object?[] { 8m, "jens", "mac", 17 } } : rows(sql);
-        var ex = Assert.Throws<WriterHeldException>(() => WriterSession.Begin(x, "sbntest", "test_w", new[] { Spec, Spec2 }));
+        var ex = Assert.Throws<WriterHeldException>(() => WriterSession.Begin(x, "sbntest", "test_w", new[] { Spec, Spec2 }, 21, 210));
         Assert.Equal("@restore table sbnmaster..fe_bell is held by journal row 8 (jens@mac, spid 17)", ex.Message);
         Assert.DoesNotContain(x.Log, l => l.Contains(" into sbntest..tbl_test_snap_"));
         Assert.Equal(new[]
@@ -299,5 +303,166 @@ public class WriterJournalTests
             "delete sbntest..tbl_test_writer_item where journal_id = 9",
             "delete sbntest..tbl_test_writer_journal where journal_id = 9",
         }, x.Log.TakeLast(2));
+    }
+
+    // Sweep fake: one journal row 7 (control 17/170, test 18/180) with the given items; Log is shared by both execs.
+    private static FakeExec SweepExec(bool alive = false, int claimed = 1, string? missingSnap = null, params object?[][] items)
+    {
+        var x = new FakeExec();
+        x.OnScalar = sql =>
+            sql.StartsWith("select count(*) from master..sysprocesses") ? (alive ? 1 : 0)
+            : sql.StartsWith("declare @k") ? claimed
+            : missingSnap != null && sql.Contains(missingSnap) ? null
+            : 1;
+        x.OnRows = sql =>
+            sql.StartsWith("select journal_id") ? new() { new object?[] { 7m, 17, 170, "jens", "mac", new DateTime(2026, 9, 30, 12, 0, 0), "test_w", 18, 180 } }
+            : sql.StartsWith("select seq") ? items.ToList()
+            : sql.Contains("syscolumns") ? new() { new object?[] { "s#inc", "int", 0 }, new object?[] { "name", "varchar", 0 } }
+            : new();
+        return x;
+    }
+
+    private static object?[] RItem(int seq) => new object?[] { seq, "R", "sbnmaster", "fe_bell", "s#inc = 1", $"tbl_test_snap_7_{seq}", false };
+
+    private static List<string> RunSweep(FakeExec x)
+    {
+        var lines = new List<string>();
+        WriterSweep.Sweep(x, x, "sbntest", lines.Add);
+        return lines;
+    }
+
+    private const string Row7 = "writer journal row 7 (test_w, jens@mac, 2026-09-30 12:00:00)";
+
+    [Fact]
+    public void Sweep_without_journal_table_reads_nothing()
+    {
+        var x = SweepExec();
+        x.OnScalar = _ => null;
+        Assert.Empty(RunSweep(x));
+        Assert.Single(x.Log);
+    }
+
+    [Fact]
+    public void Sweep_restores_and_deletes_a_dead_row()
+    {
+        var x = SweepExec(items: new[] { RItem(1), RItem(2) });
+        Assert.Equal($"sql-test: {Row7} restored", Assert.Single(RunSweep(x)));
+        var claim = x.Log.FindIndex(l => l.StartsWith("declare @k"));
+        var firstDelete = x.Log.FindIndex(l => l.StartsWith("delete sbnmaster..fe_bell"));
+        Assert.True(claim >= 0 && claim < firstDelete, "claim before any restore");
+        Assert.Contains("where journal_id = 7 and spid = 17 and kpid = 170", x.Log[claim]);
+        Assert.Contains("insert sbnmaster..fe_bell (s#inc, name) select s#inc, name from sbntest..tbl_test_snap_7_2", x.Log);
+        Assert.Contains("drop table sbntest..tbl_test_snap_7_1", x.Log);
+        Assert.Equal("delete sbntest..tbl_test_writer_journal where journal_id = 7", x.Log[^1]);
+    }
+
+    [Fact]
+    public void Sweep_liveness_counts_either_connection_and_claim_clears_the_test_pair()
+    {
+        var x = SweepExec(items: new[] { RItem(1) });
+        RunSweep(x);
+        Assert.Contains("select count(*) from master..sysprocesses where (spid = 17 and kpid = 170) or (spid = 18 and kpid = 180)", x.Log);
+        Assert.Contains(x.Log, l => l.StartsWith("declare @k") && l.Contains("test_spid = null, test_kpid = null"));
+    }
+
+    // Rows journalled before the test pair existed have nulls: liveness falls back to the control pair.
+    [Fact]
+    public void Sweep_row_without_test_pair_checks_the_control_pair_only()
+    {
+        var x = SweepExec(items: new[] { RItem(1) });
+        var rows = x.OnRows;
+        x.OnRows = sql => sql.StartsWith("select journal_id")
+            ? new() { new object?[] { 7m, 17, 170, "jens", "mac", new DateTime(2026, 9, 30, 12, 0, 0), "test_w", null, null } }
+            : rows(sql);
+        RunSweep(x);
+        Assert.Contains("select count(*) from master..sysprocesses where (spid = 17 and kpid = 170)", x.Log);
+    }
+
+    [Fact]
+    public void Sweep_adds_the_test_pair_columns_to_an_older_journal_table()
+    {
+        var x = SweepExec(items: new[] { RItem(1) });
+        RunSweep(x);
+        var alter = x.Log.FindIndex(l => l.StartsWith("if col_length('sbntest..tbl_test_writer_journal', 'test_spid') is null"));
+        var read = x.Log.FindIndex(l => l.StartsWith("select journal_id") && l.Contains("test_spid, test_kpid"));
+        Assert.True(alter >= 0 && alter < read, string.Join("\n", x.Log));
+    }
+
+    // A live test connection (runner killed, batch still running) keeps the row.
+    [Fact]
+    public void Sweep_leaves_a_row_alive_on_its_test_connection_only()
+    {
+        var x = SweepExec(items: new[] { RItem(1) });
+        var scalar = x.OnScalar;
+        x.OnScalar = sql => sql.StartsWith("select count(*) from master..sysprocesses")
+            ? (sql.Contains("or (spid = 18 and kpid = 180)") ? 1 : 0) : scalar(sql);
+        Assert.Empty(RunSweep(x));
+        Assert.DoesNotContain(x.Log, l => l.StartsWith("declare @k") || l.StartsWith("delete"));
+    }
+
+    [Fact]
+    public void Sweep_snapshot_under_another_owner_fails_and_keeps_the_row()
+    {
+        var x = SweepExec(missingSnap: "object_id('sbntest..tbl_test_snap_7_1')", items: new[] { RItem(1) });
+        Assert.Equal($"sql-test: WARNING: {Row7} could not be restored: snapshot tbl_test_snap_7_1 belongs to another owner",
+                     Assert.Single(RunSweep(x)));
+        Assert.Contains("select count(*) from sbntest..sysobjects where name = 'tbl_test_snap_7_1'", x.Log);
+        Assert.DoesNotContain(x.Log, l => l.StartsWith("delete"));
+    }
+
+    [Fact]
+    public void Sweep_restores_on_the_restore_exec()
+    {
+        var x = SweepExec(items: new[] { RItem(1) });
+        var r = new FakeExec { OnScalar = x.OnScalar, OnRows = x.OnRows };
+        WriterSweep.Sweep(x, r, "sbntest", _ => { });
+        Assert.Contains(r.Log, l => l.StartsWith("delete sbnmaster..fe_bell"));
+        Assert.DoesNotContain(x.Log, l => l.StartsWith("delete sbnmaster..fe_bell"));
+    }
+
+    [Fact]
+    public void Sweep_leaves_a_live_row_unclaimed()
+    {
+        var x = SweepExec(alive: true, items: new[] { RItem(1) });
+        Assert.Empty(RunSweep(x));
+        Assert.DoesNotContain(x.Log, l => l.StartsWith("declare @k") || l.StartsWith("select seq") || l.StartsWith("delete"));
+    }
+
+    [Fact]
+    public void Sweep_lost_claim_restores_nothing()
+    {
+        var x = SweepExec(claimed: 0, items: new[] { RItem(1) });
+        Assert.Empty(RunSweep(x));
+        Assert.Contains(x.Log, l => l.StartsWith("declare @k"));
+        Assert.DoesNotContain(x.Log, l => l.StartsWith("delete") || l.StartsWith("insert") || l.StartsWith("drop"));
+    }
+
+    [Fact]
+    public void Sweep_missing_snapshot_skips_product_delete_and_removes_rows()
+    {
+        var x = SweepExec(missingSnap: "tbl_test_snap_7_1", items: new[] { RItem(1) });
+        Assert.Equal($"sql-test: {Row7} restored", Assert.Single(RunSweep(x)));
+        Assert.DoesNotContain(x.Log, l => l.StartsWith("delete sbnmaster..fe_bell") || l.StartsWith("drop table"));
+        Assert.Contains("delete sbntest..tbl_test_writer_item where journal_id = 7 and seq = 1", x.Log);
+        Assert.Equal("delete sbntest..tbl_test_writer_journal where journal_id = 7", x.Log[^1]);
+    }
+
+    [Fact]
+    public void Sweep_restore_failure_warns_and_keeps_the_row()
+    {
+        var x = SweepExec(items: new[] { RItem(1) });
+        x.FailOn = "insert sbnmaster..fe_bell";
+        Assert.Equal($"sql-test: WARNING: {Row7} could not be restored: boom", Assert.Single(RunSweep(x)));
+        Assert.Contains("if @@trancount > 0 rollback tran", x.Log);
+        Assert.DoesNotContain(x.Log, l => l.StartsWith("delete sbntest..tbl_test_writer_"));
+    }
+
+    [Fact]
+    public void Sweep_leaves_variant_rows_whole_with_a_note()
+    {
+        var v = new object?[] { 2, "V", "sbntest", "test_w_v1", "", null, false };
+        var x = SweepExec(items: new[] { RItem(1), v });
+        Assert.Equal($"sql-test: note: {Row7} holds variant items; left for a later sweep", Assert.Single(RunSweep(x)));
+        Assert.DoesNotContain(x.Log, l => l.StartsWith("declare @k") || l.StartsWith("delete") || l.StartsWith("drop"));
     }
 }

@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Data;
 using System.Diagnostics;
+using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
 using AdoNetCore.AseClient;
@@ -99,6 +100,11 @@ public class Runner
 
     public List<TestCase> Discover()
     {
+        // A failed sweep never blocks the run: the held check refuses only the tests on its tables.
+        if (DiscoverSweepRestoreTimeout(_opts) is { } restoreTimeout)
+            try { SweepWriterJournal(restoreTimeout); }
+            catch (Exception ex) { Console.Error.WriteLine($"sql-test: WARNING: writer journal sweep could not run: {ex.Message}"); }
+
         var procNames = QueryProcNames();
         var pretests  = QueryPretests();
         var bodies    = FetchAllProcBodies();   // one round-trip; needed to read per-test directives
@@ -153,11 +159,35 @@ public class Runner
                                    threshold, HasBudget(body), thresholdError ?? restoreError, restores));
         }
 
+        // Before the probe, so an excluded writer neither probes nor creates the journal tables.
+        if (!string.IsNullOrEmpty(_opts.Exclude))
+        {
+            var rx = new Regex(_opts.Exclude);
+            cases.RemoveAll(c => rx.IsMatch(c.LogicalName));
+        }
+
         // Only writers open the probe connection: plain runs stay as they were.
         if (cases.Any(c => c.IsWriter && c.Error == null))
             ProbeWriters(cases);
 
         return cases.OrderBy(c => c.LogicalName).ToList();
+    }
+
+    /// <summary>
+    /// Restore deadline for the sweep at Discover, or null to skip it: --list and --print-capture-ddl
+    /// stay read-only. --timeout, so a locked table cannot hang every run; a cancelled restore rolls back.
+    /// </summary>
+    internal static int? DiscoverSweepRestoreTimeout(Options o) =>
+        o.ListOnly || o.PrintCaptureDdl ? null : o.TimeoutSeconds;
+
+    /// <summary>Restores dead runners' journal rows (design §2.4). Throws when the sweep cannot run.</summary>
+    /// <param name="restoreTimeoutSeconds">0 (no deadline) for --sweep-writer-journal.</param>
+    public void SweepWriterJournal(int restoreTimeoutSeconds = 0)
+    {
+        using var conn = new AseConnection(BuildConnectionString(_opts.Database));
+        conn.Open();
+        WriterSweep.Sweep(new AseSqlExec(conn, _opts.TimeoutSeconds), new AseSqlExec(conn, restoreTimeoutSeconds),
+                          _opts.Database, Console.Error.WriteLine);
     }
 
     /// <summary>Null (not empty) for non-writers so their TestCase is unchanged.</summary>
@@ -432,11 +462,15 @@ public class Runner
             {
                 try
                 {
+                    var me = new AseSqlExec(conn, _opts.TimeoutSeconds)
+                        .Rows("select @@spid, kpid from master..sysprocesses where spid = @@spid").Single();
                     control = new AseConnection(BuildConnectionString(_opts.Database));
                     control.Open();
                     // Restore has no deadline: giving up leaves the test's writes in the product table.
                     writer = WriterSession.Begin(new AseSqlExec(control, _opts.TimeoutSeconds),
                                                  _opts.Database, tc.LogicalName, tc.Restores!,
+                                                 Convert.ToInt32(me[0], CultureInfo.InvariantCulture),
+                                                 Convert.ToInt32(me[1], CultureInfo.InvariantCulture),
                                                  restoreX: new AseSqlExec(control, 0));
                 }
                 catch (WriterHeldException ex)

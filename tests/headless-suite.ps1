@@ -2746,7 +2746,8 @@ function Test-SqlTest {
              'sql-test.bench.update','sql-test.budget.pass','sql-test.budget.fail','sql-test.budget.no-start',
              'sql-test.plain.unchanged','sql-test.writer.pass','sql-test.writer.fail','sql-test.writer.skip',
              'sql-test.writer.error','sql-test.writer.timeout','sql-test.writer.serial','sql-test.writer.refuse.notran',
-             'sql-test.writer.refuse.table','sql-test.writer.refuse.trigger')
+             'sql-test.writer.refuse.table','sql-test.writer.refuse.trigger','sql-test.writer.refuse.held',
+             'sql-test.writer.sweep')
     if (-not (Get-Profile $SybaseProfile)) {
         foreach ($id in $ids) { Skip-Case $id "profile '$SybaseProfile' not in settings.json - needs a live Sybase profile with sbntest (-SybaseProfile)" }
         return
@@ -2946,6 +2947,77 @@ function Test-SqlTest {
         $r = Invoke-WriterCase 'selftest_framework_writer_refuse_trigger'
         Assert-ExitCode $r 1
         Assert-WriterOutcome $r 'ERROR' 'selftest_framework_writer_refuse_trigger' '@restore table sbntest..tbl_test_writer_trig has trigger tri_test_writer_trig'
+    }
+
+    # Sweep cases: a runner killed mid-test leaves a journal row whose spid then disappears.
+    # Returns the victim's runner once its rows are written.
+    function Start-SweepVictim {
+        Initialize-WriterFixture
+        $exe = Join-Path $script:Bin 'sql-test.exe'
+        $script:VictimOut = [IO.Path]::GetTempFileName()
+        $script:VictimErr = [IO.Path]::GetTempFileName()
+        # --timeout above the proc's 90 s wait: a client deadline would restore and defeat the kill.
+        $p = Start-Process -FilePath $exe -NoNewWindow -PassThru `
+             -ArgumentList @($db, $SybaseProfile, '--pattern', 'selftest\_framework\_sweep\_victim', '--timeout', '150') `
+             -RedirectStandardOutput $script:VictimOut -RedirectStandardError $script:VictimErr
+        for ($i = 0; $i -lt 30; $i++) {
+            if ((Get-WriterDump) -match '\bvictim\b[\s\S]*writer-journal-live: 1\b') { return $p }
+            Start-Sleep -Seconds 1
+        }
+        $err = Get-Content $script:VictimErr -Raw -EA SilentlyContinue
+        Stop-SweepVictim $p
+        throw "victim never wrote its rows. stderr: $err"
+    }
+    # Kill, not Ctrl-C, so no restore runs; the test spid lives on until the waitfor ends.
+    function Stop-SweepVictim($p) {
+        try {
+            if (-not $p.HasExited) { $p.Kill(); $null = $p.WaitForExit(10000) }
+            for ($i = 0; $i -lt 120; $i++) {
+                if ((Get-WriterDump) -match 'writer-journal-live: 0\b') { return }
+                Start-Sleep -Seconds 1
+            }
+            throw "victim spid still live 120s after the kill. dump: $(Get-WriterDump)"
+        } finally { Remove-Item $script:VictimOut, $script:VictimErr -ErrorAction SilentlyContinue }
+    }
+    $victimRestored = 'writer journal row \d+ \(selftest_framework_sweep_victim, [^)]*\) restored'
+
+    Test-Case 'sql-test.writer.refuse.held' {
+        Initialize-WriterFixture
+        $clean = Get-WriterDump
+        $p = Start-SweepVictim
+        try {
+            $r = Invoke-WriterCase 'selftest_framework_writer_pass'
+            Assert-WriterOutcome $r 'ERROR' 'selftest_framework_writer_pass' 'is held by journal row'
+            if ($p.HasExited) { throw "victim finished before the held run did; its self-restore would skip the sweep check" }
+        } finally { Stop-SweepVictim $p }
+        # The next run sweeps the dead row at Discover, then runs normally.
+        $r = Invoke-Cli sql-test $db $SybaseProfile '--pattern' 'selftest\_framework\_writer\_pass' '--timeout' '30'
+        if ($r.StdErr -notmatch $victimRestored) { throw "next run did not sweep the victim row. stderr: $($r.StdErr)" }
+        Assert-WriterOutcome $r 'PASS' 'selftest_framework_writer_pass'
+        $after = Get-WriterDump
+        if ($after -ne $clean) { throw "fixture not back to clean after the sweep.`nclean: $clean`nafter: $after" }
+    }
+    Test-Case 'sql-test.writer.sweep' {
+        Initialize-WriterFixture
+        $clean = Get-WriterDump
+        Stop-SweepVictim (Start-SweepVictim)
+        # ASE ends a disconnected spid in waitfor; tracking the test spid still guards statements that outlive the disconnect.
+        $dead = ''
+        for ($i = 0; $i -lt 60; $i++) {
+            $dead = Get-WriterDump
+            if ($dead -match 'writer-journal-live: 0\b') { break }
+            Start-Sleep -Seconds 1
+        }
+        if ($dead -notmatch 'writer-journal-live: 0\b') { throw "victim spids still live after the kill. dump: $dead" }
+        if ($dead -match '\blate\b') { throw "victim's late write landed despite the kill. dump: $dead" }
+        if ($dead -notmatch 'writer-journal-rows: 1\b') { throw "expected one dead victim row. dump: $dead" }
+        $r = Invoke-Cli sql-test $db $SybaseProfile '--sweep-writer-journal'
+        Assert-ExitCode $r
+        if ($r.StdErr -notmatch $victimRestored) { throw "sweep did not restore the victim row. stderr: $($r.StdErr)" }
+        $after = Get-WriterDump
+        if ($after -match '\blate\b') { throw "late row present after the sweep. dump: $after" }
+        if ($after -notmatch 'writer-journal-rows: 0\b') { throw "journal rows remain after the sweep. dump: $after" }
+        if ($after -ne $clean) { throw "fixture not back to clean after --sweep-writer-journal.`nclean: $clean`nafter: $after" }
     }
 }
 
