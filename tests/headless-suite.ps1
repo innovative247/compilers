@@ -2747,7 +2747,8 @@ function Test-SqlTest {
              'sql-test.plain.unchanged','sql-test.writer.pass','sql-test.writer.fail','sql-test.writer.skip',
              'sql-test.writer.error','sql-test.writer.timeout','sql-test.writer.serial','sql-test.writer.refuse.notran',
              'sql-test.writer.refuse.table','sql-test.writer.refuse.trigger','sql-test.writer.refuse.held',
-             'sql-test.writer.sweep')
+             'sql-test.writer.sweep','sql-test.writer.bench','sql-test.writer.trancount',
+             'sql-test.writer.bench.refused','sql-test.writer.verbose')
     if (-not (Get-Profile $SybaseProfile)) {
         foreach ($id in $ids) { Skip-Case $id "profile '$SybaseProfile' not in settings.json - needs a live Sybase profile with sbntest (-SybaseProfile)" }
         return
@@ -3018,6 +3019,48 @@ function Test-SqlTest {
         if ($after -match '\blate\b') { throw "late row present after the sweep. dump: $after" }
         if ($after -notmatch 'writer-journal-rows: 0\b') { throw "journal rows remain after the sweep. dump: $after" }
         if ($after -ne $clean) { throw "fixture not back to clean after --sweep-writer-journal.`nclean: $clean`nafter: $after" }
+    }
+
+    Test-Case 'sql-test.writer.bench' {
+        Initialize-WriterFixture
+        $before = Get-WriterDump
+        $r = Invoke-SqlTest '--bench' 'bench\_selftest\_framework\_writer\_bench' '--count' '2' '--verbose'
+        Assert-ExitCode $r
+        $combined = "$($r.StdOut)`n$($r.StdErr)"
+        if ($r.StdErr -notmatch '(?m)^\s+bench_selftest_framework_writer_bench\s+2\s+\d+ reads/op\s+\d+ phys/op\s+\d+ writes/op\s*$') {
+            throw "expected '<name>  2  <n> reads/op  <n> phys/op  <n> writes/op'. output: $combined"
+        }
+        if ($combined -match 'tbl_test_snap_') { throw "bench output names a snapshot table. output: $combined" }
+        if ($combined -match 'touched, not restored') { throw "bench reported a restored table as untouched-by-restore. output: $combined" }
+        $after = Get-WriterDump
+        if ($after -ne $before) { throw "fixture rows changed by the writer bench.`nbefore: $before`nafter: $after`nstderr: $($r.StdErr)" }
+        if ($after -notmatch 'writer-journal-rows: 0\b') { throw "writer journal not empty after the bench. dump: $after" }
+    }
+    Test-Case 'sql-test.writer.bench.refused' {
+        Initialize-WriterFixture
+        $before = Get-WriterDump
+        $r = Invoke-SqlTest '--bench' 'bench\_selftest\_framework\_writer\_refused' '--count' '2'
+        Assert-ExitCode $r 1
+        $combined = "$($r.StdOut)`n$($r.StdErr)"
+        if ($r.StdErr -notmatch "(?m)^\s+ERROR\s+bench_selftest_framework_writer_refused\b") { throw "expected ERROR. output: $combined" }
+        if ($combined -notmatch [regex]::Escape('@restore table not found: sbntest..tbl_test_writer_missing')) { throw "expected the refusal reason. output: $combined" }
+        if ($combined -match 'writer setup failed') { throw "refusal went through session setup. output: $combined" }
+        $after = Get-WriterDump
+        if ($after -ne $before) { throw "fixture rows changed by a refused bench.`nbefore: $before`nafter: $after" }
+        if ($after -notmatch 'writer-journal-rows: 0\b') { throw "refused bench left a journal row. dump: $after" }
+    }
+    Test-Case 'sql-test.writer.verbose' {
+        $r = Invoke-WriterCase 'selftest_framework_writer_pass' @('--timeout', '30', '--verbose')
+        Assert-ExitCode $r
+        Assert-WriterOutcome $r 'PASS' 'selftest_framework_writer_pass'
+        $combined = "$($r.StdOut)`n$($r.StdErr)"
+        if ($combined -match '(?m)^\s*Table:' -or $combined -match 'Total writes for this command') { throw "stat lines leaked into --verbose output. output: $combined" }
+    }
+    Test-Case 'sql-test.writer.trancount' {
+        $r = Invoke-WriterCase 'selftest_framework_writer_trancount'
+        Assert-ExitCode $r 1
+        Assert-WriterOutcome $r 'FAIL' 'selftest_framework_writer_trancount' 'transaction left open by the test (@@trancount='
+        if ((Get-WriterDump) -notmatch 'writer-journal-rows: 0\b') { throw "writer journal not empty after a trancount FAIL. dump: $(Get-WriterDump)" }
     }
 }
 

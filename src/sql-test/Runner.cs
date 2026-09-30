@@ -396,8 +396,36 @@ public class Runner
         };
     }
 
-    // Statistics are enabled only when measuring, so unbudgeted test output is unchanged.
-    public TestResult RunOne(TestCase tc, bool measure = false)
+    /// <summary>
+    /// Opens a bench's control connection and journal row once, before the warm-up.
+    /// Null with <paramref name="error"/> set when setup fails.
+    /// </summary>
+    public WriterBench? OpenWriterBench(TestCase tc, out TestResult? error)
+    {
+        error = null;
+        var stopwatch = Stopwatch.StartNew();
+        var control = new AseConnection(BuildConnectionString(_opts.Database));
+        try
+        {
+            control.Open();
+            // The test pair is set per run, once each run's test connection exists.
+            var session = WriterSession.Begin(new AseSqlExec(control, _opts.TimeoutSeconds), _opts.Database,
+                                              tc.LogicalName, tc.Restores!, null, null,
+                                              restoreX: new AseSqlExec(control, 0));
+            return new WriterBench(session, control);
+        }
+        catch (Exception ex)
+        {
+            try { control.Dispose(); } catch { }
+            error = new TestResult(tc.LogicalName, Outcome.ERROR,
+                ex is WriterHeldException ? ex.Message : $"writer setup failed: {ex.Message}",
+                stopwatch.Elapsed.TotalSeconds, ex.ToString());
+            return null;
+        }
+    }
+
+    /// <param name="bench">A writer bench's session: the run keep-restores instead of opening its own.</param>
+    public TestResult RunOne(TestCase tc, bool measure = false, WriterBench? bench = null)
     {
         var stopwatch = Stopwatch.StartNew();
         var messages = new List<AseError>();
@@ -405,6 +433,7 @@ public class Runner
         if (tc.Error != null)
             return new TestResult(tc.LogicalName, Outcome.ERROR, tc.Error, stopwatch.Elapsed.TotalSeconds, "");
 
+        // Statistics are enabled only when measuring, so unbudgeted test output is unchanged.
         IIoMeter? meter = null;
         if (measure || tc.Budgeted)
         {
@@ -414,6 +443,10 @@ public class Runner
                     $"I/O measurement is not supported for server type {_profile.ServerType}",
                     stopwatch.Elapsed.TotalSeconds, "");
         }
+        // The touched-not-restored diagnostic needs the stat lines; a bench reports it from r.Io.
+        bool diagnose = tc.IsWriter && _opts.Verbose && bench == null;
+        IIoMeter? diagMeter = diagnose && meter == null ? IoMeters.For(_profile.ServerType) : null;
+        var batchMeter = meter ?? diagMeter;
 
         // Step 0 (pre-tran): ensure the capture table exists. DDL must
         // happen outside the test's begin tran/rollback wrap because
@@ -464,14 +497,22 @@ public class Runner
                 {
                     var me = new AseSqlExec(conn, _opts.TimeoutSeconds)
                         .Rows("select @@spid, kpid from master..sysprocesses where spid = @@spid").Single();
-                    control = new AseConnection(BuildConnectionString(_opts.Database));
-                    control.Open();
-                    // Restore has no deadline: giving up leaves the test's writes in the product table.
-                    writer = WriterSession.Begin(new AseSqlExec(control, _opts.TimeoutSeconds),
-                                                 _opts.Database, tc.LogicalName, tc.Restores!,
-                                                 Convert.ToInt32(me[0], CultureInfo.InvariantCulture),
-                                                 Convert.ToInt32(me[1], CultureInfo.InvariantCulture),
-                                                 restoreX: new AseSqlExec(control, 0));
+                    int spid = Convert.ToInt32(me[0], CultureInfo.InvariantCulture);
+                    int kpid = Convert.ToInt32(me[1], CultureInfo.InvariantCulture);
+                    if (bench != null)
+                    {
+                        bench.SetTestPair(spid, kpid);
+                        writer = bench.Session;
+                    }
+                    else
+                    {
+                        control = new AseConnection(BuildConnectionString(_opts.Database));
+                        control.Open();
+                        // Restore has no deadline: giving up leaves the test's writes in the product table.
+                        writer = WriterSession.Begin(new AseSqlExec(control, _opts.TimeoutSeconds),
+                                                     _opts.Database, tc.LogicalName, tc.Restores!, spid, kpid,
+                                                     restoreX: new AseSqlExec(control, 0));
+                    }
                 }
                 catch (WriterHeldException ex)
                 {
@@ -511,9 +552,23 @@ public class Runner
                 // Not best-effort: a leaked product row is the failure writer mode exists to prevent.
                 if (writer != null)
                 {
-                    restoreError = writer.Restore();
+                    restoreError = bench != null ? bench.RestoreKeep() : writer.Restore();
                     foreach (var w in writer.Warnings) Console.Error.WriteLine($"sql-test: warning: {tc.LogicalName}: {w}");
+                    writer.Warnings.Clear(); // a bench session outlives this run
                 }
+            }
+
+            // After the region is fixed; a meter turned on only for this drops its stat lines from the output.
+            void Diagnose()
+            {
+                if (!diagnose || batchMeter == null) return;
+                var acc = new MeasureAccumulator(batchMeter);
+                int end = regionEnd < 0 ? messages.Count : regionEnd;
+                for (int i = 0; i < end; i++)
+                    acc.Feed(messages[i].MessageNumber, messages[i].Message ?? "");
+                foreach (var t in WriterJournal.TouchedNotRestored(acc.Current.Tables.Select(t => t.Table), tc.Restores!))
+                    Console.Error.WriteLine($"sql-test: {tc.LogicalName}: {WriterJournal.TouchedLine(t)}");
+                if (diagMeter != null) messages.RemoveAll(m => diagMeter.IsStatMessage(m.MessageNumber));
             }
 
             // Hooks for sql-bench-shape; null by default. A hook failure after an
@@ -599,10 +654,10 @@ public class Runner
             // An aborted batch skips the trailing DisableSql; turn it off so the tran check's output stays clean.
             void DisableMeterAfterAbort()
             {
-                if (meter == null) return;
+                if (batchMeter == null) return;
                 try
                 {
-                    using var off = new AseCommand(meter.DisableSql, conn);
+                    using var off = new AseCommand(batchMeter.DisableSql, conn);
                     if (tx != null) off.Transaction = tx;
                     off.CommandTimeout = DisableMeterTimeoutSeconds;
                     CommandDeadline.Run(off, DisableMeterTimeoutSeconds, off.ExecuteNonQuery);
@@ -621,13 +676,13 @@ public class Runner
                 // the capture proc); the assert proc only reads the capture table.
                 // Singleton: pretest runs in the test batch.
                 if (tc.CaptureProc != null && tc.Capture != null)
-                    RunCapturePhase(conn, tx, tc.CaptureProc, tc.Capture, tc.Pretest, _opts.TimeoutSeconds);
+                    RunCapturePhase(conn, tx, tc.CaptureProc, tc.Capture, tc.Pretest, _opts.TimeoutSeconds, diagMeter);
 
                 var assertSql = tc.CaptureProc != null
                     ? $"exec {tc.AssertProc}"
                     : WithPretest(tc.Pretest, tc.AssertProc);
-                if (meter != null)
-                    assertSql = $"{meter.EnableSql}\n{assertSql}\n{meter.DisableSql}";
+                if (batchMeter != null)
+                    assertSql = $"{batchMeter.EnableSql}\n{assertSql}\n{batchMeter.DisableSql}";
                 tc.BeforeBatch?.Invoke(conn);
                 using var cmd = new AseCommand(assertSql, conn);
                 if (tx != null) cmd.Transaction = tx;
@@ -638,6 +693,7 @@ public class Runner
 
                 var violation = CheckTranCount();
                 Cleanup();
+                Diagnose();
                 stopwatch.Stop();
                 return WithRestore(WithTranCheck(WithMeasure(new TestResult(tc.LogicalName, Outcome.PASS, "",
                     stopwatch.Elapsed.TotalSeconds, JoinMessages(messages))), violation), restoreError);
@@ -649,8 +705,9 @@ public class Runner
                 try { RunAfterRegion(); } catch { }
                 var violation = CheckTranCount();
                 Cleanup();
+                Diagnose();
                 stopwatch.Stop();
-                return WithRestore(WithTranCheck(WithMeasure(Classify(tc.LogicalName, ex, messages, stopwatch.Elapsed.TotalSeconds, meter != null)), violation), restoreError);
+                return WithRestore(WithTranCheck(WithMeasure(Classify(tc.LogicalName, ex, messages, stopwatch.Elapsed.TotalSeconds, batchMeter != null)), violation), restoreError);
             }
             catch (Exception ex)
             {
@@ -659,6 +716,7 @@ public class Runner
                 try { RunAfterRegion(); } catch { }
                 var violation = CheckTranCount();
                 Cleanup();
+                Diagnose();
                 stopwatch.Stop();
                 var outcome = ClassifyUnexpected(ex);
                 // Keep what the proc printed before the cancel, for --verbose.
@@ -689,7 +747,8 @@ public class Runner
     }
 
     private void RunCapturePhase(AseConnection conn, AseTransaction? tx,
-                                 string captureProc, CaptureSpec spec, string? pretest, int timeout)
+                                 string captureProc, CaptureSpec spec, string? pretest, int timeout,
+                                 IIoMeter? diag = null)
     {
         // The capture table's schema (column count + per-column .NET
         // type) is the contract. Result sets emitted during the capture
@@ -704,7 +763,10 @@ public class Runner
         // Pretest (if any) runs in the same batch as the capture proc so the
         // allocated @tstuser is in scope. Its own emits (e.g. tri_users
         // debug select on the &users& INSERT) are shape-filtered out below.
-        using var cmd = new AseCommand(WithPretest(pretest, captureProc), conn);
+        var captureSql = WithPretest(pretest, captureProc);
+        // A pair's writes happen here; only the touched-not-restored diagnostic meters this batch.
+        if (diag != null) captureSql = $"{diag.EnableSql}\n{captureSql}\n{diag.DisableSql}";
+        using var cmd = new AseCommand(captureSql, conn);
         if (tx != null) cmd.Transaction = tx;
         cmd.CommandTimeout = timeout;
 

@@ -465,4 +465,148 @@ public class WriterJournalTests
         Assert.Equal($"sql-test: note: {Row7} holds variant items; left for a later sweep", Assert.Single(RunSweep(x)));
         Assert.DoesNotContain(x.Log, l => l.StartsWith("declare @k") || l.StartsWith("delete") || l.StartsWith("drop"));
     }
+
+    // Bench session: snapshots exist, so the keep-restore reaches the product statements.
+    private static (FakeExec X, WriterBench B) NewBench()
+    {
+        var x = new FakeExec
+        {
+            OnScalar = sql => sql.StartsWith("insert sbntest..tbl_test_writer_journal") ? 9m
+                            : sql.StartsWith("select object_id") ? 1 : null,
+            OnRows = sql => sql.Contains("syscolumns") ? new() { new object?[] { "a", "int", 0 } } : new(),
+        };
+        var b = new WriterBench(WriterSession.Begin(x, "sbntest", "bench_w", new[] { Spec, Spec2 }, null, null));
+        x.Log.Clear();
+        return (x, b);
+    }
+
+    // Mirrors RunOne's writer path: set the pair, run the batch, keep-restore.
+    private static Func<int, TestResult> BenchRun(WriterBench b, Func<int, Outcome>? outcome = null, Action<int>? before = null) => i =>
+    {
+        before?.Invoke(i);
+        b.SetTestPair(30 + i, 300 + i);
+        var err = b.RestoreKeep();
+        return Runner.WithRestore(new TestResult("bench_w", outcome?.Invoke(i) ?? Outcome.PASS, "", 0, ""), err);
+    };
+
+    private static readonly string[] FinaliseSql =
+    {
+        "drop table sbntest..tbl_test_snap_9_1",
+        "delete sbntest..tbl_test_writer_item where journal_id = 9 and seq = 1",
+        "drop table sbntest..tbl_test_snap_9_2",
+        "delete sbntest..tbl_test_writer_item where journal_id = 9 and seq = 2",
+        "delete sbntest..tbl_test_writer_journal where journal_id = 9",
+    };
+
+    [Fact]
+    public void Bench_warmup_and_count_2_keep_restores_three_times_then_finalises_once()
+    {
+        var (x, b) = NewBench();
+        var ran = WriterBench.Drive(b, 2, BenchRun(b));
+        Assert.Equal(3, ran.Count);
+        Assert.All(ran, r => Assert.Equal(Outcome.PASS, r.Outcome));
+        Assert.Equal(3, x.Log.Count(l => l == "delete sbnmaster..fe_bell where s#inc = 1"));
+        Assert.Equal(3, x.Log.Count(l => l == "delete sbntest..t where a = 1"));
+        var tail = x.Log.Skip(x.Log.FindLastIndex(l => l == "commit tran") + 1).ToList();
+        Assert.Equal(FinaliseSql, tail);
+        Assert.Equal(FinaliseSql.Length, x.Log.Count(l => l.StartsWith("drop") || l.StartsWith("delete sbntest..tbl_test_writer")));
+    }
+
+    [Fact]
+    public void Keep_restore_has_no_item_delete_and_no_drop()
+    {
+        var (x, b) = NewBench();
+        Assert.Null(b.Session.RestoreKeep());
+        Assert.Contains("delete sbnmaster..fe_bell where s#inc = 1", x.Log);
+        Assert.Contains("insert sbnmaster..fe_bell (a) select a from sbntest..tbl_test_snap_9_1", x.Log);
+        Assert.DoesNotContain(x.Log, l => l.StartsWith("drop") || l.StartsWith("delete sbntest..tbl_test_writer"));
+    }
+
+    [Fact]
+    public void Bench_early_break_still_finalises_once()
+    {
+        var (x, b) = NewBench();
+        var ran = WriterBench.Drive(b, 2, BenchRun(b, i => i == 1 ? Outcome.FAIL : Outcome.PASS));
+        Assert.Equal(2, ran.Count);
+        Assert.Empty(b.Finalise());
+        Assert.Equal(FinaliseSql, x.Log.Skip(x.Log.FindLastIndex(l => l == "commit tran") + 1));
+    }
+
+    [Fact]
+    public void Bench_exception_still_finalises_once()
+    {
+        var (x, b) = NewBench();
+        Assert.Throws<InvalidOperationException>(() =>
+            WriterBench.Drive(b, 2, BenchRun(b, before: i => { if (i == 2) throw new InvalidOperationException("run"); })));
+        Assert.Equal(FinaliseSql, x.Log.Skip(x.Log.FindLastIndex(l => l == "commit tran") + 1));
+    }
+
+    [Fact]
+    public void Bench_failed_keep_restore_skips_finalise_and_keeps_the_journal_row()
+    {
+        var (x, b) = NewBench();
+        var warnings = new List<string>();
+        var ran = WriterBench.Drive(b, 2, BenchRun(b, before: i => { if (i == 1) x.FailOn = "insert sbntest..t"; }), warnings.Add);
+        Assert.Equal(2, ran.Count);
+        Assert.Equal(Outcome.ERROR, ran[^1].Outcome);
+        Assert.Equal("restore failed: boom; journal row 9 kept", ran[^1].Message);
+        Assert.Empty(warnings);
+        Assert.DoesNotContain(x.Log, l => l.StartsWith("drop") || l.StartsWith("delete sbntest..tbl_test_writer"));
+    }
+
+    [Fact]
+    public void Bench_updates_the_test_pair_before_each_run()
+    {
+        var (x, b) = NewBench();
+        WriterBench.Drive(b, 2, BenchRun(b));
+        var pairs = x.Log.Where(l => l.StartsWith("update sbntest..tbl_test_writer_journal")).ToList();
+        Assert.Equal(new[]
+        {
+            "update sbntest..tbl_test_writer_journal set test_spid = 30, test_kpid = 300 where journal_id = 9",
+            "update sbntest..tbl_test_writer_journal set test_spid = 31, test_kpid = 301 where journal_id = 9",
+            "update sbntest..tbl_test_writer_journal set test_spid = 32, test_kpid = 302 where journal_id = 9",
+        }, pairs);
+        // Each pair lands before that run's restore; the control pair is never touched.
+        var restores = x.Log.Select((l, i) => (l, i)).Where(t => t.l == "delete sbnmaster..fe_bell where s#inc = 1").Select(t => t.i).ToList();
+        for (int k = 0; k < 3; k++) Assert.True(x.Log.IndexOf(pairs[k]) < restores[k]);
+        Assert.DoesNotContain(x.Log, l => l.Contains("set spid") || l.Contains(" kpid ="));
+    }
+
+    [Fact]
+    public void Begin_without_a_test_pair_journals_nulls()
+    {
+        var x = BeginExec();
+        WriterSession.Begin(x, "sbntest", "bench_w", new[] { Spec }, null, null);
+        Assert.Contains(x.Log, l => l.StartsWith("insert sbntest..tbl_test_writer_journal") && l.Contains("select @@spid, p.kpid, null, null,"));
+    }
+
+    [Theory]
+    [InlineData("fe_bell")]
+    [InlineData("FE_BELL")]
+    [InlineData("sbnmaster..Fe_Bell")]
+    [InlineData("T")]
+    [InlineData("#tmp")]
+    [InlineData("tbl_test_x")]
+    [InlineData("TBL_TEST_capture")]
+    public void TouchedNotRestored_excludes_restored_temp_and_runner_tables(string table) =>
+        Assert.Empty(WriterJournal.TouchedNotRestored(new[] { table }, new[] { Spec, Spec2 }));
+
+    [Fact]
+    public void TouchedNotRestored_lists_other_tables_once_in_order()
+    {
+        var got = WriterJournal.TouchedNotRestored(new[] { "ma_alarmqueue3", "fe_bell", "fe_sms", "MA_ALARMQUEUE3" }, new[] { Spec, Spec2 });
+        Assert.Equal(new[] { "ma_alarmqueue3", "fe_sms" }, got);
+        Assert.Equal("touched, not restored (reads only?): fe_sms", WriterJournal.TouchedLine("fe_sms"));
+    }
+
+    [Theory]
+    [InlineData(true, null, true)]
+    [InlineData(true, "@restore table not found", false)]
+    [InlineData(false, null, false)]
+    public void WriterBench_opens_a_session_only_for_an_unrefused_writer(bool writer, string? error, bool expected)
+    {
+        var restores = writer ? new[] { Spec } : null;
+        var tc = new TestCase("bench_x", null, "bench_x", null, Error: error, Restores: restores);
+        Assert.Equal(expected, WriterBench.OpensSession(tc));
+    }
 }

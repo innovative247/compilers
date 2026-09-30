@@ -185,16 +185,40 @@ static int RunBench(Runner runner, List<TestCase> cases, Options opts, ResolvedP
     var benches = new List<BenchResult>(cases.Count);
     foreach (var c in cases)
     {
+        // A writer bench journals once before the warm-up; each run keep-restores, the end finalises.
+        WriterBench? writer = null;
+        if (WriterBench.OpensSession(c))
+        {
+            writer = runner.OpenWriterBench(c, out var setupError);
+            if (writer == null)
+            {
+                results.Add(setupError!);
+                PrintResult(setupError!, opts.Verbose);
+                continue;
+            }
+        }
+        List<TestResult> ran;
+        try
+        {
+            ran = WriterBench.Drive(writer, opts.Count, _ => runner.RunOne(c, measure: true, writer),
+                                    w => Console.Error.WriteLine($"sql-test: warning: {c.LogicalName}: {w}"));
+        }
+        finally { writer?.Dispose(); }
+
         var runs = new List<IoMeasure>(opts.Count);
         TestResult? failed = null;
         double seconds = 0;
-        for (int i = 0; i <= opts.Count; i++)   // run 0 is the discarded warm-up
+        for (int i = 0; i < ran.Count; i++)
         {
-            var r = runner.RunOne(c, measure: true);
+            var r = ran[i];
             seconds += r.DurationSeconds;
             if (r.Outcome != Outcome.PASS) { failed = r with { Io = null, MaxReads = null }; break; }
             if (i > 0) runs.Add(r.Io!);
         }
+        if (opts.Verbose && c.IsWriter)
+            foreach (var t in WriterJournal.TouchedNotRestored(
+                         ran.Where(r => r.Io != null).SelectMany(r => r.Io!.Tables).Select(t => t.Table), c.Restores!))
+                Console.Error.WriteLine($"sql-test: {c.LogicalName}: {WriterJournal.TouchedLine(t)}");
         if (failed != null)
         {
             results.Add(failed);

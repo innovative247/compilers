@@ -205,10 +205,9 @@ internal static class WriterJournal
 
     internal static string SnapshotName(long journalId, int seq) => $"tbl_test_snap_{journalId}_{seq}";
 
-    // Separate statements, not one batch: ASE continues a batch past a failed
-    // insert, so a batched `commit tran` would keep the delete. The item row goes
-    // in the same transaction so it can never outlive the restored rows.
-    internal static IReadOnlyList<string> BuildRestoreSql(RestoreSpec s, string snapshot, RestoreColumns cols, string itemDelete)
+    // Separate statements: ASE continues a batch past a failed insert, so a batched `commit tran` would keep the delete.
+    // The item row goes in the same tran so it never outlives the restored rows; keep mode passes null.
+    internal static IReadOnlyList<string> BuildRestoreSql(RestoreSpec s, string snapshot, RestoreColumns cols, string? itemDelete)
     {
         var list = string.Join(", ", cols.Columns);
         var sql = new List<string>();
@@ -216,7 +215,7 @@ internal static class WriterJournal
         sql.Add("begin tran");
         sql.Add($"delete {s.FullName} where {s.Predicate}");
         sql.Add($"insert {s.FullName} ({list}) select {list} from {snapshot}");
-        sql.Add(itemDelete);
+        if (itemDelete != null) sql.Add(itemDelete);
         sql.Add("commit tran");
         if (cols.HasIdentity) sql.Add($"set identity_insert {s.FullName} off");
         return sql;
@@ -295,9 +294,10 @@ internal static class WriterJournal
     }
 
     /// <summary>As <see cref="Restore"/>, but returns the bare failure text; the sweep words its own warning.</summary>
+    /// <param name="keep">Bench runs between measured runs: restore product rows, keep snapshots, items and journal row.</param>
     internal static string? RestoreDetail(ISqlExec x, string home, long journalId, IEnumerable<JournalItem> items,
                                           List<string>? warnings = null, bool tolerateMissingSnapshot = false,
-                                          bool deleteJournalRow = true)
+                                          bool deleteJournalRow = true, bool keep = false)
     {
         var failures = new List<string>();
         foreach (var it in items)
@@ -316,18 +316,60 @@ internal static class WriterJournal
                     x.Exec(itemDelete);
                     continue;
                 }
-                RunRestore(x, BuildRestoreSql(it.Spec, snap, it.Columns, itemDelete), it);
+                RunRestore(x, BuildRestoreSql(it.Spec, snap, it.Columns, keep ? null : itemDelete), it);
             }
             catch (Exception ex) { failures.Add(ex.Message); continue; }
+            if (keep) continue;
             try { x.Exec($"drop table {snap}"); }
             catch (Exception ex) { warnings?.Add($"snapshot {snap} not dropped: {ex.Message}"); }
         }
         if (failures.Count > 0) return string.Join(" | ", failures);
-        if (!deleteJournalRow) return null;
+        if (!deleteJournalRow || keep) return null;
         try { x.Exec($"delete {home}..{JournalTable} where journal_id = {journalId}"); }
         catch (Exception ex) { return ex.Message; }
         return null;
     }
+
+    /// <summary>
+    /// Ends a bench session whose last keep-restore succeeded: product rows are already
+    /// restored, so only snapshots, item rows and the journal row go. Null on success.
+    /// </summary>
+    internal static string? Finalise(ISqlExec x, string home, long journalId, IEnumerable<JournalItem> items,
+                                     List<string>? warnings = null)
+    {
+        var failures = new List<string>();
+        foreach (var it in items)
+        {
+            var snap = $"{home}..{it.Snapshot}";
+            try { x.Exec($"drop table {snap}"); }
+            catch (Exception ex) { warnings?.Add($"snapshot {snap} not dropped: {ex.Message}"); }
+            // Dropped first: an item row left behind then has no snapshot, which the sweep deletes without restoring.
+            try { x.Exec($"delete {home}..{ItemTable} where journal_id = {journalId} and seq = {it.Seq}"); }
+            catch (Exception ex) { failures.Add(ex.Message); }
+        }
+        if (failures.Count > 0) return string.Join(" | ", failures);
+        try { x.Exec($"delete {home}..{JournalTable} where journal_id = {journalId}"); }
+        catch (Exception ex) { return ex.Message; }
+        return null;
+    }
+
+    /// <summary>
+    /// Tables in the stats lines that no @restore line names, by bare name. `#` temp
+    /// tables and the runner's own tbl_test_* tables are never product writes.
+    /// </summary>
+    internal static IReadOnlyList<string> TouchedNotRestored(IEnumerable<string> statTables, IEnumerable<RestoreSpec> specs)
+    {
+        static string Bare(string t) => t[(t.LastIndexOf('.') + 1)..].Trim();
+        var restored = new HashSet<string>(specs.Select(s => Bare(s.Table)), StringComparer.OrdinalIgnoreCase);
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        return statTables.Select(Bare)
+            .Where(t => t.Length > 0 && !t.StartsWith('#')
+                        && !t.StartsWith("tbl_test_", StringComparison.OrdinalIgnoreCase)
+                        && !restored.Contains(t) && seen.Add(t))
+            .ToList();
+    }
+
+    internal static string TouchedLine(string table) => $"touched, not restored (reads only?): {table}";
 
     private static void RunRestore(ISqlExec x, IReadOnlyList<string> sql, JournalItem it)
     {
@@ -363,7 +405,7 @@ public sealed class WriterSession
     /// The test connection's spid/kpid keep the row alive while its batch still runs.
     /// </summary>
     public static WriterSession Begin(ISqlExec x, string home, string testName, IReadOnlyList<RestoreSpec> specs,
-                                      int testSpid, int testKpid, ISqlExec? restoreX = null)
+                                      int? testSpid, int? testKpid, ISqlExec? restoreX = null)
     {
         var s = new WriterSession(x, restoreX ?? x, home);
         var snaps = new List<string>();
@@ -372,7 +414,7 @@ public sealed class WriterSession
         {
             s.JournalId = Convert.ToInt64(x.Scalar(
                 $"insert {home}..{WriterJournal.JournalTable} (spid, kpid, test_spid, test_kpid, login, hostname, started, test, state) " +
-                $"select @@spid, p.kpid, {testSpid}, {testKpid}, suser_name(), p.hostname, getdate(), {WriterJournal.Lit(testName)}, 'pending' " +
+                $"select @@spid, p.kpid, {Num(testSpid)}, {Num(testKpid)}, suser_name(), p.hostname, getdate(), {WriterJournal.Lit(testName)}, 'pending' " +
                 $"from master..sysprocesses p where p.spid = @@spid " +
                 "select @@identity"), CultureInfo.InvariantCulture);
             if (s.JournalId == 0) throw new InvalidOperationException("journal insert returned no identity");
@@ -421,6 +463,23 @@ public sealed class WriterSession
         catch { /* the setup error is reported; leftovers stay for the sweep */ }
     }
 
+    private static string Num(int? v) => v?.ToString(CultureInfo.InvariantCulture) ?? "null";
+
     /// <summary>Null on success, else `restore failed: ...; journal row <id> kept`.</summary>
     public string? Restore() => WriterJournal.Restore(_restoreX, _home, JournalId, _items, Warnings);
+
+    /// <summary>As <see cref="Restore"/>, but keeps snapshots, item rows and the journal row for the next bench run.</summary>
+    public string? RestoreKeep()
+    {
+        var detail = WriterJournal.RestoreDetail(_restoreX, _home, JournalId, _items, Warnings, keep: true);
+        return detail == null ? null : $"restore failed: {detail}; journal row {JournalId} kept";
+    }
+
+    /// <summary>Each bench run has its own test connection; the sweep must see the live one.</summary>
+    public void SetTestPair(int testSpid, int testKpid) =>
+        _x.Exec($"update {_home}..{WriterJournal.JournalTable} set test_spid = {testSpid}, test_kpid = {testKpid} " +
+                $"where journal_id = {JournalId}");
+
+    /// <summary>Null on success, else the failure text; the journal row then stays for the sweep.</summary>
+    public string? Finalise() => WriterJournal.Finalise(_restoreX, _home, JournalId, _items, Warnings);
 }
