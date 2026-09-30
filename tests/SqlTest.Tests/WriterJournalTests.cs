@@ -7,24 +7,6 @@ public class WriterJournalTests
     private static readonly RestoreSpec Spec = new("sbnmaster", "fe_bell", "s#inc = 1", false);
     private static readonly RestoreProbe Ok = new(true, RowCount: 3, Triggers: Array.Empty<string>(), UserName: "dbo");
 
-    // Records every statement; throws on the first statement containing FailOn.
-    private sealed class FakeExec : ISqlExec
-    {
-        public readonly List<string> Log = new();
-        public string? FailOn;
-        public Func<string, object?> OnScalar = _ => 1;
-        public Func<string, List<object?[]>> OnRows = _ => new();
-
-        private void Hit(string sql)
-        {
-            Log.Add(sql);
-            if (FailOn != null && sql.Contains(FailOn)) throw new InvalidOperationException("boom");
-        }
-        public int Exec(string sql) { Hit(sql); return 1; }
-        public object? Scalar(string sql) { Hit(sql); return OnScalar(sql); }
-        public List<object?[]> Rows(string sql) { Hit(sql); return OnRows(sql); }
-    }
-
     private static JournalItem Item(int seq, bool identity = false) =>
         new(seq, Spec, $"tbl_test_snap_7_{seq}", new RestoreColumns(new[] { "s#inc", "name" }, identity));
 
@@ -457,13 +439,86 @@ public class WriterJournalTests
         Assert.DoesNotContain(x.Log, l => l.StartsWith("delete sbntest..tbl_test_writer_"));
     }
 
+    private static readonly object?[] VItem = { 2, "V", "sbntest", "test_w_v1", "", null, false };
+
     [Fact]
-    public void Sweep_leaves_variant_rows_whole_with_a_note()
+    public void Sweep_without_dropVariant_leaves_variant_rows_whole_with_a_note()
     {
-        var v = new object?[] { 2, "V", "sbntest", "test_w_v1", "", null, false };
-        var x = SweepExec(items: new[] { RItem(1), v });
+        var x = SweepExec(items: new[] { RItem(1), VItem });
         Assert.Equal($"sql-test: note: {Row7} holds variant items; left for a later sweep", Assert.Single(RunSweep(x)));
         Assert.DoesNotContain(x.Log, l => l.StartsWith("declare @k") || l.StartsWith("delete") || l.StartsWith("drop"));
+    }
+
+    [Fact]
+    public void Sweep_mixed_dead_row_restores_then_drops_then_deletes_the_row()
+    {
+        var x = SweepExec(items: new[] { RItem(1), new object?[] { 2, "V", "sbnmaster", "test_w_v1", "", null, false } });
+        var lines = new List<string>();
+        WriterSweep.Sweep(x, x, "sbntest", lines.Add, ScratchProc.SweepDropper(x, "sbntest"));
+        Assert.Equal($"sql-test: {Row7} restored", Assert.Single(lines));
+
+        int restore = x.Log.FindIndex(l => l.StartsWith("insert sbnmaster..fe_bell"));
+        int drop = x.Log.FindIndex(l => l.Contains("drop proc test_w_v1"));
+        int item = x.Log.IndexOf("delete sbntest..tbl_test_writer_item where journal_id = 7 and seq = 2");
+        Assert.True(restore >= 0 && restore < drop && drop < item);
+        Assert.Equal("use sbnmaster", x.Log[drop - 1]);
+        Assert.Equal("use sbntest", x.Log[drop + 1]);
+        Assert.Equal("delete sbntest..tbl_test_writer_journal where journal_id = 7", x.Log[^1]);
+        Assert.Single(x.Log, l => l.StartsWith("delete sbntest..tbl_test_writer_journal"));
+    }
+
+    [Fact]
+    public void Sweep_of_a_dead_row_keeps_a_proc_a_live_session_holds_and_deletes_only_the_item()
+    {
+        var x = SweepExec(items: new[] { VItem });
+        var (scalar, rows) = (x.OnScalar, x.OnRows);
+        x.OnScalar = sql => sql.StartsWith("select count(*) from master..sysprocesses") && sql.Contains("spid = 30") ? 1 : scalar(sql);
+        x.OnRows = sql => sql.Contains("i.kind = 'V'")
+            ? new() { new object?[] { 5m, 30, 300, "ann", "box", new DateTime(2026, 9, 30, 12, 0, 0), "other_t", null, null } }
+            : rows(sql);
+        var lines = new List<string>();
+        WriterSweep.Sweep(x, x, "sbntest", lines.Add, ScratchProc.SweepDropper(x, "sbntest"));
+        Assert.Equal($"sql-test: {Row7} restored", Assert.Single(lines));
+        Assert.DoesNotContain(x.Log, l => l.Contains("drop proc"));
+        Assert.Contains("delete sbntest..tbl_test_writer_item where journal_id = 7 and seq = 2", x.Log);
+    }
+
+    [Fact]
+    public void Sweep_restore_failure_still_drops_the_variants_and_keeps_the_row()
+    {
+        var x = SweepExec(items: new[] { RItem(1), VItem });
+        x.FailOn = "insert sbnmaster..fe_bell";
+        var lines = new List<string>();
+        WriterSweep.Sweep(x, x, "sbntest", lines.Add, ScratchProc.SweepDropper(x, "sbntest"));
+        Assert.Equal($"sql-test: WARNING: {Row7} could not be restored: boom", Assert.Single(lines));
+        Assert.Contains(x.Log, l => l.EndsWith("drop proc test_w_v1"));
+        Assert.DoesNotContain(x.Log, l => l.StartsWith("delete sbntest..tbl_test_writer_journal"));
+    }
+
+    [Fact]
+    public void Finalise_with_variant_items_keeps_the_row_until_the_last_variant_goes()
+    {
+        var (x, _) = NewBench();
+        var j = WriterSession.Begin(x, "sbntest", "w", new[] { Spec }, null, null);
+        var seq = j.AddVariant("sbntest", "w_v1");
+        x.Log.Clear();
+        Assert.Null(j.Finalise());
+        Assert.Contains("drop table sbntest..tbl_test_snap_9_1", x.Log);
+        Assert.DoesNotContain(x.Log, l => l.StartsWith("delete sbntest..tbl_test_writer_journal"));
+        Assert.Null(j.RemoveVariant(seq));
+        Assert.Equal("delete sbntest..tbl_test_writer_journal where journal_id = 9", x.Log[^1]);
+    }
+
+    [Fact]
+    public void Sweep_failed_variant_drop_warns_and_keeps_the_journal_row()
+    {
+        var x = SweepExec(items: new[] { VItem });
+        x.FailOn = "drop proc";
+        var lines = new List<string>();
+        WriterSweep.Sweep(x, x, "sbntest", lines.Add, ScratchProc.SweepDropper(x, "sbntest"));
+        var line = Assert.Single(lines);
+        Assert.StartsWith($"sql-test: WARNING: {Row7} could not be restored: scratch proc sbntest..test_w_v1 not dropped", line);
+        Assert.DoesNotContain(x.Log, l => l.StartsWith("delete sbntest..tbl_test_writer_"));
     }
 
     // Bench session: snapshots exist, so the keep-restore reaches the product statements.

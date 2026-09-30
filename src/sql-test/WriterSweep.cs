@@ -24,11 +24,11 @@ internal static class WriterSweep
     /// itself cannot run (connection, journal read, liveness or claim).
     /// </summary>
     /// <param name="dropVariant">
-    /// Drops one 'V' item and deletes its item row; null on success, else the error.
+    /// Drops one 'V' item of a journal row and deletes its item row; null on success, else the error.
     /// Without it, rows holding variants are left whole for a runner that has one.
     /// </param>
     internal static void Sweep(ISqlExec x, ISqlExec restoreX, string home, Action<string> report,
-                               Func<SweepItem, string?>? dropVariant = null)
+                               Func<long, SweepItem, string?>? dropVariant = null)
     {
         // Never journalled on this database: nothing to sweep, and plain runs must not create the tables.
         if (x.Scalar($"select object_id('{home}..{WriterJournal.JournalTable}')") == null) return;
@@ -56,10 +56,14 @@ internal static class WriterSweep
         }
     }
 
+    internal const string RowColumns = "journal_id, spid, kpid, login, hostname, started, test, test_spid, test_kpid";
+
     internal static List<JournalRow> ReadRows(ISqlExec x, string home) =>
-        x.Rows($"select journal_id, spid, kpid, login, hostname, started, test, test_spid, test_kpid " +
-               $"from {home}..{WriterJournal.JournalTable} order by journal_id")
-            .Select(r => new JournalRow(
+        ParseRows(x.Rows($"select {RowColumns} from {home}..{WriterJournal.JournalTable} order by journal_id"));
+
+    /// <summary>Rows selected as <see cref="RowColumns"/>.</summary>
+    internal static List<JournalRow> ParseRows(IEnumerable<object?[]> rows) =>
+        rows.Select(r => new JournalRow(
                 Convert.ToInt64(r[0], CultureInfo.InvariantCulture),
                 Convert.ToInt32(r[1], CultureInfo.InvariantCulture),
                 Convert.ToInt32(r[2], CultureInfo.InvariantCulture),
@@ -95,14 +99,12 @@ internal static class WriterSweep
             $"where journal_id = {row.JournalId} and spid = {row.Spid} and kpid = {row.Kpid} " +
             "select @@rowcount"), CultureInfo.InvariantCulture) == 1;
 
+    // Same order as in-process: restore, then drop; the row goes only once every item row has.
     private static string? RestoreRow(ISqlExec x, ISqlExec restoreX, string home, JournalRow row, List<SweepItem> items,
-                                      Func<SweepItem, string?>? dropVariant, List<string> warnings)
+                                      Func<long, SweepItem, string?>? dropVariant, List<string> warnings)
     {
         var failures = new List<string>();
-        if (dropVariant != null)
-            foreach (var v in items.Where(i => i.Kind == 'V'))
-                if (dropVariant(v) is { } err) failures.Add(err);
-
+        var variants = items.Where(i => i.Kind == 'V').ToList();
         var restores = items.Where(i => i.Kind == 'R').Select(i =>
         {
             var spec = new RestoreSpec(i.Db, i.Obj, i.Predicate, AllowTriggers: true);
@@ -113,8 +115,14 @@ internal static class WriterSweep
 
         // A missing snapshot means the runner died before taking it: its rows were never written.
         var detail = WriterJournal.RestoreDetail(restoreX, home, row.JournalId, restores, warnings,
-                                                 tolerateMissingSnapshot: true, deleteJournalRow: failures.Count == 0);
+                                                 tolerateMissingSnapshot: true, deleteJournalRow: variants.Count == 0);
         if (detail != null) failures.Add(detail);
+        if (variants.Count > 0)
+        {
+            foreach (var v in variants)
+                if (dropVariant!(row.JournalId, v) is { } err) failures.Add(err);
+            if (failures.Count == 0 && WriterJournal.DeleteJournalRow(x, home, row.JournalId) is { } del) failures.Add(del);
+        }
         return failures.Count == 0 ? null : string.Join(" | ", failures);
     }
 }

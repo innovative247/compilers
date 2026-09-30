@@ -250,6 +250,19 @@ internal static class WriterJournal
   predicate varchar(2000) not null, snapshot varchar(255) null,
   has_identity bit default 0 not null) lock datarows";
 
+    /// <summary>The caller's database user in <paramref name="db"/>; the connection ends back in <paramref name="home"/>.</summary>
+    internal static string? UserIn(ISqlExec x, string db, string home)
+    {
+        x.Exec($"use {db}");
+        try { return Convert.ToString(x.Scalar("select user_name()"))?.Trim(); }
+        finally { x.Exec($"use {home}"); }
+    }
+
+    private static readonly Regex IdentRe = new(@"^[A-Za-z_][\w#$@]*$");
+
+    // Names reach `use` and `drop proc` unquoted.
+    internal static bool IsIdent(string s) => IdentRe.IsMatch(s);
+
     /// <summary>Discovery probe for one spec; control connection sits in <paramref name="home"/>.</summary>
     internal static RestoreProbe Probe(ISqlExec x, RestoreSpec s, string home)
     {
@@ -258,10 +271,7 @@ internal static class WriterJournal
 
         if (x.Scalar($"select object_id('{s.FullName}')") == null) return new RestoreProbe(false);
 
-        string? user;
-        x.Exec($"use {s.Db}");
-        try { user = Convert.ToString(x.Scalar("select user_name()"))?.Trim(); }
-        finally { x.Exec($"use {home}"); }
+        var user = UserIn(x, s.Db, home);
 
         long? count = null;
         string? countError = null;
@@ -287,9 +297,10 @@ internal static class WriterJournal
     /// one is a failure.
     /// </param>
     internal static string? Restore(ISqlExec x, string home, long journalId, IEnumerable<JournalItem> items,
-                                    List<string>? warnings = null, bool tolerateMissingSnapshot = false)
+                                    List<string>? warnings = null, bool tolerateMissingSnapshot = false,
+                                    bool deleteJournalRow = true)
     {
-        var detail = RestoreDetail(x, home, journalId, items, warnings, tolerateMissingSnapshot);
+        var detail = RestoreDetail(x, home, journalId, items, warnings, tolerateMissingSnapshot, deleteJournalRow);
         return detail == null ? null : $"restore failed: {detail}; journal row {journalId} kept";
     }
 
@@ -325,17 +336,16 @@ internal static class WriterJournal
         }
         if (failures.Count > 0) return string.Join(" | ", failures);
         if (!deleteJournalRow || keep) return null;
-        try { x.Exec($"delete {home}..{JournalTable} where journal_id = {journalId}"); }
-        catch (Exception ex) { return ex.Message; }
-        return null;
+        return DeleteJournalRow(x, home, journalId);
     }
 
     /// <summary>
     /// Ends a bench session whose last keep-restore succeeded: product rows are already
     /// restored, so only snapshots, item rows and the journal row go. Null on success.
     /// </summary>
+    /// <param name="deleteJournalRow">False while 'V' items remain: the row goes with the last of them.</param>
     internal static string? Finalise(ISqlExec x, string home, long journalId, IEnumerable<JournalItem> items,
-                                     List<string>? warnings = null)
+                                     List<string>? warnings = null, bool deleteJournalRow = true)
     {
         var failures = new List<string>();
         foreach (var it in items)
@@ -348,6 +358,12 @@ internal static class WriterJournal
             catch (Exception ex) { failures.Add(ex.Message); }
         }
         if (failures.Count > 0) return string.Join(" | ", failures);
+        return deleteJournalRow ? DeleteJournalRow(x, home, journalId) : null;
+    }
+
+    /// <summary>Null on success, else the error.</summary>
+    internal static string? DeleteJournalRow(ISqlExec x, string home, long journalId)
+    {
         try { x.Exec($"delete {home}..{JournalTable} where journal_id = {journalId}"); }
         catch (Exception ex) { return ex.Message; }
         return null;
@@ -391,6 +407,11 @@ public sealed class WriterSession
     private readonly ISqlExec _restoreX;
     private readonly string _home;
     private readonly List<JournalItem> _items = new();
+    // Journal-row lifecycle: each step deletes its own item rows; the row goes once none remain.
+    private readonly List<int> _variants = new();  // 'V' item seqs still journalled
+    private bool _closed;                           // journal row deleted: a new 'V' item would be invisible to the sweep
+    private bool _restorePending;                   // 'R' item rows still journalled
+    private int _nextSeq;
 
     public long JournalId { get; private set; }
     public IReadOnlyList<JournalItem> Items => _items;
@@ -399,7 +420,8 @@ public sealed class WriterSession
     private WriterSession(ISqlExec x, ISqlExec restoreX, string home) { _x = x; _restoreX = restoreX; _home = home; }
 
     /// <summary>
-    /// Commits the recipe before the test writes. A part-way failure undoes what
+    /// Commits the recipe before the test writes. Empty <paramref name="specs"/> give a
+    /// row for 'V' items only (a scratch-only test). A part-way failure undoes what
     /// it created and rethrows; nothing on the product database has changed yet.
     /// <paramref name="restoreX"/> runs Restore; defaults to <paramref name="x"/>.
     /// The test connection's spid/kpid keep the row alive while its batch still runs.
@@ -429,6 +451,8 @@ public sealed class WriterSession
                        $"{WriterJournal.Lit(spec.Predicate)}, {WriterJournal.Lit(item.Snapshot)}, {(cols.HasIdentity ? 1 : 0)})");
                 s._items.Add(item);
             }
+            s._nextSeq = specs.Count + 1;
+            s._restorePending = specs.Count > 0;
             // Discovery saw no holder, but another runner may have journalled the table since.
             // Checking after our own insert means two racers both refuse rather than both run.
             foreach (var it in s._items)
@@ -466,7 +490,13 @@ public sealed class WriterSession
     private static string Num(int? v) => v?.ToString(CultureInfo.InvariantCulture) ?? "null";
 
     /// <summary>Null on success, else `restore failed: ...; journal row <id> kept`.</summary>
-    public string? Restore() => WriterJournal.Restore(_restoreX, _home, JournalId, _items, Warnings);
+    public string? Restore()
+    {
+        var error = WriterJournal.Restore(_restoreX, _home, JournalId, _items, Warnings,
+                                          deleteJournalRow: _variants.Count == 0);
+        if (error == null) { _restorePending = false; _closed = _variants.Count == 0; }
+        return error;
+    }
 
     /// <summary>As <see cref="Restore"/>, but keeps snapshots, item rows and the journal row for the next bench run.</summary>
     public string? RestoreKeep()
@@ -481,5 +511,38 @@ public sealed class WriterSession
                 $"where journal_id = {JournalId}");
 
     /// <summary>Null on success, else the failure text; the journal row then stays for the sweep.</summary>
-    public string? Finalise() => WriterJournal.Finalise(_restoreX, _home, JournalId, _items, Warnings);
+    public string? Finalise()
+    {
+        var error = WriterJournal.Finalise(_restoreX, _home, JournalId, _items, Warnings,
+                                           deleteJournalRow: _variants.Count == 0);
+        if (error == null) { _restorePending = false; _closed = _variants.Count == 0; }
+        return error;
+    }
+
+    /// <summary>Journals a scratch proc name as a 'V' item; returns its seq. Written before the compile.</summary>
+    internal int AddVariant(string db, string name)
+    {
+        if (_closed) throw new InvalidOperationException($"journal row {JournalId} is already deleted");
+        var seq = _nextSeq;
+        _x.Exec($"insert {_home}..{WriterJournal.ItemTable} (journal_id, seq, kind, db, obj, predicate, snapshot, has_identity) " +
+                $"values ({JournalId}, {seq}, 'V', {WriterJournal.Lit(db)}, {WriterJournal.Lit(name)}, '', null, 0)");
+        _nextSeq++;
+        _variants.Add(seq);
+        return seq;
+    }
+
+    /// <summary>
+    /// Deletes a 'V' item row once its proc is gone, and the journal row when it was the
+    /// last item. Null on success; on failure both rows stay for the sweep.
+    /// </summary>
+    internal string? RemoveVariant(int seq)
+    {
+        try { _x.Exec($"delete {_home}..{WriterJournal.ItemTable} where journal_id = {JournalId} and seq = {seq}"); }
+        catch (Exception ex) { return ex.Message; }
+        _variants.Remove(seq);
+        if (_restorePending || _variants.Count > 0) return null;
+        var err = WriterJournal.DeleteJournalRow(_x, _home, JournalId);
+        _closed = err == null;
+        return err;
+    }
 }

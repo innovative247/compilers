@@ -186,8 +186,9 @@ public class Runner
     {
         using var conn = new AseConnection(BuildConnectionString(_opts.Database));
         conn.Open();
-        WriterSweep.Sweep(new AseSqlExec(conn, _opts.TimeoutSeconds), new AseSqlExec(conn, restoreTimeoutSeconds),
-                          _opts.Database, Console.Error.WriteLine);
+        var x = new AseSqlExec(conn, _opts.TimeoutSeconds);
+        WriterSweep.Sweep(x, new AseSqlExec(conn, restoreTimeoutSeconds), _opts.Database, Console.Error.WriteLine,
+                          ScratchProc.SweepDropper(x, _opts.Database));
     }
 
     /// <summary>Null (not empty) for non-writers so their TestCase is unchanged.</summary>
