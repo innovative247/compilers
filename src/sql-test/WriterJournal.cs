@@ -221,22 +221,25 @@ internal static class WriterJournal
 
     internal static string Lit(string s) => "'" + s.Replace("'", "''") + "'";
 
+    // ASE resolves create table at batch compile, so the DDL runs via exec() to let the guard skip it.
     internal static void EnsureTables(ISqlExec x, string home)
     {
-        x.Exec($@"if object_id('{home}..{JournalTable}') is null
-create table {home}..{JournalTable} (
+        x.Exec($"if object_id('{home}..{JournalTable}') is null exec({Lit(JournalDdl(home))})");
+        x.Exec($"if object_id('{home}..{ItemTable}') is null exec({Lit(ItemDdl(home))})");
+    }
+
+    private static string JournalDdl(string home) => $@"create table {home}..{JournalTable} (
   journal_id numeric(18,0) identity,
   spid int not null, kpid int not null,
   login varchar(30) not null, hostname varchar(30) null,
   started datetime not null, test varchar(255) not null,
-  state varchar(10) not null) lock datarows");
-        x.Exec($@"if object_id('{home}..{ItemTable}') is null
-create table {home}..{ItemTable} (
+  state varchar(10) not null) lock datarows";
+
+    private static string ItemDdl(string home) => $@"create table {home}..{ItemTable} (
   journal_id numeric(18,0) not null, seq int not null, kind char(1) not null,
   db varchar(30) not null, obj varchar(255) not null,
   predicate varchar(2000) not null, snapshot varchar(255) null,
-  has_identity bit default 0 not null) lock datarows");
-    }
+  has_identity bit default 0 not null) lock datarows";
 
     /// <summary>Discovery probe for one spec; control connection sits in <paramref name="home"/>.</summary>
     internal static RestoreProbe Probe(ISqlExec x, RestoreSpec s, string home)

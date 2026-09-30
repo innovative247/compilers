@@ -157,6 +157,19 @@ public class WriterJournalTests
     }
 
     [Fact]
+    public void EnsureTables_defers_create_table_through_exec()
+    {
+        var x = new FakeExec();
+        WriterJournal.EnsureTables(x, "sbntest");
+        Assert.Equal(2, x.Log.Count);
+        Assert.All(x.Log, sql =>
+        {
+            Assert.StartsWith("if object_id('sbntest..tbl_test_writer_", sql);
+            Assert.Contains(") is null exec('create table sbntest..tbl_test_writer_", sql);
+        });
+    }
+
+    [Fact]
     public void Restore_failure_rolls_back_and_keeps_journal_row()
     {
         var x = new FakeExec { FailOn = "insert sbnmaster..fe_bell" };
