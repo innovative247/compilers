@@ -2744,7 +2744,16 @@ function Test-SqlTest {
     # SRM_LOCAL (MSSQL) has no sql-test procs; these need a live Sybase profile with sbntest.
     $ids = @('sql-test.bench.list','sql-test.bench.run','sql-test.bench.out','sql-test.bench.baseline',
              'sql-test.bench.update','sql-test.budget.pass','sql-test.budget.fail','sql-test.budget.no-start',
-             'sql-test.plain.unchanged')
+             'sql-test.plain.unchanged','sql-test.writer.pass','sql-test.writer.fail','sql-test.writer.skip',
+             'sql-test.writer.error','sql-test.writer.timeout','sql-test.writer.serial','sql-test.writer.refuse.notran',
+             'sql-test.writer.refuse.table','sql-test.writer.refuse.trigger','sql-test.writer.refuse.held',
+             'sql-test.writer.sweep','sql-test.writer.bench','sql-test.writer.trancount',
+             'sql-test.writer.bench.refused','sql-test.writer.verbose',
+             'sql-test.variant.on','sql-test.variant.off','sql-test.variant.drop','sql-test.variant.refuse.unknown-opt',
+             'sql-test.variant.refuse.chain-break','sql-test.variant.refuse.tag-conflict','sql-test.variant.sweep',
+             'sql-test.variant.refuse.drift','sql-test.variant.profile',
+             'sql-test.compare.same','sql-test.compare.diff','sql-test.compare.refuse',
+             'sql-test.spike.range','sql-test.spike.refuse','sql-test.spike.refuse.user')
     if (-not (Get-Profile $SybaseProfile)) {
         foreach ($id in $ids) { Skip-Case $id "profile '$SybaseProfile' not in settings.json - needs a live Sybase profile with sbntest (-SybaseProfile)" }
         return
@@ -2844,6 +2853,35 @@ function Test-SqlTest {
             throw "expected 'budget without pro_test_measure_start'. stderr: $($r.StdErr)"
         }
     }
+    # Writer fixture: each case runs selftest_framework_* fixture procs and compares the fixture dump
+    # before and after; the rows must be identical whatever the outcome.
+    $script:WriterFixtureDeployed = $false
+    function Initialize-WriterFixture {
+        if ($script:WriterFixtureDeployed) { return }
+        $r = Invoke-Cli runsql (Join-Path $PSScriptRoot 'fixtures/sql/sql-test-writer.sql') $db $SybaseProfile '--changelog:n'
+        Assert-ExitCode $r
+        $script:WriterFixtureDeployed = $true
+    }
+    function Get-WriterDump {
+        $r = Invoke-Cli isqlline 'sbntest..pro_test_writer_fixture_dump' $db $SybaseProfile
+        Assert-ExitCode $r
+        "$($r.StdOut)`n$($r.StdErr)"
+    }
+    # Returns the sql-test result; throws when the fixture rows changed.
+    function Invoke-WriterCase([string]$Proc, [string[]]$Extra = @('--timeout', '30')) {
+        Initialize-WriterFixture
+        $before = Get-WriterDump
+        $r = Invoke-Cli sql-test $db $SybaseProfile '--pattern' ($Proc -replace '_', '\_') @Extra
+        $after = Get-WriterDump
+        if ($after -ne $before) { throw "fixture rows changed by $Proc.`nbefore: $before`nafter: $after`nstderr: $($r.StdErr)" }
+        $r
+    }
+    function Assert-WriterOutcome($r, [string]$Outcome, [string]$Proc, [string]$Needle) {
+        if ($r.StdErr -notmatch "(?m)^\s+$Outcome\s+$Proc\b") { throw "expected $Proc to $Outcome. stderr: $($r.StdErr)" }
+        if ($Needle -and $r.StdErr -notmatch [regex]::Escape($Needle)) { throw "expected '$Needle'. stderr: $($r.StdErr)" }
+        if ($r.StdErr -match 'restore failed:') { throw "restore failed. stderr: $($r.StdErr)" }
+    }
+
     Test-Case 'sql-test.plain.unchanged' {
         # Tests without a budget must look as they did before bench mode, even with --verbose:
         # no table stats and no @sql-test: markers. --exclude drops the one budgeted test.
@@ -2855,6 +2893,558 @@ function Test-SqlTest {
         }
         foreach ($needle in @('Table:', 'Total writes for this command', '@sql-test:')) {
             if ($combined -match [regex]::Escape($needle)) { throw "plain run leaked '$needle'. output: $combined" }
+        }
+        # A no-tran test with a teardown and no @restore is not a writer: no journal, no restore.
+        $r = Invoke-WriterCase 'selftest_framework_notran_%' @('--timeout', '30', '--verbose')
+        Assert-ExitCode $r
+        Assert-WriterOutcome $r 'PASS' 'selftest_framework_notran_plain'
+        $combined = "$($r.StdOut)`n$($r.StdErr)"
+        if ($combined -notmatch '(?m)^1 tests \| 1 passed \|') { throw "expected one no-tran test (teardown not counted). output: $combined" }
+        if ($combined -match 'restore|journal|snapshot') { throw "no-tran run leaked writer output. output: $combined" }
+    }
+
+    Test-Case 'sql-test.writer.pass' {
+        $r = Invoke-WriterCase 'selftest_framework_writer_pass'
+        Assert-ExitCode $r
+        Assert-WriterOutcome $r 'PASS' 'selftest_framework_writer_pass'
+        if ((Get-WriterDump) -notmatch 'writer-journal-rows: 0\b') { throw "writer journal not empty after a PASS. dump: $(Get-WriterDump)" }
+    }
+    Test-Case 'sql-test.writer.fail' {
+        $r = Invoke-WriterCase 'selftest_framework_writer_fail'
+        Assert-ExitCode $r 1
+        Assert-WriterOutcome $r 'FAIL' 'selftest_framework_writer_fail' 'FAIL: writer-fail'
+    }
+    Test-Case 'sql-test.writer.skip' {
+        $r = Invoke-WriterCase 'selftest_framework_writer_skip'
+        Assert-ExitCode $r
+        Assert-WriterOutcome $r 'SKIP' 'selftest_framework_writer_skip' 'SKIP: writer-skip'
+    }
+    Test-Case 'sql-test.writer.error' {
+        $r = Invoke-WriterCase 'selftest_framework_writer_error'
+        Assert-ExitCode $r 1
+        Assert-WriterOutcome $r 'ERROR' 'selftest_framework_writer_error' 'writer-error'
+    }
+    Test-Case 'sql-test.writer.timeout' {
+        $r = Invoke-WriterCase 'selftest_framework_writer_timeout' @('--timeout', '5')
+        Assert-ExitCode $r 1
+        Assert-WriterOutcome $r 'TIMEOUT' 'selftest_framework_writer_timeout'
+    }
+    Test-Case 'sql-test.writer.serial' {
+        # Writers leave the parallel batch and run one at a time; each must still restore.
+        $r = Invoke-WriterCase 'selftest_framework_writer_%' @('--timeout', '5', '--parallel', '4')
+        Assert-ExitCode $r 1
+        Assert-WriterOutcome $r 'PASS' 'selftest_framework_writer_pass'
+        Assert-WriterOutcome $r 'FAIL' 'selftest_framework_writer_fail' 'FAIL: writer-fail'
+        Assert-WriterOutcome $r 'SKIP' 'selftest_framework_writer_skip' 'SKIP: writer-skip'
+        Assert-WriterOutcome $r 'TIMEOUT' 'selftest_framework_writer_timeout'
+        if ((Get-WriterDump) -notmatch 'writer-journal-rows: 0\b') { throw "writer journal not empty after --parallel 4. dump: $(Get-WriterDump)" }
+    }
+    Test-Case 'sql-test.writer.refuse.notran' {
+        $r = Invoke-WriterCase 'selftest_framework_writer_refuse_notran'
+        Assert-ExitCode $r 1
+        Assert-WriterOutcome $r 'ERROR' 'selftest_framework_writer_refuse_notran' '@restore requires @no-transaction'
+    }
+    Test-Case 'sql-test.writer.refuse.table' {
+        $r = Invoke-WriterCase 'selftest_framework_writer_refuse_table'
+        Assert-ExitCode $r 1
+        Assert-WriterOutcome $r 'ERROR' 'selftest_framework_writer_refuse_table' '@restore table not found: sbntest..tbl_test_writer_missing'
+    }
+    Test-Case 'sql-test.writer.refuse.trigger' {
+        $r = Invoke-WriterCase 'selftest_framework_writer_refuse_trigger'
+        Assert-ExitCode $r 1
+        Assert-WriterOutcome $r 'ERROR' 'selftest_framework_writer_refuse_trigger' '@restore table sbntest..tbl_test_writer_trig has trigger tri_test_writer_trig'
+    }
+
+    # Sweep cases: a runner killed mid-test leaves a journal row whose spid then disappears.
+    # Returns the victim's runner once its rows are written.
+    function Start-SweepVictim {
+        Initialize-WriterFixture
+        $exe = Join-Path $script:Bin 'sql-test.exe'
+        $script:VictimOut = [IO.Path]::GetTempFileName()
+        $script:VictimErr = [IO.Path]::GetTempFileName()
+        # --timeout above the proc's 90 s wait: a client deadline would restore and defeat the kill.
+        $p = Start-Process -FilePath $exe -NoNewWindow -PassThru `
+             -ArgumentList @($db, $SybaseProfile, '--pattern', 'selftest\_framework\_sweep\_victim', '--timeout', '150') `
+             -RedirectStandardOutput $script:VictimOut -RedirectStandardError $script:VictimErr
+        for ($i = 0; $i -lt 30; $i++) {
+            if ((Get-WriterDump) -match '\bvictim\b[\s\S]*writer-journal-live: 1\b') { return $p }
+            Start-Sleep -Seconds 1
+        }
+        $err = Get-Content $script:VictimErr -Raw -EA SilentlyContinue
+        Stop-SweepVictim $p
+        throw "victim never wrote its rows. stderr: $err"
+    }
+    # Kill, not Ctrl-C, so no restore runs; the test spid lives on until the waitfor ends.
+    function Stop-SweepVictim($p) {
+        try {
+            if (-not $p.HasExited) { $p.Kill(); $null = $p.WaitForExit(10000) }
+            for ($i = 0; $i -lt 120; $i++) {
+                if ((Get-WriterDump) -match 'writer-journal-live: 0\b') { return }
+                Start-Sleep -Seconds 1
+            }
+            throw "victim spid still live 120s after the kill. dump: $(Get-WriterDump)"
+        } finally { Remove-Item $script:VictimOut, $script:VictimErr -ErrorAction SilentlyContinue }
+    }
+    $victimRestored = 'writer journal row \d+ \(selftest_framework_sweep_victim, [^)]*\) restored'
+
+    Test-Case 'sql-test.writer.refuse.held' {
+        Initialize-WriterFixture
+        $clean = Get-WriterDump
+        $p = Start-SweepVictim
+        try {
+            $r = Invoke-WriterCase 'selftest_framework_writer_pass'
+            Assert-WriterOutcome $r 'ERROR' 'selftest_framework_writer_pass' 'is held by journal row'
+            if ($p.HasExited) { throw "victim finished before the held run did; its self-restore would skip the sweep check" }
+        } finally { Stop-SweepVictim $p }
+        # The next run sweeps the dead row at Discover, then runs normally.
+        $r = Invoke-Cli sql-test $db $SybaseProfile '--pattern' 'selftest\_framework\_writer\_pass' '--timeout' '30'
+        if ($r.StdErr -notmatch $victimRestored) { throw "next run did not sweep the victim row. stderr: $($r.StdErr)" }
+        Assert-WriterOutcome $r 'PASS' 'selftest_framework_writer_pass'
+        $after = Get-WriterDump
+        if ($after -ne $clean) { throw "fixture not back to clean after the sweep.`nclean: $clean`nafter: $after" }
+    }
+    Test-Case 'sql-test.writer.sweep' {
+        Initialize-WriterFixture
+        $clean = Get-WriterDump
+        Stop-SweepVictim (Start-SweepVictim)
+        # ASE ends a disconnected spid in waitfor; tracking the test spid still guards statements that outlive the disconnect.
+        $dead = ''
+        for ($i = 0; $i -lt 60; $i++) {
+            $dead = Get-WriterDump
+            if ($dead -match 'writer-journal-live: 0\b') { break }
+            Start-Sleep -Seconds 1
+        }
+        if ($dead -notmatch 'writer-journal-live: 0\b') { throw "victim spids still live after the kill. dump: $dead" }
+        if ($dead -match '\blate\b') { throw "victim's late write landed despite the kill. dump: $dead" }
+        if ($dead -notmatch 'writer-journal-rows: 1\b') { throw "expected one dead victim row. dump: $dead" }
+        $r = Invoke-Cli sql-test $db $SybaseProfile '--sweep-writer-journal'
+        Assert-ExitCode $r
+        if ($r.StdErr -notmatch $victimRestored) { throw "sweep did not restore the victim row. stderr: $($r.StdErr)" }
+        $after = Get-WriterDump
+        if ($after -match '\blate\b') { throw "late row present after the sweep. dump: $after" }
+        if ($after -notmatch 'writer-journal-rows: 0\b') { throw "journal rows remain after the sweep. dump: $after" }
+        if ($after -ne $clean) { throw "fixture not back to clean after --sweep-writer-journal.`nclean: $clean`nafter: $after" }
+    }
+
+    Test-Case 'sql-test.writer.bench' {
+        Initialize-WriterFixture
+        $before = Get-WriterDump
+        $r = Invoke-SqlTest '--bench' 'bench\_selftest\_framework\_writer\_bench' '--count' '2' '--verbose'
+        Assert-ExitCode $r
+        $combined = "$($r.StdOut)`n$($r.StdErr)"
+        if ($r.StdErr -notmatch '(?m)^\s+bench_selftest_framework_writer_bench\s+2\s+\d+ reads/op\s+\d+ phys/op\s+\d+ writes/op\s*$') {
+            throw "expected '<name>  2  <n> reads/op  <n> phys/op  <n> writes/op'. output: $combined"
+        }
+        if ($combined -match 'tbl_test_snap_') { throw "bench output names a snapshot table. output: $combined" }
+        if ($combined -match 'touched, not restored') { throw "bench reported a restored table as untouched-by-restore. output: $combined" }
+        $after = Get-WriterDump
+        if ($after -ne $before) { throw "fixture rows changed by the writer bench.`nbefore: $before`nafter: $after`nstderr: $($r.StdErr)" }
+        if ($after -notmatch 'writer-journal-rows: 0\b') { throw "writer journal not empty after the bench. dump: $after" }
+    }
+    Test-Case 'sql-test.writer.bench.refused' {
+        Initialize-WriterFixture
+        $before = Get-WriterDump
+        $r = Invoke-SqlTest '--bench' 'bench\_selftest\_framework\_writer\_refused' '--count' '2'
+        Assert-ExitCode $r 1
+        $combined = "$($r.StdOut)`n$($r.StdErr)"
+        if ($r.StdErr -notmatch "(?m)^\s+ERROR\s+bench_selftest_framework_writer_refused\b") { throw "expected ERROR. output: $combined" }
+        if ($combined -notmatch [regex]::Escape('@restore table not found: sbntest..tbl_test_writer_missing')) { throw "expected the refusal reason. output: $combined" }
+        if ($combined -match 'writer setup failed') { throw "refusal went through session setup. output: $combined" }
+        $after = Get-WriterDump
+        if ($after -ne $before) { throw "fixture rows changed by a refused bench.`nbefore: $before`nafter: $after" }
+        if ($after -notmatch 'writer-journal-rows: 0\b') { throw "refused bench left a journal row. dump: $after" }
+    }
+    Test-Case 'sql-test.writer.verbose' {
+        $r = Invoke-WriterCase 'selftest_framework_writer_pass' @('--timeout', '30', '--verbose')
+        Assert-ExitCode $r
+        Assert-WriterOutcome $r 'PASS' 'selftest_framework_writer_pass'
+        $combined = "$($r.StdOut)`n$($r.StdErr)"
+        if ($combined -match '(?m)^\s*Table:' -or $combined -match 'Total writes for this command') { throw "stat lines leaked into --verbose output. output: $combined" }
+    }
+    Test-Case 'sql-test.writer.trancount' {
+        $r = Invoke-WriterCase 'selftest_framework_writer_trancount'
+        Assert-ExitCode $r 1
+        Assert-WriterOutcome $r 'FAIL' 'selftest_framework_writer_trancount' 'transaction left open by the test (@@trancount='
+        if ((Get-WriterDump) -notmatch 'writer-journal-rows: 0\b') { throw "writer journal not empty after a trancount FAIL. dump: $(Get-WriterDump)" }
+    }
+
+    # ---- Variant cases (R7 @variant) -------------------------------------------------------------
+    # PROFILE: a variant compile requires the login to be dbo in sbntest ("scratch compile needs dbo
+    # in sbntest (run as GONZO_TEST)"). These cases deploy, run and sweep as $variantProfile, never
+    # as -SybaseProfile, whose default GONZO login (JKOLIND) is not dbo there.
+    # Sources: --source-root fixtures/sql, where css/ss/test/pro_test_variant_fx.sql holds the whole
+    # two-member chain (entry and gated callee in one file) and pro_test_variant_fx_nocall.sql the
+    # chain-break member. Option adspl is a c: line in options.def/options.101.
+    $variantProfile = 'GONZO_TEST'
+    $variantRoot    = Join-Path $PSScriptRoot 'fixtures/sql'
+    $variantIds     = $ids | Where-Object { $_ -like 'sql-test.variant.*' }
+    $variantReady   = [bool](Get-Profile $variantProfile)
+    if (-not $variantReady) {
+        foreach ($id in $variantIds) { Skip-Case $id "profile '$variantProfile' not in settings.json - variant compiles need a login that is dbo in sbntest" }
+    }
+    $script:VariantFixtureDeployed = $false
+    function Initialize-VariantFixture {
+        if ($script:VariantFixtureDeployed) { return }
+        $r = Invoke-Cli runsql (Join-Path $PSScriptRoot 'fixtures/sql/sql-test-variant.sql') $db $variantProfile '--changelog:n'
+        Assert-ExitCode $r
+        $script:VariantFixtureDeployed = $true
+    }
+    function Get-VariantDump {
+        $r = Invoke-Cli isqlline 'sbntest..pro_test_variant_dump' $db $variantProfile
+        Assert-ExitCode $r
+        "$($r.StdOut)`n$($r.StdErr)"
+    }
+    # No leftover variant proc, 'V' item or journal row for a selftest_framework_variant_* test.
+    function Assert-VariantClean([string]$When) {
+        $d = Get-VariantDump
+        foreach ($k in @('variant-procs', 'variant-journal-rows', 'variant-items')) {
+            if ($d -notmatch "$k`: 0\b") { throw "$k not 0 $When. dump: $d" }
+        }
+    }
+    # Runs one sql-test pattern as $variantProfile; the fixture must be clean before and after.
+    function Invoke-VariantCase([string]$Pattern, [string[]]$Extra = @()) {
+        Initialize-VariantFixture
+        Assert-VariantClean "before $Pattern"
+        $r = Invoke-Cli sql-test $db $variantProfile '--pattern' ($Pattern -replace '_', '\_') '--source-root' $variantRoot '--timeout' '30' @Extra
+        Assert-VariantClean "after $Pattern (stderr: $($r.StdErr))"
+        $r
+    }
+
+    if ($variantReady) {
+        Test-Case 'sql-test.variant.on' {
+            $r = Invoke-VariantCase 'selftest_framework_variant_on' @('--verbose')
+            Assert-ExitCode $r
+            Assert-WriterOutcome $r 'PASS' 'selftest_framework_variant_on'
+            # Same-file chain: both members come from the one file, each with the forced option.
+            $src = 'from css[/\\]ss[/\\]test[/\\]pro_test_variant_fx\.sql, adspl=\+'
+            foreach ($m in @('pro_test_variant_fx__on', 'pro_test_variant_fx_entry__on')) {
+                if ($r.StdErr -notmatch "sql-test: selftest_framework_variant_on: variant $m $src") { throw "no --verbose variant line for $m. stderr: $($r.StdErr)" }
+            }
+            $l = Invoke-Cli sql-test $db $variantProfile '--pattern' 'selftest\_framework\_variant\_on' '--source-root' $variantRoot '--list'
+            Assert-ExitCode $l
+            if ("$($l.StdOut)`n$($l.StdErr)" -notmatch [regex]::Escape('[variant on: pro_test_variant_fx_entry > pro_test_variant_fx]')) {
+                throw "--list does not describe the variant. output: $($l.StdOut)$($l.StdErr)"
+            }
+        }
+        Test-Case 'sql-test.variant.off' {
+            $r = Invoke-VariantCase 'selftest_framework_variant_off'
+            Assert-ExitCode $r
+            Assert-WriterOutcome $r 'PASS' 'selftest_framework_variant_off'
+        }
+        Test-Case 'sql-test.variant.drop' {
+            # Invoke-VariantCase proves no variant proc, item or journal row survives either outcome.
+            $r = Invoke-VariantCase 'selftest_framework_variant_drop_pass'
+            Assert-ExitCode $r
+            Assert-WriterOutcome $r 'PASS' 'selftest_framework_variant_drop_pass'
+            $r = Invoke-VariantCase 'selftest_framework_variant_drop_fail'
+            Assert-ExitCode $r 1
+            Assert-WriterOutcome $r 'FAIL' 'selftest_framework_variant_drop_fail' 'FAIL: variant-drop-fail after on'
+            if ($r.StdErr -match 'not dropped') { throw "variant drop reported an error. stderr: $($r.StdErr)" }
+        }
+        Test-Case 'sql-test.variant.refuse.unknown-opt' {
+            $r = Invoke-VariantCase 'selftest_framework_variant_refuse_unknown'
+            Assert-ExitCode $r 1
+            Assert-WriterOutcome $r 'ERROR' 'selftest_framework_variant_refuse_unknown' 'unknown compile option zzvnope: no c: line in the merged options'
+            if ($r.StdErr -match 'variant-refuse-unknown ran') { throw "refused test body ran. stderr: $($r.StdErr)" }
+        }
+        Test-Case 'sql-test.variant.refuse.chain-break' {
+            $r = Invoke-VariantCase 'selftest_framework_variant_refuse_chain'
+            Assert-ExitCode $r 1
+            Assert-WriterOutcome $r 'ERROR' 'selftest_framework_variant_refuse_chain' 'chain break: pro_test_variant_fx_nocall does not call pro_test_variant_fx'
+            if ($r.StdErr -match 'variant-refuse-chain ran') { throw "refused test body ran. stderr: $($r.StdErr)" }
+        }
+        Test-Case 'sql-test.variant.refuse.tag-conflict' {
+            # Alone, each side is a valid variant; discovered together, both are refused.
+            $r = Invoke-VariantCase 'selftest_framework_variant_conflict_a'
+            Assert-ExitCode $r
+            Assert-WriterOutcome $r 'PASS' 'selftest_framework_variant_conflict_a'
+            $r = Invoke-VariantCase 'selftest_framework_variant_conflict_%'
+            Assert-ExitCode $r 1
+            Assert-WriterOutcome $r 'ERROR' 'selftest_framework_variant_conflict_a' 'tag conflict: cfl differs in selftest_framework_variant_conflict_b'
+            Assert-WriterOutcome $r 'ERROR' 'selftest_framework_variant_conflict_b' 'tag conflict: cfl differs in selftest_framework_variant_conflict_a'
+        }
+
+        # Sweep: a runner killed mid-test leaves a scratch-only journal row with 'V' items.
+        # Returns the victim's runner once both variant procs exist and its row is live.
+        function Start-VariantVictim {
+            Initialize-VariantFixture
+            $exe = Join-Path $script:Bin 'sql-test.exe'
+            $script:VariantVictimOut = [IO.Path]::GetTempFileName()
+            $script:VariantVictimErr = [IO.Path]::GetTempFileName()
+            # --timeout above the proc's 90 s wait: a client deadline would drop the variants and defeat the kill.
+            $p = Start-Process -FilePath $exe -NoNewWindow -PassThru `
+                 -ArgumentList @($db, $variantProfile, '--pattern', 'selftest\_framework\_variant\_victim', '--source-root', $variantRoot, '--timeout', '150') `
+                 -RedirectStandardOutput $script:VariantVictimOut -RedirectStandardError $script:VariantVictimErr
+            for ($i = 0; $i -lt 30; $i++) {
+                $d = Get-VariantDump
+                if ($d -match 'variant-procs: 2\b' -and $d -match 'variant-journal-live: 1\b') { return $p }
+                Start-Sleep -Seconds 1
+            }
+            $err = Get-Content $script:VariantVictimErr -Raw -EA SilentlyContinue
+            Stop-VariantVictim $p
+            throw "variant victim never compiled its chain. stderr: $err"
+        }
+        # Kill, not Ctrl-C, so no drop runs; bounded wait until neither victim spid is live.
+        function Stop-VariantVictim($p) {
+            try {
+                if (-not $p.HasExited) { $p.Kill(); $null = $p.WaitForExit(10000) }
+                for ($i = 0; $i -lt 120; $i++) {
+                    if ((Get-VariantDump) -match 'variant-journal-live: 0\b') { return }
+                    Start-Sleep -Seconds 1
+                }
+                throw "variant victim spid still live 120s after the kill. dump: $(Get-VariantDump)"
+            } finally { Remove-Item $script:VariantVictimOut, $script:VariantVictimErr -ErrorAction SilentlyContinue }
+        }
+
+        Test-Case 'sql-test.variant.sweep' {
+            Initialize-VariantFixture
+            Assert-VariantClean 'before the victim'
+            Stop-VariantVictim (Start-VariantVictim)
+            $dead = Get-VariantDump
+            if ($dead -notmatch 'variant-journal-rows: 1\b') { throw "expected one dead victim row. dump: $dead" }
+            if ($dead -notmatch 'variant-items: 2\b') { throw "expected the victim's two 'V' items. dump: $dead" }
+            if ($dead -notmatch 'variant-procs: 2\b') { throw "expected the victim's two variant procs. dump: $dead" }
+            $r = Invoke-Cli sql-test $db $variantProfile '--sweep-writer-journal'
+            Assert-ExitCode $r
+            if ($r.StdErr -notmatch 'writer journal row \d+ \(selftest_framework_variant_victim, [^)]*\) restored') {
+                throw "sweep did not clear the victim row. stderr: $($r.StdErr)"
+            }
+            if ($r.StdErr -match 'holds variant items; left for a later sweep') { throw "sweep left the variant row. stderr: $($r.StdErr)" }
+            Assert-VariantClean 'after --sweep-writer-journal'
+        }
+
+        # Test procs for the drift and --variant-profile cases; runsql is idempotent, so each case deploys them.
+        function Initialize-VariantProfileDriftFixture {
+            Initialize-VariantFixture
+            $r = Invoke-Cli runsql (Join-Path $PSScriptRoot 'fixtures/sql/sql-test-variant-profile-drift.sql') $db $variantProfile '--changelog:n'
+            Assert-ExitCode $r
+        }
+
+        Test-Case 'sql-test.variant.refuse.drift' {
+            Initialize-VariantProfileDriftFixture
+            try {
+                # Deployed text spans three syscomments rows with a blank at a row boundary.
+                $r = Invoke-Cli runsql (Join-Path $variantRoot 'css/ss/test/pro_test_variant_fx_drift.sql') $db $variantProfile '--changelog:n'
+                Assert-ExitCode $r
+                $r = Invoke-VariantCase 'selftest_framework_variant_drift_refuse'
+                Assert-ExitCode $r 1
+                Assert-WriterOutcome $r 'ERROR' 'selftest_framework_variant_drift_refuse' 'first difference at character'
+                if ($r.StdErr -notmatch 'variant source for pro_test_variant_fx_drift differs from the deployed proc \(drift[/\\]pro_test_variant_fx_drift\.sql\)') {
+                    throw "no drift refusal. stderr: $($r.StdErr)"
+                }
+                if ($r.StdErr -match 'variant-drift-refuse ran') { throw "refused test body ran. stderr: $($r.StdErr)" }
+                # Same text: proves the syscomments read keeps the blank at the row boundary.
+                $r = Invoke-VariantCase 'selftest_framework_variant_drift_same'
+                Assert-ExitCode $r
+                Assert-WriterOutcome $r 'PASS' 'selftest_framework_variant_drift_same'
+            } finally {
+                $d = Invoke-Cli runsql (Join-Path $PSScriptRoot 'fixtures/sql/sql-test-variant-drift-drop.sql') $db $variantProfile '--changelog:n'
+                Assert-ExitCode $d
+                if ("$($d.StdOut)`n$($d.StdErr)" -notmatch 'drift-procs: 0\b') { throw "drift proc not dropped. output: $($d.StdOut)$($d.StdErr)" }
+            }
+        }
+        if (-not (Get-Profile 'GONZO')) {
+            Skip-Case 'sql-test.variant.profile' 'needs the GONZO profile: its options layer is the one with sv099 on'
+        } else {
+            Test-Case 'sql-test.variant.profile' {
+                # sv099 is '+' only in the GONZO options layer; the runner's GONZO_TEST layer has it '-'.
+                Initialize-VariantProfileDriftFixture
+                $r = Invoke-VariantCase 'selftest_framework_variant_prof_on' @('--variant-profile', 'GONZO')
+                Assert-ExitCode $r
+                Assert-WriterOutcome $r 'PASS' 'selftest_framework_variant_prof_on'
+                $r = Invoke-VariantCase 'selftest_framework_variant_prof_off'
+                Assert-ExitCode $r
+                Assert-WriterOutcome $r 'PASS' 'selftest_framework_variant_prof_off'
+                $r = Invoke-VariantCase 'selftest_framework_variant_prof_on' @('--variant-profile', 'NOSUCH')
+                Assert-ExitCode $r 2
+                if ("$($r.StdOut)`n$($r.StdErr)" -notmatch 'unknown --variant-profile NOSUCH') {
+                    throw "expected the unknown-profile refusal. output: $($r.StdOut)$($r.StdErr)"
+                }
+            }
+        }
+    }
+
+    # --compare-rev: a scratch compile of the proc as of an SVN revision, so it needs the dbo login
+    # ($variantProfile) and svn/svnadmin. Each case builds a throwaway repo: r1 is
+    # css/ss/test/pro_test_compare_fx.sql, r2 is compare/pro_test_compare_fx.sql over it ('order by id desc'),
+    # and the working copy is updated back to r1 and deployed, so the current side is r1.
+    $compareIds   = $ids | Where-Object { $_ -like 'sql-test.compare.*' }
+    $compareCalls = Join-Path $PSScriptRoot 'fixtures/sql/compare-calls.json'
+    $compareSvn   = (Get-Command svn -ErrorAction SilentlyContinue) -and (Get-Command svnadmin -ErrorAction SilentlyContinue)
+    if (-not $variantReady) {
+        foreach ($id in $compareIds) { Skip-Case $id "profile '$variantProfile' not in settings.json - compare scratch compiles need a login that is dbo in sbntest" }
+    } elseif (-not $compareSvn) {
+        foreach ($id in $compareIds) { Skip-Case $id 'svn and svnadmin not on PATH - --compare-rev reads the old text with svn cat' }
+    } else {
+        # One-shot svn/svnadmin call; file:// repos never prompt, and --non-interactive refuses if one would.
+        function Invoke-CompareSvn([string]$Exe, [string[]]$SvnArgs) {
+            $ErrorActionPreference = 'Continue'
+            $out = (& $Exe @SvnArgs 2>&1 | Out-String)
+            if ($LASTEXITCODE -ne 0) { throw "$Exe $($SvnArgs -join ' ') exited $LASTEXITCODE`: $out" }
+            $out
+        }
+        function New-CompareDirName { Join-Path ([IO.Path]::GetTempPath()) "sqltest-compare-$([Guid]::NewGuid().ToString('N').Substring(0,8))" }
+        # Builds the repo under $t; $t/wc holds css/ss/test/pro_test_compare_fx.sql at r1, deployed.
+        function Initialize-CompareRepo([string]$t) {
+            $null = New-Item -ItemType Directory -Path $t
+            $repo = Join-Path $t 'repo'
+            $wc   = Join-Path $t 'wc'
+            $null = Invoke-CompareSvn svnadmin @('create', $repo)
+            # file:///C:/... on Windows, file:///private/... on macOS; blanks are escaped.
+            $url = [Uri]::new($repo).AbsoluteUri
+            $null = Invoke-CompareSvn svn @('checkout', '--non-interactive', '-q', $url, $wc)
+            $dir  = Join-Path $wc 'css/ss/test'
+            $null = New-Item -ItemType Directory -Path $dir -Force
+            $file = Join-Path $dir 'pro_test_compare_fx.sql'
+            Copy-Item (Join-Path $PSScriptRoot 'fixtures/sql/css/ss/test/pro_test_compare_fx.sql') $file
+            $null = Invoke-CompareSvn svn @('add', '--non-interactive', '-q', (Join-Path $wc 'css'))
+            $null = Invoke-CompareSvn svn @('commit', '--non-interactive', '-q', '-m', 'r1', $wc)
+            Copy-Item (Join-Path $PSScriptRoot 'fixtures/sql/compare/pro_test_compare_fx.sql') $file -Force
+            $null = Invoke-CompareSvn svn @('commit', '--non-interactive', '-q', '-m', 'r2', $wc)
+            $null = Invoke-CompareSvn svn @('update', '--non-interactive', '-q', '-r', '1', $wc)
+            $rev = (Invoke-CompareSvn svn @('info', '--non-interactive', '--show-item', 'last-changed-revision', $file)).Trim()
+            if ($rev -ne '1') { throw "working copy not at r1 after update: last-changed-revision '$rev'" }
+            $r = Invoke-Cli runsql $file $db $variantProfile '--changelog:n'
+            Assert-ExitCode $r
+        }
+        # Drops the deployed proc and the temp dir, then fails if any pro_test_compare_fx% object is left.
+        function Remove-CompareRepo([string]$Dir) {
+            $d = Invoke-Cli runsql (Join-Path $PSScriptRoot 'fixtures/sql/sql-test-compare-drop.sql') $db $variantProfile '--changelog:n'
+            if ($Dir -and (Test-Path -LiteralPath $Dir)) { Remove-Item -LiteralPath $Dir -Recurse -Force -ErrorAction SilentlyContinue }
+            Assert-ExitCode $d
+            if ("$($d.StdOut)`n$($d.StdErr)" -notmatch 'compare-objects: 0\b') { throw "pro_test_compare_fx objects left. output: $($d.StdOut)$($d.StdErr)" }
+        }
+        # No scratch proc, journal row or 'V' item for a compare-rev pro_test_compare_fx run.
+        function Assert-CompareClean([string]$When) {
+            $r = Invoke-Cli runsql (Join-Path $PSScriptRoot 'fixtures/sql/sql-test-compare-dump.sql') $db $variantProfile '--changelog:n'
+            Assert-ExitCode $r
+            $d = "$($r.StdOut)`n$($r.StdErr)"
+            foreach ($k in @('compare-scratch', 'compare-journal-rows', 'compare-items')) {
+                if ($d -notmatch "$k`: 0\b") { throw "$k not 0 $When. dump: $d" }
+            }
+        }
+        function Invoke-Compare([string]$Dir, [string]$Rev, [string]$Proc, [string]$Calls = $compareCalls) {
+            Invoke-Cli sql-test $db $variantProfile '--compare-rev' $Rev '--proc' $Proc '--calls' $Calls `
+                '--source-root' (Join-Path $Dir 'wc') '--timeout' '30'
+        }
+
+        Test-Case 'sql-test.compare.same' {
+            $t = New-CompareDirName
+            try {
+                Initialize-CompareRepo $t
+                Assert-CompareClean 'before --compare-rev 1'
+                $r = Invoke-Compare $t '1' 'pro_test_compare_fx'
+                $out = "$($r.StdOut)`n$($r.StdErr)"
+                Assert-ExitCode $r
+                foreach ($c in @('one', 'two')) {
+                    if ($out -notmatch "(?m)^compare $c`: same\s*$") { throw "expected 'compare $c`: same'. output: $out" }
+                }
+                if ($out -match 'differs at byte') { throw "r1 against r1 must not differ. output: $out" }
+                Assert-CompareClean "after --compare-rev 1 (output: $out)"
+            } finally { Remove-CompareRepo $t }
+        }
+        Test-Case 'sql-test.compare.diff' {
+            $t = New-CompareDirName
+            try {
+                Initialize-CompareRepo $t
+                Assert-CompareClean 'before --compare-rev 2'
+                $r = Invoke-Compare $t '2' 'pro_test_compare_fx'
+                $out = "$($r.StdOut)`n$($r.StdErr)"
+                Assert-ExitCode $r 1
+                # r2 orders the second result set descending, so both calls differ.
+                foreach ($c in @('one', 'two')) {
+                    if ($out -notmatch "(?m)^compare $c`: differs at byte \d+") { throw "expected 'compare $c`: differs at byte'. output: $out" }
+                }
+                Assert-CompareClean "after --compare-rev 2 (output: $out)"
+            } finally { Remove-CompareRepo $t }
+        }
+        Test-Case 'sql-test.compare.refuse' {
+            $t = New-CompareDirName
+            try {
+                Initialize-CompareRepo $t
+                Assert-CompareClean 'before the refusals'
+                $r = Invoke-Compare $t '99' 'pro_test_compare_fx'
+                $out = "$($r.StdOut)`n$($r.StdErr)"
+                Assert-ExitCode $r 2
+                if ($r.StdErr -notmatch 'svn: E\d+') { throw "expected svn's error on stderr for r99. output: $out" }
+                if ($out -match '(?m)^compare \w+:') { throw "r99 compared a call. output: $out" }
+                Assert-CompareClean "after --compare-rev 99 (output: $out)"
+
+                $r = Invoke-Compare $t '1' 'pro_test_nosuch'
+                $out = "$($r.StdOut)`n$($r.StdErr)"
+                Assert-ExitCode $r 2
+                if ($out -match '(?m)^compare \w+:') { throw "an unlocatable proc compared a call. output: $out" }
+                Assert-CompareClean "after --proc pro_test_nosuch (output: $out)"
+
+                # An unrestored writer must not run twice (ruling 10).
+                $r = Invoke-Compare $t '1' 'pro_test_compare_fx' (Join-Path $PSScriptRoot 'fixtures/sql/compare-calls-notran.json')
+                $out = "$($r.StdOut)`n$($r.StdErr)"
+                Assert-ExitCode $r 2
+                if ($out -notmatch 'call one: no_tran requires restore lines') { throw "expected the no_tran refusal. output: $out" }
+                if ($out -match '(?m)^compare \w+:') { throw "a refused no_tran call ran. output: $out" }
+                Assert-CompareClean "after the no_tran call list (output: $out)"
+            } finally { Remove-CompareRepo $t }
+        }
+    }
+
+    # --spike: measures a line range of a scratch copy of css/ss/test/pro_test_spike_fx.sql. Fixture lines:
+    # loop body range 19-20, multi-line select 23-26, grant batch 32. Needs the dbo login ($variantProfile).
+    $spikeIds   = $ids | Where-Object { $_ -like 'sql-test.spike.*' }
+    $spikeCalls = Join-Path $PSScriptRoot 'fixtures/sql/spike-calls.json'
+    if (-not $variantReady) {
+        foreach ($id in $spikeIds) { Skip-Case $id "profile '$variantProfile' not in settings.json - spike scratch compiles need a login that is dbo in sbntest" }
+    } else {
+        # No scratch proc, journal row or item for a pro_test_spike_fx run.
+        function Assert-SpikeClean([string]$When) {
+            $r = Invoke-Cli runsql (Join-Path $PSScriptRoot 'fixtures/sql/sql-test-spike-dump.sql') $db $variantProfile '--changelog:n'
+            Assert-ExitCode $r
+            $d = "$($r.StdOut)`n$($r.StdErr)"
+            foreach ($k in @('spike-procs', 'spike-journal-rows', 'spike-items')) {
+                if ($d -notmatch "$k`: 0\b") { throw "$k not 0 $When. dump: $d" }
+            }
+        }
+        function Invoke-Spike([string]$Lines, [string[]]$Extra = @()) {
+            Invoke-Cli sql-test $db $variantProfile '--spike' 'pro_test_spike_fx' '--lines' $Lines '--calls' $spikeCalls `
+                '--source-root' (Join-Path $PSScriptRoot 'fixtures/sql') '--timeout' '30' @Extra
+        }
+
+        Test-Case 'sql-test.spike.range' {
+            Assert-SpikeClean 'before --spike'
+            $r = Invoke-Spike '19-20'
+            $out = "$($r.StdOut)`n$($r.StdErr)"
+            Assert-ExitCode $r 1
+            if ($out -notmatch '(?m)^spike three: .*: 3 pass') { throw "expected 3 passes for call three. output: $out" }
+            if ($out -notmatch '(?m)^\s+sysusers\s+logical') { throw "expected sysusers under call three. output: $out" }
+            if ($out -match '(?m)^\s+(sysobjects|syscolumns)\s+logical') { throw "a table outside the range was counted. output: $out" }
+            if ($out -notmatch '(?m)^spike zero: .*: range not reached') { throw "expected 'range not reached' for call zero. output: $out" }
+            Assert-SpikeClean "after --spike (output: $out)"
+        }
+        Test-Case 'sql-test.spike.refuse' {
+            Assert-SpikeClean 'before the refusals'
+            # Starts inside the multi-line select (lines 23-26): the scratch copy does not compile.
+            $r = Invoke-Spike '24-28'
+            $out = "$($r.StdOut)`n$($r.StdErr)"
+            Assert-ExitCode $r 2
+            if ($out -notmatch 'compile of') { throw "expected the compile refusal. output: $out" }
+            if ($out -match '(?m)^spike \w+:') { throw "a refused range measured a call. output: $out" }
+            Assert-SpikeClean "after the mid-select range (output: $out)"
+
+            # Line 32 is the grant batch, not the proc's own create batch.
+            $r = Invoke-Spike '32-32'
+            $out = "$($r.StdOut)`n$($r.StdErr)"
+            Assert-ExitCode $r 2
+            if ($out -notmatch 'create batch') { throw "expected the create batch refusal. output: $out" }
+            if ($out -match '(?m)^spike \w+:') { throw "a refused range measured a call. output: $out" }
+            Assert-SpikeClean "after the grant-batch range (output: $out)"
+        }
+        Test-Case 'sql-test.spike.refuse.user' {
+            Assert-SpikeClean 'before --as GONZO_MON'
+            # monitor has no user in sbntest, so --as cannot impersonate it.
+            $r = Invoke-Spike '19-20' @('--as', 'GONZO_MON')
+            $out = "$($r.StdOut)`n$($r.StdErr)"
+            Assert-ExitCode $r 2
+            if ($out -match '(?m)^spike \w+:') { throw "a refused --as measured a call. output: $out" }
+            Assert-SpikeClean "after --as GONZO_MON (output: $out)"
         }
     }
 }

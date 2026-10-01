@@ -1,3 +1,5 @@
+using AdoNetCore.AseClient;
+
 namespace SqlTest;
 
 public enum Outcome { PASS, FAIL, SKIP, ERROR, TIMEOUT }
@@ -41,8 +43,25 @@ public record TestCase(
                                  // tests (deletes any rows the test created); best-effort
     int? BenchThresholdPct = null, // `-- @bench-threshold: <n>%` on a bench proc
     bool Budgeted = false,         // body calls pro_test_assert_max_reads: run with the I/O meter
-    string? Error = null           // discovery-time problem: reported as ERROR without running
-);
+    string? Error = null,          // discovery-time problem: reported as ERROR without running
+    IReadOnlyList<RestoreSpec>? Restores = null // `-- @restore:` lines; null for non-writers
+)
+{
+    /// <summary>Writer test: snapshot before the batch, restore after it on a control connection.</summary>
+    public bool IsWriter => Restores is { Count: > 0 };
+
+    /// <summary>`-- @variant:` line; the chain is compiled before the batch and dropped after it.</summary>
+    public VariantSpec? Variant { get; init; }
+
+    /// <summary>Parsed bench-shape directives; owned by sql-bench-shape.</summary>
+    public object? Shape { get; init; }
+
+    /// <summary>Runs on the test connection just before the test batch.</summary>
+    public Action<AseConnection>? BeforeBatch { get; init; }
+
+    /// <summary>Runs after the batch with the message index where the measured region ends.</summary>
+    public Action<AseConnection, int>? AfterRegion { get; init; }
+}
 
 public record CaptureSpec(
     string IntoTable,           // permanent capture table in sbntest

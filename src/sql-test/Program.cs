@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Text.RegularExpressions;
 using ibsCompiler.Configuration;
 using SqlTest;
 
@@ -23,6 +22,17 @@ catch (Exception ex)
 
 var profileMgr = new ProfileManager();
 if (!profileMgr.ValidateProfile(opts.Server)) return 2;
+// Before Resolve, which can prompt for a password, and before the banner.
+try
+{
+    Runner.PrecheckVariantProfile(profileMgr, opts.VariantProfile, opts.Server);
+    if (opts.As != null) Runner.PrecheckAsProfile(profileMgr, opts.As, opts.Server);
+}
+catch (ArgumentException ex)
+{
+    Console.Error.WriteLine($"sql-test: {ex.Message}");
+    return 2;
+}
 
 var cmdvars = new ibsCompiler.CommandVariables
 {
@@ -33,11 +43,66 @@ var cmdvars = new ibsCompiler.CommandVariables
 };
 var profile = profileMgr.Resolve(cmdvars);
 
-Console.Error.WriteLine(opts.BenchPattern == null
-    ? $"sql-test: pattern='{opts.Pattern}' db={opts.Database} profile={profile.ProfileName}"
+ResolvedProfile variantProfile;
+try { variantProfile = Runner.ResolveVariantProfile(profileMgr, opts.VariantProfile, profile); }
+catch (ArgumentException ex)
+{
+    Console.Error.WriteLine($"sql-test: {ex.Message}");
+    return 2;
+}
+
+// --as resolves with its own stored password (checked non-empty above), so Resolve never prompts; -U/-P never apply to it.
+ResolvedProfile? asProfile = opts.As == null ? null
+    : profileMgr.Resolve(new ibsCompiler.CommandVariables { Server = opts.As, Pass = profileMgr.ResolveProfile(opts.As)!.Value.Profile.Password });
+
+Console.Error.WriteLine(
+    opts.Spike != null ? $"sql-test: spike {opts.Spike} lines {opts.SpikeLines} db={opts.Database} profile={profile.ProfileName}" +
+                         (asProfile != null ? $" as={asProfile.ProfileName}" : "")
+    : opts.CompareRev != null ? $"sql-test: compare-rev r{opts.CompareRev} proc={opts.Proc} db={opts.Database} profile={profile.ProfileName}"
+    : opts.BenchPattern == null ? $"sql-test: pattern='{opts.Pattern}' db={opts.Database} profile={profile.ProfileName}"
     : $"sql-test: bench='{opts.BenchPattern}' db={opts.Database} profile={profile.ProfileName}");
 
-var runner = new Runner(profile, opts);
+var runner = new Runner(profile, opts, variantProfile);
+
+// Rows that cannot be restored are warnings, not failures: exit 2 only when the sweep could not run.
+if (opts.SweepWriterJournal)
+{
+    try { runner.SweepWriterJournal(); return 0; }
+    catch (Exception ex)
+    {
+        Console.Error.WriteLine($"sql-test: FATAL: writer journal sweep could not run: {ex.Message}");
+        return 2;
+    }
+}
+
+if (opts.CompareRev != null)
+{
+    try
+    {
+        return runner.CompareRev(new CompareRequest(opts.CompareRev, opts.Proc!, opts.Calls!, opts.ComparePrint, opts.Verbose, opts.TimeoutSeconds),
+                                 new SvnCli(), Console.Out, Console.Error);
+    }
+    catch (Exception ex)
+    {
+        Console.Error.WriteLine($"sql-test: FATAL: compare-rev failed: {ex.Message}");
+        return 2;
+    }
+}
+
+if (opts.Spike != null)
+{
+    try
+    {
+        Spike.TryParseLines(opts.SpikeLines!, out var from, out var to);
+        return runner.Spike(new SpikeRequest(opts.Spike, from, to, opts.Calls!, opts.As, opts.Verbose, opts.TimeoutSeconds),
+                            asProfile, Console.Out, Console.Error);
+    }
+    catch (Exception ex)
+    {
+        Console.Error.WriteLine($"sql-test: FATAL: spike failed: {ex.Message}");
+        return 2;
+    }
+}
 
 List<TestCase> cases;
 try
@@ -48,12 +113,6 @@ catch (Exception ex)
 {
     Console.Error.WriteLine($"sql-test: FATAL: discovery failed: {ex.Message}");
     return 2;
-}
-
-if (!string.IsNullOrEmpty(opts.Exclude))
-{
-    var rx = new Regex(opts.Exclude);
-    cases = cases.Where(c => !rx.IsMatch(c.LogicalName)).ToList();
 }
 
 // --print-capture-ddl: dump generated DDL for every capture spec and exit.
@@ -97,9 +156,9 @@ if (opts.ListOnly)
     foreach (var c in cases)
     {
         if (c.CaptureProc != null)
-            Console.WriteLine($"{c.LogicalName}  (capture: {c.CaptureProc} -> {c.Capture!.IntoTable}; assert: {c.AssertProc})");
+            Console.WriteLine($"{c.LogicalName}  (capture: {c.CaptureProc} -> {c.Capture!.IntoTable}; assert: {c.AssertProc})" + (c.Variant != null ? $"  [{c.Variant.Describe}]" : ""));
         else
-            Console.WriteLine(c.LogicalName);
+            Console.WriteLine(c.LogicalName + (c.Variant != null ? $"  [{c.Variant.Describe}]" : ""));
     }
     return 0;
 }
@@ -123,8 +182,9 @@ if (opts.Parallel <= 1)
 }
 else
 {
+    var (parallelCases, writerCases) = Runner.PartitionWriters(cases);
     using var gate = new SemaphoreSlim(opts.Parallel);
-    var tasks = cases.Select(async c =>
+    var tasks = parallelCases.Select(async c =>
     {
         await gate.WaitAsync();
         try   { return await Task.Run(() => runner.RunOne(c)); }
@@ -134,6 +194,15 @@ else
     foreach (var t in tasks)
     {
         var r = await t;
+        results.Add(r);
+        PrintResult(r, opts.Verbose);
+    }
+
+    if (writerCases.Count > 0)
+        Console.Error.WriteLine($"sql-test: running {writerCases.Count} writer test(s) serially after the parallel batch");
+    foreach (var c in writerCases)
+    {
+        var r = runner.RunOne(c);
         results.Add(r);
         PrintResult(r, opts.Verbose);
     }
@@ -171,16 +240,40 @@ static int RunBench(Runner runner, List<TestCase> cases, Options opts, ResolvedP
     var benches = new List<BenchResult>(cases.Count);
     foreach (var c in cases)
     {
+        // A writer bench journals once before the warm-up; each run keep-restores, the end finalises.
+        WriterBench? writer = null;
+        if (WriterBench.OpensSession(c))
+        {
+            writer = runner.OpenWriterBench(c, out var setupError);
+            if (writer == null)
+            {
+                results.Add(setupError!);
+                PrintResult(setupError!, opts.Verbose);
+                continue;
+            }
+        }
+        List<TestResult> ran;
+        try
+        {
+            ran = WriterBench.Drive(writer, opts.Count, _ => runner.RunOne(c, measure: true, writer),
+                                    w => Console.Error.WriteLine($"sql-test: warning: {c.LogicalName}: {w}"));
+        }
+        finally { writer?.Dispose(); }
+
         var runs = new List<IoMeasure>(opts.Count);
         TestResult? failed = null;
         double seconds = 0;
-        for (int i = 0; i <= opts.Count; i++)   // run 0 is the discarded warm-up
+        for (int i = 0; i < ran.Count; i++)
         {
-            var r = runner.RunOne(c, measure: true);
+            var r = ran[i];
             seconds += r.DurationSeconds;
             if (r.Outcome != Outcome.PASS) { failed = r with { Io = null, MaxReads = null }; break; }
             if (i > 0) runs.Add(r.Io!);
         }
+        if (opts.Verbose && c.IsWriter)
+            foreach (var t in WriterJournal.TouchedNotRestored(
+                         ran.Where(r => r.Io != null).SelectMany(r => r.Io!.Tables).Select(t => t.Table), c.Restores!))
+                Console.Error.WriteLine($"sql-test: {c.LogicalName}: {WriterJournal.TouchedLine(t)}");
         if (failed != null)
         {
             results.Add(failed);

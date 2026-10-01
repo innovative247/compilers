@@ -20,6 +20,16 @@ public class Options
     public string? BenchOut { get; set; }
     public string? BenchBaseline { get; set; }
     public bool BenchUpdateBaseline { get; set; }
+    public bool SweepWriterJournal { get; set; }
+    public string? SourceRoot { get; set; }
+    public string? VariantProfile { get; set; }
+    public string? CompareRev { get; set; }
+    public string? Proc { get; set; }
+    public string? Calls { get; set; }
+    public bool ComparePrint { get; set; }
+    public string? Spike { get; set; }
+    public string? SpikeLines { get; set; }
+    public string? As { get; set; }
 
     public const string Usage =
         "Usage: sql-test <database> <server/profile>\n" +
@@ -37,6 +47,13 @@ public class Options
         "                [--bench-out <file>] (write results as JSON)\n" +
         "                [--bench-baseline <file>] (compare against a --bench-out file; exit 1 when flagged)\n" +
         "                [--bench-update-baseline] (then merge PASS results into the --bench-baseline file; created if missing)\n" +
+        "                [--sweep-writer-journal] (restore dead runners' writer journal rows, then exit)\n" +
+        "                [--source-root <dir>] (SBN_IR tree for @variant sources; default: the profile's IR path)\n" +
+        "                [--variant-profile <name>] (options layer @variant compiles with; default: the runner's profile)\n" +
+        "                [--compare-rev <rev> --proc <name> --calls <json>] (diff each call's output at <rev> and at the working copy; runs alone)\n" +
+        "                [--compare-print]    (with --compare-rev: include print output in the comparison)\n" +
+        "                [--spike <proc> --lines <a>-<b> --calls <json>] (measure the I/O of lines a-b of <proc> per call; runs alone)\n" +
+        "                [--as <profile>]     (with --spike: run the calls as that profile's login; its stored password only)\n" +
         "                [-U user] [-P pass]";
 
     public static Options? Parse(string[] argv)
@@ -44,6 +61,8 @@ public class Options
         var opts = new Options();
         var positional = new List<string>();
         var benchOnly = new List<string>();
+        var notWithSweep = new List<string>();
+        var seen = new HashSet<string>();
 
         for (int i = 0; i < argv.Length; i++)
         {
@@ -51,22 +70,33 @@ public class Options
             string Next(string flag) =>
                 i + 1 < argv.Length ? argv[++i] : throw new ArgumentException($"{flag} requires a value");
 
+            seen.Add(a);
             switch (a)
             {
-                case "--pattern":                    opts.Pattern                 = Next(a); break;
-                case "--exclude":                    opts.Exclude                 = Next(a); break;
+                case "--pattern":                    notWithSweep.Add(a); opts.Pattern                 = Next(a); break;
+                case "--exclude":                    notWithSweep.Add(a); opts.Exclude                 = Next(a); break;
                 case "--parallel":                   opts.Parallel                = int.Parse(Next(a)); break;
                 case "--timeout":                    opts.TimeoutSeconds          = int.Parse(Next(a)); break;
-                case "--junit":                      opts.JunitPath               = Next(a); break;
-                case "--list":                       opts.ListOnly                = true; break;
-                case "--verbose":                    opts.Verbose                 = true; break;
-                case "--regenerate-capture-tables":  opts.RegenerateCaptureTables = true; break;
-                case "--print-capture-ddl":          opts.PrintCaptureDdl         = true; break;
-                case "--bench":                      opts.BenchPattern            = Next(a); break;
+                case "--junit":                      notWithSweep.Add(a); opts.JunitPath               = Next(a); break;
+                case "--list":                       notWithSweep.Add(a); opts.ListOnly                = true; break;
+                case "--verbose":                    notWithSweep.Add(a); opts.Verbose                 = true; break;
+                case "--regenerate-capture-tables":  notWithSweep.Add(a); opts.RegenerateCaptureTables = true; break;
+                case "--print-capture-ddl":          notWithSweep.Add(a); opts.PrintCaptureDdl         = true; break;
+                case "--bench":                      notWithSweep.Add(a); opts.BenchPattern            = Next(a); break;
                 case "--count":                      benchOnly.Add(a); opts.Count                   = int.Parse(Next(a)); break;
                 case "--bench-out":                  benchOnly.Add(a); opts.BenchOut                = Next(a); break;
                 case "--bench-baseline":             benchOnly.Add(a); opts.BenchBaseline           = Next(a); break;
                 case "--bench-update-baseline":      benchOnly.Add(a); opts.BenchUpdateBaseline = true; break;
+                case "--sweep-writer-journal":       opts.SweepWriterJournal      = true; break;
+                case "--source-root":                notWithSweep.Add(a); opts.SourceRoot              = Next(a); break;
+                case "--variant-profile":            notWithSweep.Add(a); opts.VariantProfile          = Next(a); break;
+                case "--compare-rev":                notWithSweep.Add(a); opts.CompareRev              = Next(a); break;
+                case "--proc":                       notWithSweep.Add(a); opts.Proc                    = Next(a); break;
+                case "--calls":                      notWithSweep.Add(a); opts.Calls                   = Next(a); break;
+                case "--compare-print":              notWithSweep.Add(a); opts.ComparePrint            = true; break;
+                case "--spike":                      notWithSweep.Add(a); opts.Spike                   = Next(a); break;
+                case "--lines":                      notWithSweep.Add(a); opts.SpikeLines              = Next(a); break;
+                case "--as":                         notWithSweep.Add(a); opts.As                      = Next(a); break;
                 case "-h":
                 case "--help":                       return null;
                 default:
@@ -87,6 +117,48 @@ public class Options
             throw new ArgumentException("--bench-out and --bench-baseline are the same file with --bench-update-baseline; use --bench-out alone for a full reset");
         if (opts.BenchUpdateBaseline && string.IsNullOrEmpty(opts.BenchBaseline))
             throw new ArgumentException("--bench-update-baseline requires --bench-baseline <file>");
+        if (opts.SweepWriterJournal && notWithSweep.Count > 0)
+            throw new ArgumentException($"--sweep-writer-journal runs alone; drop {string.Join(", ", notWithSweep.Distinct())}");
+        // Before the compare checks, so --spike with a compare flag names the conflict.
+        if (opts.As != null && !seen.Contains("--spike"))
+            throw new ArgumentException("--as requires --spike");
+        if (seen.Contains("--spike") || seen.Contains("--lines"))
+        {
+            if (!new[] { "--spike", "--lines", "--calls" }.All(seen.Contains))
+                throw new ArgumentException("--spike, --lines and --calls go together");
+            var excluded = new[] { "--compare-rev", "--proc", "--compare-print", "--pattern", "--exclude", "--bench", "--list",
+                                   "--junit", "--parallel", "--regenerate-capture-tables", "--print-capture-ddl",
+                                   "--sweep-writer-journal" }
+                .Where(seen.Contains).ToList();
+            if (excluded.Count > 0)
+                throw new ArgumentException($"--spike runs alone; drop {string.Join(", ", excluded)}");
+            if (!WriterJournal.IsIdent(opts.Spike!))
+                throw new ArgumentException($"--spike {opts.Spike}: not an identifier");
+            if (!SqlTest.Spike.TryParseLines(opts.SpikeLines!, out _, out _))
+                throw new ArgumentException($"--lines {opts.SpikeLines}: not a range <a>-<b> with 1 <= a <= b");
+        }
+        // Before the --calls check, so --proc with --calls names the compare group.
+        if (seen.Contains("--proc") || seen.Contains("--compare-rev"))
+        {
+            if (!new[] { "--compare-rev", "--proc", "--calls" }.All(seen.Contains))
+                throw new ArgumentException("--compare-rev, --proc and --calls go together");
+        }
+        if (seen.Contains("--calls") && !seen.Contains("--compare-rev") && !seen.Contains("--spike"))
+            throw new ArgumentException("--calls requires --compare-rev or --spike");
+        if (opts.ComparePrint && opts.CompareRev == null)
+            throw new ArgumentException("--compare-print requires --compare-rev");
+        if (opts.CompareRev != null)
+        {
+            if (!System.Text.RegularExpressions.Regex.IsMatch(opts.CompareRev, "^[0-9]{1,10}$"))
+                throw new ArgumentException($"--compare-rev {opts.CompareRev}: not a revision number");
+            if (!WriterJournal.IsIdent(opts.Proc!))
+                throw new ArgumentException($"--proc {opts.Proc}: not an identifier");
+            var excluded = new[] { "--pattern", "--exclude", "--bench", "--list", "--junit", "--parallel",
+                                   "--regenerate-capture-tables", "--print-capture-ddl", "--sweep-writer-journal" }
+                .Where(seen.Contains).ToList();
+            if (excluded.Count > 0)
+                throw new ArgumentException($"--compare-rev runs alone; drop {string.Join(", ", excluded)}");
+        }
         if (positional.Count < 2)
             throw new ArgumentException("missing <database> and/or <server/profile>");
         opts.Database = positional[0];

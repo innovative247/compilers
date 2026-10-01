@@ -81,4 +81,172 @@ public class RunnerTests
         var pass = new TestResult("test_x", Outcome.PASS, "", 0.1, "out");
         Assert.Same(pass, Runner.CheckUnmeteredMarker(pass, new[] { "@sql-test:measure-start", "assert-max-reads 1", "FAIL: x" }));
     }
+
+    [Fact]
+    public void ResolveWriter_no_transaction_alone_is_not_a_writer()
+    {
+        var specs = WriterJournal.ResolveWriter("-- @no-transaction\ncreate proc test_x as select 1", noTran: true, out var error);
+        Assert.Empty(specs);
+        Assert.Null(error);
+    }
+
+    [Theory]
+    [InlineData(null, false)]
+    [InlineData("create proc test_x as select 1", false)]
+    [InlineData("-- @no-transaction\ncreate proc test_x as select 1", true)]
+    public void ResolveRestores_leaves_non_writers_null(string? body, bool noTran)
+    {
+        Assert.Null(Runner.ResolveRestores(body, noTran, out var error));
+        Assert.Null(error);
+    }
+
+    [Fact]
+    public void ResolveRestores_returns_specs_for_a_writer()
+    {
+        var specs = Runner.ResolveRestores("-- @no-transaction\n-- @restore: sbntest..tbl_x where id = 1\n", true, out var error);
+        Assert.Null(error);
+        Assert.Equal(new RestoreSpec("sbntest", "tbl_x", "id = 1", false), Assert.Single(specs!));
+    }
+
+    [Fact]
+    public void ResolveRestores_refuses_restore_without_no_transaction()
+    {
+        Assert.Null(Runner.ResolveRestores("-- @restore: sbntest..tbl_x where id = 1\n", false, out var error));
+        Assert.Equal("@restore requires @no-transaction", error);
+    }
+
+    [Fact]
+    public void TestCase_without_restore_keeps_default_writer_fields()
+    {
+        var tc = new TestCase("test_x", null, "test_x", null, "pre", true, "test_x_teardown", null, false, null,
+                              Runner.ResolveRestores("-- @no-transaction", true, out _));
+        Assert.Equal(new TestCase("test_x", null, "test_x", null, "pre", true, "test_x_teardown", null, false, null), tc);
+        Assert.False(tc.IsWriter);
+        Assert.Null(tc.Shape);
+    }
+
+    [Fact]
+    public void ResolvePairRestores_refuses_restore_in_the_assert_proc()
+    {
+        var specs = Runner.ResolvePairRestores("-- @no-transaction\n", "-- @restore: sbntest..tbl_x where id = 1\n", true, out var error);
+        Assert.Null(specs);
+        Assert.Equal("@restore belongs in the _capture proc", error);
+
+        Runner.ResolvePairRestores("-- @no-transaction\n-- @restore: sbntest..tbl_x where id = 1\n", "-- @restore: bad", true, out error);
+        Assert.Equal("@restore belongs in the _capture proc", error);
+    }
+
+    [Fact]
+    public void ResolvePairRestores_reads_the_capture_proc()
+    {
+        var specs = Runner.ResolvePairRestores("-- @no-transaction\n-- @restore: sbntest..tbl_x where id = 1\n", "create proc x_assert", true, out var error);
+        Assert.Null(error);
+        Assert.Single(specs!);
+    }
+
+    private static readonly TestResult Pass = new("t", Outcome.PASS, "", 1, "");
+
+    [Fact]
+    public void WithRestore_without_error_keeps_the_result() =>
+        Assert.Same(Pass, Runner.WithRestore(Pass, null));
+
+    [Fact]
+    public void WithRestore_turns_pass_into_error() =>
+        Assert.Equal(Pass with { Outcome = Outcome.ERROR, Message = "restore failed: boom; journal row 7 kept" },
+                     Runner.WithRestore(Pass, "restore failed: boom; journal row 7 kept"));
+
+    [Fact]
+    public void WithRestore_turns_fail_into_error_keeping_the_original()
+    {
+        var r = Runner.WithRestore(Pass with { Outcome = Outcome.FAIL, Message = "FAIL: x" }, "restore failed: boom; journal row 7 kept");
+        Assert.Equal(Outcome.ERROR, r.Outcome);
+        Assert.Equal("restore failed: boom; journal row 7 kept | was FAIL: FAIL: x", r.Message);
+    }
+
+    [Fact]
+    public void PartitionWriters_moves_writers_to_the_serial_list_in_order()
+    {
+        var spec = new[] { new RestoreSpec("sbntest", "t", "1 = 1", false) };
+        var a = new TestCase("a", null, "a", null);
+        var w1 = new TestCase("w1", null, "w1", null, NoTransaction: true, Restores: spec);
+        var b = new TestCase("b", null, "b", null);
+        var w2 = new TestCase("w2", null, "w2", null, NoTransaction: true, Restores: spec, Error: "refused");
+        var (parallel, serial) = Runner.PartitionWriters(new[] { a, w1, b, w2 });
+        Assert.Equal(new[] { a, b }, parallel);
+        Assert.Equal(new[] { w1, w2 }, serial);
+    }
+
+    private const string VariantLine = "-- @variant: fe001=- as off chain x\n";
+
+    private static TestCase VariantCase(string name, string line)
+    {
+        var v = Variants.Parse(line, out var error);
+        Assert.Null(error);
+        return new TestCase(name, null, name, null) { Variant = v };
+    }
+
+    [Fact]
+    public void ResolveVariant_refuses_a_variant_under_bench()
+    {
+        Assert.Null(Runner.ResolveVariant(VariantLine, bench: true, out var error));
+        Assert.Equal(Runner.BenchVariantError, error);
+        Assert.NotNull(Runner.ResolveVariant(VariantLine, bench: false, out error));
+        Assert.Null(error);
+    }
+
+    [Fact]
+    public void ResolvePairVariant_refuses_a_variant_in_the_assert_proc()
+    {
+        Assert.Null(Runner.ResolvePairVariant("create proc x_capture", VariantLine, out var error));
+        Assert.Equal("@variant belongs in the _capture proc", error);
+
+        Assert.Null(Runner.ResolvePairVariant(VariantLine, "-- @variant-source: x = css/ss/a/pro_x.sql", out error));
+        Assert.Equal("@variant belongs in the _capture proc", error);
+
+        Assert.Equal("off", Runner.ResolvePairVariant(VariantLine, "create proc x_assert", out error)!.Tag);
+        Assert.Null(error);
+    }
+
+    [Fact]
+    public void MarkTagConflicts_errors_every_case_whose_spec_differs_for_its_tag()
+    {
+        var a = VariantCase("a", VariantLine);
+        var b = VariantCase("b", VariantLine);
+        var c = VariantCase("c", "-- @variant: fe001=+ as off chain x");
+        var d = VariantCase("d", "-- @variant: fe001=+ as on chain x");
+        var plain = new TestCase("p", null, "p", null);
+        var cases = new List<TestCase> { a, b, c, d, plain };
+        Runner.MarkTagConflicts(cases);
+        Assert.Equal("tag conflict: off differs in c", cases[0].Error);
+        Assert.Equal("tag conflict: off differs in c", cases[1].Error);
+        Assert.Equal("tag conflict: off differs in a, b", cases[2].Error);
+        Assert.Null(cases[3].Error);
+        Assert.Same(plain, cases[4]);
+        Assert.NotNull(cases[0].Variant);
+    }
+
+    [Fact]
+    public void PartitionWriters_moves_variant_tests_to_the_serial_list()
+    {
+        var a = new TestCase("a", null, "a", null);
+        var v = VariantCase("v", VariantLine);
+        var (parallel, serial) = Runner.PartitionWriters(new[] { a, v });
+        Assert.Equal(new[] { a }, parallel);
+        Assert.Equal(new[] { v }, serial);
+    }
+
+    [Fact]
+    public void PartitionWriters_without_writers_keeps_every_case_parallel()
+    {
+        var cases = new[] { new TestCase("a", null, "a", null), new TestCase("b", null, "b", null) };
+        var (parallel, serial) = Runner.PartitionWriters(cases);
+        Assert.Equal(cases, parallel);
+        Assert.Empty(serial);
+    }
+
+    [Theory]
+    [InlineData("1st", "[1st]")]
+    [InlineData("a1", "a1")]
+    public void QuoteIdent_brackets_digit_leading_names(string name, string expected) =>
+        Assert.Equal(expected, Runner.QuoteIdent(name));
 }
