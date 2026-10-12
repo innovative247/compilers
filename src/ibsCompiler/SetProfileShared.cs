@@ -531,7 +531,7 @@ namespace ibsCompiler
 
             profile.Password = entered;
             if (ConfirmYesNo("  Test the connection now?", defaultYes: true))
-                TestConnection(profile, allowCredentialRetry: false);
+                TestConnection(profile);
             return true;
         }
 

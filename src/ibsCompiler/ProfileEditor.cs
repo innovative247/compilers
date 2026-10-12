@@ -218,17 +218,21 @@ namespace ibsCompiler
         /// Edits <paramref name="profile"/> in place (caller passes a working copy) and
         /// hosts the numbered action menu. <paramref name="onTest"/> runs a named test
         /// (the --what vocabulary) against the working copy so unsaved edits are what get
-        /// tested. When <paramref name="allowCopyDelete"/> is true the menu adds Copy and
+        /// tested; it returns true when it saved Host/Port/Username/Password to disk, so
+        /// those rows are no longer dirty. When <paramref name="onSave"/> is given, Save calls
+        /// it (null = persisted, else the failure reason) and stays in the editor; otherwise Save returns
+        /// <see cref="ProfileEditorOutcome.Saved"/>. When <paramref name="allowCopyDelete"/> is true the menu adds Copy and
         /// Delete items (existing-profile edit); create/copy-into flows leave it false.
         /// Returns the chosen <see cref="ProfileEditorOutcome"/>.
         /// </summary>
         public static ProfileEditorOutcome Edit(string profileName, ProfileData profile, bool isCreate,
-            Action<ProfileData, string>? onTest,
+            Func<ProfileData, string, bool>? onTest,
             Func<string, IEnumerable<string>, string?>? validateAliases = null,
             NameHolder? nameHolder = null,
             Func<string, string?>? validateName = null,
             string? titleOverride = null,
-            bool allowCopyDelete = false)
+            bool allowCopyDelete = false,
+            Func<ProfileData, string?>? onSave = null)
         {
             // Belt-and-suspenders: never drive a ReadKey loop on a redirected console.
             // The caller already routes those to the sequential/headless paths.
@@ -516,7 +520,13 @@ namespace ibsCompiler
                 Console.ForegroundColor = ConsoleColor.DarkGray;
                 Console.WriteLine("(testing current editor values — not yet saved)");
                 Console.ForegroundColor = prevTestColor;
-                onTest!(profile, kind);
+                if (onTest!(profile, kind))
+                {
+                    snapshot.Host = profile.Host;
+                    snapshot.Port = profile.Port;
+                    snapshot.Username = profile.Username;
+                    snapshot.Password = profile.Password;
+                }
                 Console.WriteLine();
                 Console.Write("  Press any key to return to the editor...");
                 Console.ReadKey(intercept: true);
@@ -524,6 +534,21 @@ namespace ibsCompiler
                 Scaffold();
                 ClearMessage(); // idle Choice: label
                 Render();
+            }
+
+            // Save: validates, then either hands the profile to onSave and stays in the
+            // editor (returns false) or asks the caller to return Saved (returns true).
+            bool SaveRequested()
+            {
+                if (!ValidateAll()) return false;
+                if (onSave == null) return true;
+                var err = onSave(profile);
+                var ok = err == null;
+                if (ok) snapshot = JsonSerializer.Deserialize<ProfileData>(JsonSerializer.Serialize(profile))!;
+                Render();
+                if (ok) Message("Saved.", ConsoleColor.Green);
+                else Message("Save failed: " + err, ConsoleColor.Red);
+                return false;
             }
 
             // Full required-field validation, incl. unvisited rows: used by Save and by
@@ -681,8 +706,8 @@ namespace ibsCompiler
                                 switch (hit.Action)
                                 {
                                     case "save":
-                                        if (!ValidateAll()) break;
-                                        return ProfileEditorOutcome.Saved;
+                                        if (SaveRequested()) return ProfileEditorOutcome.Saved;
+                                        break;
                                     case "copy":
                                         return ProfileEditorOutcome.Copy;
                                     case "delete":
@@ -773,8 +798,8 @@ namespace ibsCompiler
 
                         case ConsoleKey.S:
                             // Save accelerator (the menu item is the documented surface).
-                            if (!ValidateAll()) break;
-                            return ProfileEditorOutcome.Saved;
+                            if (SaveRequested()) return ProfileEditorOutcome.Saved;
+                            break;
 
                         case ConsoleKey.Escape:
                         case ConsoleKey.Q:

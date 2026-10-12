@@ -213,19 +213,22 @@ namespace ibsCompiler
             }
         }
 
-        private static bool SaveSettings()
+        private static string? _lastSaveError;
+
+        private static bool SaveSettings(bool quiet = false)
         {
             try
             {
                 var options = new JsonSerializerOptions { WriteIndented = true };
                 var json = JsonSerializer.Serialize(_settings, options);
                 File.WriteAllText(_settingsPath, json);
-                PrintSuccess($"Settings saved to: {_settingsPath}");
+                if (!quiet) PrintSuccess($"Settings saved to: {_settingsPath}");
                 return true;
             }
             catch (Exception ex)
             {
-                PrintError($"Error saving settings: {ex.Message}");
+                _lastSaveError = ex.Message;
+                if (!quiet) PrintError($"Error saving settings: {ex.Message}");
                 return false;
             }
         }
@@ -489,7 +492,7 @@ namespace ibsCompiler
             var nameHolder = new ProfileEditor.NameHolder { Value = (prefilledName ?? "").ToUpperInvariant() };
             var outcome = ProfileEditor.Edit(
                 nameHolder.Value, profile, isCreate: true,
-                (p, kind) => RunNamedTest(kind, string.IsNullOrEmpty(nameHolder.Value) ? "NEW" : nameHolder.Value, p, interactive: true),
+                (p, kind) => { RunNamedTest(kind, string.IsNullOrEmpty(nameHolder.Value) ? "NEW" : nameHolder.Value, p, interactive: true); return false; },
                 ValidateAliasConflicts, nameHolder, ValidateNewProfileName);
             if (outcome == ProfileEditorOutcome.TooSmall)
             {
@@ -519,8 +522,8 @@ namespace ibsCompiler
 
                 Console.Write("\nTest connection now? (Y/n): ");
                 var test = Console.ReadLine()?.Trim().ToUpper();
-                if (test != "N")
-                    TestConnection(profile);
+                if (test != "N" && TestConnectionInteractive(profile))
+                    SaveSettings();
             }
         }
 
@@ -689,8 +692,8 @@ namespace ibsCompiler
                 // Test connection?
                 Console.Write("\nTest connection now? (Y/n): ");
                 var test = Console.ReadLine()?.Trim().ToUpper();
-                if (test != "N")
-                    TestConnection(profile);
+                if (test != "N" && TestConnectionInteractive(profile))
+                    SaveSettings();
             }
         }
         #endregion
@@ -904,18 +907,47 @@ namespace ibsCompiler
 
             // Work on a JSON clone so a cancel leaves the stored profile untouched.
             var working = JsonSerializer.Deserialize<ProfileData>(JsonSerializer.Serialize(profile))!;
+            var anySaved = false;
             var outcome = ProfileEditor.Edit(name, working, isCreate: false,
-                (p, kind) => RunNamedTest(kind, name, p, interactive: true), ValidateAliasConflicts,
-                allowCopyDelete: true);
+                (p, kind) =>
+                {
+                    var saved = RunNamedTest(kind, name, p, interactive: true, persistTo: profile);
+                    anySaved |= saved;
+                    return saved;
+                }, ValidateAliasConflicts,
+                allowCopyDelete: true,
+                onSave: w =>
+                {
+                    var backup = JsonSerializer.Deserialize<ProfileData>(JsonSerializer.Serialize(profile))!;
+                    CopyProfileInto(profile, w);
+                    if (SaveSettings(quiet: true))
+                    {
+                        anySaved = true;
+                        return null;
+                    }
+                    CopyProfileInto(profile, backup);
+                    return _lastSaveError ?? "unknown error";
+                });
+
+            void ReportUpdated()
+            {
+                PrintSuccess($"Profile '{name}' updated.");
+                DisplayProfile(name, profile);
+                if (!profile.RawMode)
+                    ibs_compiler_common.EnsureSymbolicLinks(profile.SqlSource ?? "");
+            }
+
             switch (outcome)
             {
                 case ProfileEditorOutcome.TooSmall:
                     EditProfileSequential(name, profile);
                     return;
                 case ProfileEditorOutcome.Cancelled:
-                    PrintDim("  Edit cancelled — no changes saved.");
+                    if (anySaved) ReportUpdated();
+                    else PrintDim("  Edit cancelled — no changes saved.");
                     return;
                 case ProfileEditorOutcome.Copy:
+                    if (anySaved) ReportUpdated();
                     // Copy this profile via the same full editor (name+aliases blank).
                     CopyProfileInteractive(name, profile);
                     return;
@@ -923,17 +955,8 @@ namespace ibsCompiler
                     DeleteProfile(name); // legacy type-'delete' confirmation
                     return;
                 case ProfileEditorOutcome.Exit:
+                    if (anySaved) ReportUpdated();
                     Environment.Exit(0);
-                    return;
-                case ProfileEditorOutcome.Saved:
-                    CopyProfileInto(profile, working); // profile is the live store object; mutate in place
-                    if (SaveSettings())
-                    {
-                        PrintSuccess($"Profile '{name}' updated.");
-                        DisplayProfile(name, profile);
-                        if (!profile.RawMode)
-                            ibs_compiler_common.EnsureSymbolicLinks(profile.SqlSource ?? "");
-                    }
                     return;
             }
         }
@@ -1058,7 +1081,7 @@ namespace ibsCompiler
             // the new aliases against ALL existing profiles (including the source).
             var outcome = ProfileEditor.Edit(
                 "", working, isCreate: true,
-                (p, kind) => RunNamedTest(kind, sourceName, p, interactive: true),
+                (p, kind) => { RunNamedTest(kind, sourceName, p, interactive: true); return false; },
                 ValidateAliasConflicts, nameHolder, ValidateNewProfileName,
                 titleOverride: $"Copy Profile (from {sourceName})");
             if (outcome == ProfileEditorOutcome.TooSmall)
@@ -1143,18 +1166,43 @@ namespace ibsCompiler
         /// Single dispatch point for every profile test, shared by the headless
         /// <c>--test --what</c> path and the interactive editor's [T] chooser.
         /// <paramref name="kind"/> matches the --what vocabulary; "all" runs the
-        /// full raw-aware sequence. Connection tests suppress the credential-retry
-        /// prompt so the editor never offers to save mid-edit. Runs against the
-        /// profile object it is handed — the editor passes its working copy so
-        /// unsaved edits are what get tested.
+        /// full raw-aware sequence. Runs against the profile object it is handed —
+        /// the editor passes its working copy so unsaved edits are what get tested.
+        /// Interactive connection tests loop on new connection info; changes are
+        /// copied to <paramref name="persistTo"/> and saved when it is given (the
+        /// stored profile), else left in the editor. Returns true when connection
+        /// info was saved to disk.
         /// </summary>
-        private static void RunNamedTest(string kind, string name, ProfileData profile, string? resolve = null,
-                                        bool rebuild = false, bool interactive = false)
+        private static bool RunNamedTest(string kind, string name, ProfileData profile, string? resolve = null,
+                                        bool rebuild = false, bool interactive = false, ProfileData? persistTo = null)
         {
+            var saved = false;
             switch (kind)
             {
                 case "sql-source":       TestSqlSource(profile); break;
-                case "connection":       TestConnection(profile, allowCredentialRetry: false); break;
+                case "connection":
+                    if (!interactive) { TestConnection(profile); break; }
+                    if (!TestConnectionInteractive(profile)) break;
+                    if (persistTo == null || persistTo.Platform != profile.Platform)
+                    {
+                        PrintDim("  New connection info is in the editor — choose Save to keep it.");
+                        break;
+                    }
+                    var (oldHost, oldPort, oldUser, oldPass) = (persistTo.Host, persistTo.Port, persistTo.Username, persistTo.Password);
+                    persistTo.Host = profile.Host;
+                    persistTo.Port = profile.Port;
+                    persistTo.Username = profile.Username;
+                    persistTo.Password = profile.Password;
+                    if (SaveSettings())
+                    {
+                        saved = true;
+                        PrintSuccess($"Connection info saved to profile '{name}'.");
+                    }
+                    else
+                    {
+                        (persistTo.Host, persistTo.Port, persistTo.Username, persistTo.Password) = (oldHost, oldPort, oldUser, oldPass);
+                    }
+                    break;
                 case "options":
                     if (profile.RawMode) PrintDim("  (skipped: profile is in raw mode)");
                     else TestOptions(name, profile, presetPlaceholder: resolve ?? "&users&", rebuild, interactive);
@@ -1176,7 +1224,7 @@ namespace ibsCompiler
                     {
                         Console.WriteLine();
                         WriteBright($"-- {k} --");
-                        RunNamedTest(k, name, profile, resolve, rebuild, interactive);
+                        saved |= RunNamedTest(k, name, profile, resolve, rebuild, interactive, persistTo);
                     }
                     break;
                 default:
@@ -1184,6 +1232,7 @@ namespace ibsCompiler
                     Environment.Exit(1);
                     break;
             }
+            return saved;
         }
 
         private static void TestSqlSource(ProfileData profile)
@@ -1208,7 +1257,7 @@ namespace ibsCompiler
             }
         }
 
-        private static void TestConnection(ProfileData profile, bool allowCredentialRetry = true)
+        private static bool TestConnection(ProfileData profile)
         {
             Console.Write("Testing connection... ");
             var resolved = new ResolvedProfile
@@ -1262,7 +1311,7 @@ namespace ibsCompiler
                     if (result.Returncode)
                     {
                         PrintSuccess("Connection successful!");
-                        return;
+                        return true;
                     }
                     lastOutput = result.Output;
                 }
@@ -1275,25 +1324,49 @@ namespace ibsCompiler
             PrintError("Connection failed.");
             if (!string.IsNullOrEmpty(lastOutput))
                 Console.WriteLine(lastOutput);
+            return false;
+        }
 
-            if (!allowCredentialRetry) return;
+        /// <summary>
+        /// Tests the connection, then keeps offering to change Host/Port/Username/Password
+        /// and retest until the user declines. Edits <paramref name="profile"/> in place;
+        /// returns true when any connection field differs from its value on entry.
+        /// </summary>
+        private static bool TestConnectionInteractive(ProfileData profile)
+        {
+            var host = profile.Host;
+            var port = profile.Port;
+            var user = profile.Username;
+            var pass = profile.Password;
 
-            // Offer to update credentials on failure
-            Console.Write("\nUpdate credentials? [y/N]: ");
-            var retry = Console.ReadLine()?.Trim().ToUpper();
-            if (retry != "Y") return;
+            while (true)
+            {
+                var ok = TestConnection(profile);
+                if (!ConfirmYesNo("Change connection info and test again?", defaultYes: !ok))
+                    break;
 
-            Console.Write($"  Username [{profile.Username}]: ");
-            var newUser = Console.ReadLine()?.Trim();
-            if (!string.IsNullOrEmpty(newUser)) profile.Username = newUser;
+                var newHost = ReadLinePrompt($"  Host [{profile.Host}]: ");
+                if (!string.IsNullOrEmpty(newHost)) profile.Host = newHost;
 
-            Console.Write("  Password [****]: ");
-            var newPass = ReadPassword();
-            Console.WriteLine();
-            if (!string.IsNullOrEmpty(newPass)) profile.Password = newPass;
+                while (true)
+                {
+                    var newPort = ReadLinePrompt($"  Port [{profile.Port}]: ");
+                    if (string.IsNullOrEmpty(newPort)) break;
+                    if (int.TryParse(newPort, out var p) && p > 0) { profile.Port = p; break; }
+                    PrintError("  Port must be a positive number.");
+                }
 
-            if (SaveSettings())
-                TestConnection(profile);
+                var newUser = ReadLinePrompt($"  Username [{profile.Username}]: ");
+                if (!string.IsNullOrEmpty(newUser)) profile.Username = newUser;
+
+                Console.Write("  Password [****]: ");
+                var newPass = ReadPassword();
+                Console.WriteLine();
+                if (!string.IsNullOrEmpty(newPass)) profile.Password = newPass;
+            }
+
+            return profile.Host != host || profile.Port != port
+                || profile.Username != user || profile.Password != pass;
         }
 
         private static void TestOptions(string profileName, ProfileData profile, string? presetPlaceholder = null,
