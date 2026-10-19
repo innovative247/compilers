@@ -1,0 +1,57 @@
+# Shared-profile access requests (posted by set_profile as issues titled
+# "Access request: compilers-profiles for <login>").
+#
+# A comment whose first line is "approve" or "deny" - typed on the issue or sent
+# as an email reply - from someone with admin rights on compilers-profiles:
+#   approve -> invite the issue's author to compilers-profiles (write), comment, close
+#   deny    -> comment, close
+# The requester is always the issue's author, never text from the title or body.
+#
+# Secret COMPILERS_PROFILES_ADMIN_TOKEN: fine-grained token, resource owner
+# innovative247, repository compilers-profiles only, Administration: Read and write.
+
+name: Access request
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  issues: write
+
+jobs:
+  decide:
+    if: >-
+      !github.event.issue.pull_request &&
+      github.event.issue.state == 'open' &&
+      startsWith(github.event.issue.title, 'Access request: compilers-profiles')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Approve or deny
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ADMIN_TOKEN: ${{ secrets.COMPILERS_PROFILES_ADMIN_TOKEN }}
+          ISSUE: ${{ github.event.issue.number }}
+          REQUESTER: ${{ github.event.issue.user.login }}
+          COMMENTER: ${{ github.event.comment.user.login }}
+          COMMENT: ${{ github.event.comment.body }}
+        run: |
+          set -euo pipefail
+          word="$(printf '%s\n' "$COMMENT" | sed -n '/[^[:space:]]/{p;q}' | tr -d '[:space:]*.!' | tr '[:upper:]' '[:lower:]')"
+          case "$word" in approve|deny) ;; *) echo "Not a decision: '$word'"; exit 0 ;; esac
+
+          if [ -z "${ADMIN_TOKEN:-}" ]; then
+            echo "::error::secret COMPILERS_PROFILES_ADMIN_TOKEN is not set"; exit 1
+          fi
+          perm="$(GH_TOKEN="$ADMIN_TOKEN" gh api "repos/innovative247/compilers-profiles/collaborators/$COMMENTER/permission" --jq .permission 2>/dev/null || echo none)"
+          if [ "$perm" != "admin" ]; then
+            echo "$COMMENTER is not an admin of compilers-profiles ($perm) - ignored."; exit 0
+          fi
+
+          if [ "$word" = "approve" ]; then
+            GH_TOKEN="$ADMIN_TOKEN" gh api -X PUT "repos/innovative247/compilers-profiles/collaborators/$REQUESTER" -f permission=push >/dev/null
+            gh issue comment "$ISSUE" -R "$GITHUB_REPOSITORY" --body "Access granted by @$COMMENTER. @$REQUESTER - GitHub has emailed you an invitation to innovative247/compilers-profiles; accept it, then open set_profile > Shared profiles again."
+          else
+            gh issue comment "$ISSUE" -R "$GITHUB_REPOSITORY" --body "Request declined by @$COMMENTER."
+          fi
+          gh issue close "$ISSUE" -R "$GITHUB_REPOSITORY"
