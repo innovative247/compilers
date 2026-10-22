@@ -694,6 +694,17 @@ function Test-ScriptExecution {
         $statuses = ([regex]::Matches($r.StdOut, '\(1 row affected\)')).Count
         if ($statuses -ne 2) { throw "expected both SELECT batches to run (saw $statuses row counts). stdout: $($r.StdOut)" }
     }
+    Test-Case 'runsql.shell_escape_single_bang_runsql' {
+        # One upgrade script runs its table script as `!runsql`; it is a shell escape like `!!`.
+        $inner = Join-Path $script:Scratch 'bang-inner.sql'
+        @('SELECT 7', 'go') | Set-Content $inner -Encoding ASCII
+        $sh = Join-Path $script:Scratch 'bang-single.sql'
+        @("!runsql `"$inner`" master $($script:SourceProfile) --changelog:n", 'go') | Set-Content $sh -Encoding ASCII
+        $r = Invoke-Cli runsql $sh 'master' $script:SourceProfile '--changelog:n'
+        Assert-ExitCode $r
+        if ($r.StdOut -notmatch '(?m)^Running \S*bang-inner\.sql on ') { throw "the !runsql line did not run the inner script. stdout: $($r.StdOut)" }
+        if ($r.StdOut -match 'Msg \d+') { throw "the !runsql line reached the server as SQL. stdout: $($r.StdOut)" }
+    }
     Test-Case 'runsql.shell_escape_fail' {
         # A !! command with a non-zero exit code fails the run.
         $sh = Join-Path $script:Scratch 'shellesc-fail.sql'
@@ -863,6 +874,11 @@ function Test-ScriptExecution {
                 if ($o -notmatch '\(1 row affected\)\n\(1 row affected\)\s*$') { throw "expected the script's count, then the update's. stdout: $o" }
                 $r = Invoke-Cli i_run_upgrade 'tempdb' $SybaseProfile $upg $flowScript '--changelog:n'
                 if ($r.StdOut -notmatch 'This upgrade has already been run !!! ') { throw "second run should refuse. stdout: $($r.StdOut)" }
+                # A missing script is reported before the upgrade is recorded, so a retry can run it.
+                $r = Invoke-Cli i_run_upgrade 'tempdb' $SybaseProfile "$upg.M" 'no_such_upgrade.sql' '--changelog:n'
+                if ($r.ExitCode -eq 0 -or $r.StdOut -notmatch 'no_such_upgrade\.sql not found\.') { throw "missing script should fail with 'not found'. stdout: $($r.StdOut)" }
+                $c = Invoke-Cli isqlline "`"select count(*) from &upgrades& where upgrade_no = '$upg.M'`"" 'master' $SybaseProfile
+                if ($c.StdOut -notmatch '(?m)^\s+0\s*$') { throw "a missing script recorded the upgrade. stdout: $($c.StdOut)" }
             } finally {
                 $d = Invoke-Cli isqlline "`"delete &upgrades& where upgrade_no = '$upg'`"" 'master' $SybaseProfile
                 if ($d.StdOut -notmatch '\(1 row affected\)') { throw "could not remove upgrade row $upg from $SybaseProfile. stdout: $($d.StdOut)" }
@@ -871,8 +887,8 @@ function Test-ScriptExecution {
         Test-Case 'iupgrade.bang_runsql_mock' {
             # A mock of a real upgrade script (sct_HELP_MESSAGES_bef.sql): sp_renametoold, then
             # `!!runsql tbl_x.sql &db& &sv&` recreates the table with a new column, then the old
-            # rows are copied back. The nested runsql is the one under test (first on PATH) and logs
-            # its changelog like the real thing. Afterwards the mock tables, the upgrade row and
+            # rows are copied back. The nested runsql must be the one under test even though it is
+            # not on PATH (runsql puts its own folder first), and logs its changelog like the real thing. Afterwards the mock tables, the upgrade row and
             # the changelog rows are removed, and that is checked.
             $tbl = "zz_upgmock_$PID"; $upg = "ZZ.MOCK.$PID"
             $dir = Join-Path $script:Scratch "upgmock$PID"
@@ -886,9 +902,8 @@ function Test-ScriptExecution {
               "select * from $tbl order by id", 'go', "drop table $($tbl)_old", 'go') | Set-Content $sct -Encoding ASCII
             $drop = "if exists (select * from sysobjects where name = '$tbl') drop table $tbl " +
                     "if exists (select * from sysobjects where name = '$($tbl)_old') drop table $($tbl)_old"
-            $oldPath = $env:PATH; $oldCwd = Get-Location
+            $oldCwd = Get-Location
             try {
-                $env:PATH = "$script:Bin;$oldPath"
                 Set-Location $dir
                 # (a drop and a create of one name must be separate batches on Sybase)
                 Invoke-Cli isqlline "`"$drop`"" 'sbntest' $SybaseProfile | Out-Null
@@ -903,7 +918,7 @@ function Test-ScriptExecution {
                 if ($o -notmatch "(?m)^\[sh:runsql tbl_$tbl\.sql  sbntest $SybaseProfile\]$") { throw "expected isql's [sh:] line with &db& and &sv& substituted. stdout: $o" }
                 if ($o -notmatch '(?s)\n +1 one .*\n +2 two .*\n +3 three .*\(3 rows affected\)') { throw "the old rows were not copied into the recreated table. stdout: $o" }
             } finally {
-                Set-Location $oldCwd; $env:PATH = $oldPath
+                Set-Location $oldCwd
                 Invoke-Cli isqlline "`"$drop`"" 'sbntest' $SybaseProfile | Out-Null
                 Invoke-Cli isqlline "`"delete &upgrades& where upgrade_no = '$upg'`"" 'master' $SybaseProfile | Out-Null
                 Invoke-Cli isqlline "`"delete sbnmaster..ba_gen_chg_log where n_val like '%upgmock$PID%'`"" 'master' $SybaseProfile | Out-Null

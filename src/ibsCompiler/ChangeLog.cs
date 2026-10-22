@@ -84,7 +84,9 @@ namespace ibsCompiler
                         // Its -F/-L form is logged once, on the first sequence (the caller's job).
                         var who = $"User {WhoAmI} recompiled sproc or ran sql".Replace("'", "''");
                         var seq = cmdvars.SeqLast < 1 ? "" : $"-F{cmdvars.SeqFirst} -L{cmdvars.SeqLast} ";
-                        var run = $"runsql {seq}{fullPath} {cmdvars.Database.Replace("'", "''")} {profile.ProfileName} {profile.Company}";
+                        // (fullPath is already quote-escaped)
+                        var run = $"runsql {seq}{fullPath}" +
+                                  $" {cmdvars.Database} {profile.ProfileName} {profile.Company}".Replace("'", "''");
                         var refNo = (cmdvars.RefNo ?? "").Replace("'", "''");
                         yield return seq.Length == 0
                             ? $"exec &dbpro&..ba_gen_chg_log_new '', '{who}', 'RUNSQL', '',  '{run}', '{refNo}', 'X'"

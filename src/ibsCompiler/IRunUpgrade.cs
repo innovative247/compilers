@@ -48,24 +48,30 @@ namespace ibsCompiler
                 return false;
             }
 
+            // Legacy recorded the upgrade before runsql found the script missing, so every retry
+            // was refused as already run; a missing script is reported before anything is written.
+            var script = cmdvars.Command;
+            if (!ibs_compiler_common.FindFile(ref script))
+            {
+                ibs_compiler_common.WriteLine(Path.GetFullPath(script) + " not found.", cmdvars.OutFile);
+                return false;
+            }
+
             sqlVars.Command = (isPostgres ? "insert into" : "insert") +
                 $" &upgrades& (upgrade_no,version,ix,opc,filename) values('{upgradeNo}','',0,1,'')";
             isqlline_main.Run(sqlVars, profile, executor, myOptions);
 
-            // The whole script through runsql, which logs it; legacy's runsql failed only on a
-            // missing script, and only then was the end time left unset.
-            var script = cmdvars.Command;
-            var found = ibs_compiler_common.FindFile(ref script);
+            // The whole script through runsql, which logs it. Legacy stamped the end time whenever
+            // the script was found (its runsql exited 0 even on SQL errors); the exit code reports them.
             var runVars = cmdvars;
             runVars.CommandName = "runsql";
-            new runsql_main().Run(runVars, profile, executor, true, myOptions);
-            if (!found) return false;
+            var ran = new runsql_main().Run(runVars, profile, executor, true, myOptions);
 
             sqlVars.Command = isPostgres
                 ? $"update &upgrades& set end_tm=EXTRACT(EPOCH FROM (now() - TIMESTAMP '1980-01-01'))::int where upgrade_no = '{upgradeNo}' and ix = 0 and opc = 1"
                 : $"update &upgrades& set end_tm=datediff(ss,'800101',getdate()) where upgrade_no = '{upgradeNo}' and ix = 0 and opc = 1";
             isqlline_main.Run(sqlVars, profile, executor, myOptions);
-            return true;
+            return ran;
         }
     }
 }

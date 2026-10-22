@@ -223,8 +223,9 @@ namespace ibsCompiler.Database
                 _persistentConn = OpenPersistent(database, "utf8");
                 _persistentUtf8 = true;
             }
-            catch (Exception)
+            catch (AseException ex) when (!ex.Message.Contains("Login failed", StringComparison.OrdinalIgnoreCase))
             {
+                // Only a charset refusal retries: a bad login or a timeout would just fail twice.
                 _persistentConn = OpenPersistent(database, "");
                 _persistentUtf8 = false;
             }
@@ -307,7 +308,16 @@ namespace ibsCompiler.Database
                 using var cmd = new AseCommand(batch, connection);
                 cmd.CommandTimeout = 0;
                 AseResultColumn[] meta = Array.Empty<AseResultColumn>();
+                // A throw inside the observer would leave the connection mid-command (broken for
+                // the rest of the script), so the first one is kept and reported after the batch.
+                Exception? observerFault = null;
                 cmd.ResultObserver = ev =>
+                {
+                    if (observerFault != null) return;
+                    try { Observe(ev); }
+                    catch (Exception ex) { observerFault = ex; }
+                };
+                void Observe(AseResultEvent ev)
                 {
                     switch (ev.Kind)
                     {
@@ -334,8 +344,13 @@ namespace ibsCompiler.Database
                             fmt.ComputeRow(ev.Columns.Select(c => ToIsqlColumn(c, utf8)).ToArray(), cvalues);
                             break;
                     }
-                };
+                }
                 cmd.ExecuteNonQuery();
+                if (observerFault != null)
+                {
+                    emit($"ERROR! {observerFault.Message}");
+                    return false;
+                }
                 return !_batchHadError;
             }
             catch (AseException ex)

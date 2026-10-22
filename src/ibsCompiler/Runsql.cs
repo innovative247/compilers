@@ -16,6 +16,7 @@ namespace ibsCompiler
         private static readonly Regex ExitRegex = new(@"^\s*(exit|quit)\b", RegexOptions.IgnoreCase);
         private static readonly Regex GoRegex = new(@"^\s*go\s*$",
             RegexOptions.IgnoreCase | RegexOptions.Multiline);
+        private static readonly Regex SingleBangRunsql = new(@"^!runsql\s");
 
         // keepBlank: also return batches holding only blank lines - isql -e echoes them (as "1> ")
         // though it sends nothing to the server.
@@ -45,6 +46,13 @@ namespace ibsCompiler
                 if (!inBlockComment && !(dollar?.InDollarBody ?? false) && line.StartsWith("!!"))
                 {
                     batches.Add(line);
+                    continue;
+                }
+                // One upgrade script (sct_07.84.24634_bef.sql) runs its table script as `!runsql`;
+                // the F4.8 compilers ran it, so a single-! runsql line is a shell escape too.
+                if (!inBlockComment && !(dollar?.InDollarBody ?? false) && SingleBangRunsql.IsMatch(line))
+                {
+                    batches.Add("!" + line);
                     continue;
                 }
 
@@ -131,6 +139,9 @@ namespace ibsCompiler
                     RedirectStandardError = true,
                     UseShellExecute = false,
                 };
+                // A nested `!!runsql` must run this install's runsql, not whichever is first on PATH.
+                psi.Environment["PATH"] = AppContext.BaseDirectory + Path.PathSeparator +
+                                          (Environment.GetEnvironmentVariable("PATH") ?? "");
                 if (OperatingSystem.IsWindows())
                 {
                     psi.FileName = "cmd.exe";
