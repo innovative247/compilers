@@ -11,7 +11,7 @@
       "PORT": 5000,
       "USERNAME": "sbn0",
       "PASSWORD": "*****",
-      "SQL_SOURCE": "C:\\_innovative\\_source\\current.sql",
+      "SQL_SOURCE": "C:\\_innovative\\_source\\current.sql"
     }
   }
 }

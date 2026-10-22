@@ -179,8 +179,12 @@ foreach ($rid in $tarRids) {
     $tarPath = Join-Path $binDir "compilers-net8-$rid.tar.gz"
     if (Test-Path $tarPath) { Remove-Item $tarPath }
     # WSL gives Windows a Unix tar; macOS/Linux use the native one directly.
-    if (Get-Command wsl -ErrorAction SilentlyContinue) {
-        wsl tar -czf $tarPath --exclude='./settings.json' --exclude='./shared-profiles' -C $srcDir .
+    # WSL mangles backslash paths passed on its command line, so hand tar the
+    # /mnt/... form from wslpath (fed forward slashes, which survive the hop).
+    if ($env:OS -eq 'Windows_NT' -and (Get-Command wsl -ErrorAction SilentlyContinue)) {
+        $wslTar = (wsl wslpath -a -u ($tarPath -replace '\\', '/')).Trim()
+        $wslSrc = (wsl wslpath -a -u ($srcDir -replace '\\', '/')).Trim()
+        wsl tar -czf $wslTar --exclude='./settings.json' --exclude='./shared-profiles' -C $wslSrc .
     } else {
         tar -czf $tarPath --exclude='./settings.json' --exclude='./shared-profiles' -C $srcDir .
     }
