@@ -50,7 +50,7 @@ namespace ibsCompiler
         private static void Dim(string s)
         {
             var p = Console.ForegroundColor;
-            Console.ForegroundColor = ConsoleColor.DarkGray;
+            Console.ForegroundColor = ConsoleColor.Gray;
             Console.WriteLine(s);
             Console.ForegroundColor = p;
         }
@@ -231,6 +231,7 @@ namespace ibsCompiler
 
             void RenderWindow()
             {
+                ConsoleMenu.HideCaret();
                 int w = W();
                 for (int i = 0; i < visibleRows; i++)
                 {
@@ -251,8 +252,7 @@ namespace ibsCompiler
 
             void ClearPrompt()
             {
-                ConsoleMenu.DrawChoiceBuffer(promptRow, "Choice", "");
-                Console.CursorVisible = false;
+                ConsoleMenu.DrawChoiceBuffer(promptRow, "Choice", "", showCaret: false);
             }
 
             // A resize invalidates every cached row (and the width) — rebuild the screen
@@ -265,8 +265,7 @@ namespace ibsCompiler
                 RenderWindow();
                 // Redraw whatever was typed so far; the caret stays visible exactly as
                 // it was before the resize (DrawChoiceBuffer parks it after the buffer).
-                ConsoleMenu.DrawChoiceBuffer(promptRow, "Choice", buf.ToString());
-                if (buf.Length == 0) Console.CursorVisible = false;
+                ConsoleMenu.DrawChoiceBuffer(promptRow, "Choice", buf.ToString(), showCaret: buf.Length > 0);
             }
 
             Scaffold();
@@ -411,6 +410,7 @@ namespace ibsCompiler
 
             void RenderWindow()
             {
+                ConsoleMenu.HideCaret();
                 int w = W();
                 for (int i = 0; i < visibleRows; i++)
                 {
@@ -435,14 +435,14 @@ namespace ibsCompiler
             // passes a defaultChoice.
             void ClearPrompt()
             {
-                ConsoleMenu.DrawChoiceBuffer(promptRow, "Choice", "");
-                Console.CursorVisible = false;
+                ConsoleMenu.DrawChoiceBuffer(promptRow, "Choice", "", showCaret: false);
             }
 
             void RenderBody()
             {
                 if (groups.Count == 0)
                 {
+                    ConsoleMenu.HideCaret();
                     ConsoleMenu.MoveTo(0, startRow);
                     Dim("  (no groups yet — press N to create one)");
                 }
@@ -459,8 +459,7 @@ namespace ibsCompiler
                 RenderBody();
                 // Redraw whatever was typed so far; the caret stays visible exactly as
                 // it was before the resize (DrawChoiceBuffer parks it after the buffer).
-                ConsoleMenu.DrawChoiceBuffer(promptRow, "Choice", buf.ToString());
-                if (buf.Length == 0) Console.CursorVisible = false;
+                ConsoleMenu.DrawChoiceBuffer(promptRow, "Choice", buf.ToString(), showCaret: buf.Length > 0);
             }
 
             Scaffold();
@@ -542,8 +541,7 @@ namespace ibsCompiler
 
         private static void EndPicker(int footerRow)
         {
-            Console.CursorVisible = true;
-            try { ConsoleMenu.MoveTo(0, footerRow); Console.WriteLine(); }
+            try { ConsoleMenu.ShowCaretAt(0, footerRow); Console.WriteLine(); }
             catch { }
         }
 
@@ -778,6 +776,7 @@ namespace ibsCompiler
             void RenderHeader()
             {
                 int w = W();
+                ConsoleMenu.HideCaret();
                 ConsoleMenu.MoveTo(0, headerRow);
                 var chips = "";
                 if (cmpy.HasValue) chips += $"  [cmpy={cmpy}]";
@@ -789,6 +788,7 @@ namespace ibsCompiler
 
             void RenderWindow()
             {
+                ConsoleMenu.HideCaret();
                 int w = W();
                 for (int i = 0; i < visibleRows; i++)
                 {
@@ -864,8 +864,7 @@ namespace ibsCompiler
                             if (results.Count > 0)
                             {
                                 var chosen = results[sel];
-                                Console.CursorVisible = true;
-                                ConsoleMenu.MoveTo(0, footerRow);
+                                ConsoleMenu.ShowCaretAt(0, footerRow);
                                 Console.WriteLine();
                                 var changed = DetailScreen(profile, lt, chosen);
                                 if (changed) file = MessageFileEditor.LoadFile(profile, lt.Type);
@@ -896,20 +895,23 @@ namespace ibsCompiler
         /// <summary>Prompt for cmpy/lang refinement; Enter on either keeps/clears that filter.</summary>
         private static (int?, int?) RefineCmpyLang(int promptRow, int? cmpy, int? lang)
         {
-            Console.CursorVisible = true;
+            ConsoleMenu.HideCaret();
             ConsoleMenu.MoveTo(0, promptRow);
             Console.Write(new string(' ', Math.Max(1, Console.WindowWidth - 1)));
             ConsoleMenu.MoveTo(0, promptRow);
             Console.Write($"  cmpy [{(cmpy?.ToString() ?? "any")}] (blank=any): ");
+            ConsoleMenu.ShowCaretAt(Console.CursorLeft, promptRow);
             var cs = (Console.ReadLine() ?? "").Trim();
             int? newCmpy = cmpy;
             if (cs.Length == 0) newCmpy = null;
             else if (int.TryParse(cs, out var c)) newCmpy = c;
 
+            ConsoleMenu.HideCaret();
             ConsoleMenu.MoveTo(0, promptRow);
             Console.Write(new string(' ', Math.Max(1, Console.WindowWidth - 1)));
             ConsoleMenu.MoveTo(0, promptRow);
             Console.Write($"  lang [{(lang?.ToString() ?? "any")}] (blank=any): ");
+            ConsoleMenu.ShowCaretAt(Console.CursorLeft, promptRow);
             var ls = (Console.ReadLine() ?? "").Trim();
             int? newLang = lang;
             if (ls.Length == 0) newLang = null;

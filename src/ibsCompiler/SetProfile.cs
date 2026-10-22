@@ -32,7 +32,7 @@ namespace ibsCompiler
             var argList = args.ToList();
             if (CliArgs.AnyPresent(argList,
                     "--create", "--edit", "--view", "--copy", "--delete", "--test",
-                    "--share", "--unshare", "--shared", "--fetch"))
+                    "--share", "--unshare", "--shared", "--fetch", "--shared-status"))
             {
                 return RunHeadless(argList);
             }
@@ -66,7 +66,7 @@ namespace ibsCompiler
             "--test",
             "--yes",
             "--rebuild", "--rebuild-cache",
-            "--shared", "--refresh",
+            "--shared", "--shared-status", "--refresh",
             "--accept-all", "--accept-none", "--no-password", "--dry-run",
         };
 
@@ -91,7 +91,7 @@ namespace ibsCompiler
             var prev = Console.ForegroundColor;
             Console.ForegroundColor = ConsoleColor.Cyan;
             Console.WriteLine(line);
-            Console.WriteLine($"  {text}");
+            Console.WriteLine($" {text}");
             Console.WriteLine(line);
             Console.ForegroundColor = prev;
         }
@@ -102,7 +102,7 @@ namespace ibsCompiler
             var prev = Console.ForegroundColor;
             Console.ForegroundColor = ConsoleColor.Cyan;
             Console.WriteLine(line);
-            Console.WriteLine($"  {text}");
+            Console.WriteLine($"{text}");
             Console.WriteLine(line);
             Console.ForegroundColor = prev;
         }
@@ -111,7 +111,7 @@ namespace ibsCompiler
         {
             var prev = Console.ForegroundColor;
             Console.ForegroundColor = ConsoleColor.Cyan;
-            Console.Write($"STEP {stepNum}: ");
+            ConsoleMenu.WritePrompt($"STEP {stepNum}: ");
             Console.ForegroundColor = prev;
             Console.WriteLine(text);
         }
@@ -142,26 +142,22 @@ namespace ibsCompiler
 
         private static void PrintDim(string text)
         {
-            var prev = Console.ForegroundColor;
-            Console.ForegroundColor = ConsoleColor.DarkGray;
             Console.WriteLine(text);
-            Console.ForegroundColor = prev;
         }
 
         private static void PrintMenu(int num, string text)
         {
-            var pad = num >= 10 ? " " : "  ";
             var prev = Console.ForegroundColor;
             Console.ForegroundColor = ConsoleColor.Cyan;
-            Console.Write($"{pad}{num}.");
+            Console.Write($"{num}.".PadRight(4));
             Console.ForegroundColor = prev;
-            Console.WriteLine($" {text}");
+            Console.WriteLine(text);
         }
 
         private static void PrintField(string icon, string label, string value, ConsoleColor valueColor = ConsoleColor.White)
         {
             var prev = Console.ForegroundColor;
-            Console.Write($"  {label,-13}");
+            Console.Write($"{label,-13}");
             Console.ForegroundColor = valueColor;
             Console.WriteLine(value);
             Console.ForegroundColor = prev;
@@ -240,18 +236,14 @@ namespace ibsCompiler
         {
             PrintHeader("Profile Setup Wizard");
             Console.WriteLine();
-            PrintDim("  Profiles store database connection settings used by runsql, runcreate,");
-            PrintDim("  and other compiler commands. Each profile points to a SQL source directory.");
+            PrintDim("Profiles store database connection settings used by runsql, runcreate,");
+            PrintDim("and other compiler commands. Each profile points to a SQL source directory.");
 
             while (true)
             {
                 Console.WriteLine();
                 WriteBright("Main Menu");
-                Console.Write(" ");
-                var prev = Console.ForegroundColor;
-                Console.ForegroundColor = ConsoleColor.DarkGray;
-                Console.WriteLine($"({_settings.Profiles.Count} profiles configured)");
-                Console.ForegroundColor = prev;
+                Console.WriteLine();
                 Console.WriteLine();
                 PrintMenu(1, "New profile");
                 PrintMenu(2, "Existing profile");
@@ -265,7 +257,7 @@ namespace ibsCompiler
                 string? input;
                 if (Console.IsInputRedirected || Console.IsOutputRedirected)
                 {
-                    Console.Write("\nChoose [1-5]: ");
+                    ConsoleMenu.WritePrompt("\nChoose [1-5]: ");
                     input = Console.ReadLine()?.Trim();
                     // End of piped input: leave, rather than re-printing the menu and
                     // "Invalid selection." forever against a stdin that is finished.
@@ -275,8 +267,8 @@ namespace ibsCompiler
                 {
                     Console.WriteLine();
                     // No obvious default action at the top level — force explicit entry.
-                    input = ConsoleMenu.ReadDeferredChoice();
-                    if (string.IsNullOrEmpty(input)) continue; // Esc → re-show menu
+                    // No Back here, so Esc means Exit (99).
+                    input = ConsoleMenu.ReadDeferredChoice() ?? "99";
                 }
 
                 switch (input)
@@ -324,14 +316,14 @@ namespace ibsCompiler
                 var profile = _settings.Profiles[name];
 
                 // Number + profile name
-                var numLabel = $"{i + 1,2}. ";
-                Console.Write($"  {numLabel}");
+                var numLabel = $"{i + 1}. ";
+                Console.Write($"{numLabel}");
                 WriteBright(name);
                 if (profile.Aliases?.Count > 0)
                 {
                     Console.Write("  ");
                     var prev = Console.ForegroundColor;
-                    Console.ForegroundColor = ConsoleColor.DarkGray;
+                    Console.ForegroundColor = ConsoleColor.Gray;
                     Console.Write($"(aliases: {string.Join(", ", profile.Aliases)})");
                     Console.ForegroundColor = prev;
                 }
@@ -361,14 +353,14 @@ namespace ibsCompiler
         {
             PrintWarning("No profiles configured yet.");
             Console.WriteLine();
-            Console.Write("  Run ");
+            Console.Write("Run ");
             WriteBright("set_profile");
             Console.WriteLine(" and select option 1 to create your first profile.");
         }
 
         private static void PrintListField(string label, string? value, ConsoleColor valueColor = ConsoleColor.Gray)
         {
-            Console.Write($"          {label,-13}");
+            Console.Write($"{label,-13}");
             var prev = Console.ForegroundColor;
             Console.ForegroundColor = valueColor;
             Console.WriteLine(value ?? "");
@@ -384,7 +376,7 @@ namespace ibsCompiler
                 var joined = string.Join(", ", profile.Aliases);
                 Console.Write(" ");
                 var prev = Console.ForegroundColor;
-                Console.ForegroundColor = ConsoleColor.DarkGray;
+                Console.ForegroundColor = ConsoleColor.Gray;
                 Console.Write($"(aliases: {joined})");
                 Console.ForegroundColor = prev;
             }
@@ -404,7 +396,7 @@ namespace ibsCompiler
             {
                 var sqlSource = profile.SqlSource ?? "unknown";
                 var prev2 = Console.ForegroundColor;
-                Console.Write($"  {"SQL Source:",-13}");
+                Console.Write($"{"SQL Source:",-13}");
                 Console.ForegroundColor = ConsoleColor.Cyan;
                 Console.WriteLine(sqlSource);
                 Console.ForegroundColor = prev2;
@@ -426,20 +418,20 @@ namespace ibsCompiler
             Console.WriteLine();
             PrintSubheader("Create New Profile");
             Console.WriteLine();
-            PrintDim("  A profile stores all the connection settings needed to compile SQL");
-            PrintDim("  to a specific database server. Follow the prompts below.");
+            PrintDim("A profile stores all the connection settings needed to compile SQL");
+            PrintDim("to a specific database server. Follow the prompts below.");
             Console.WriteLine();
 
             var profile = new ProfileData();
 
             // 1. Profile Name
             PrintStep(1, "Profile Name");
-            PrintDim("  Use a short, memorable name like GONZO, PROD, or SRM.");
+            PrintDim("Use a short, memorable name like GONZO, PROD, or SRM.");
             string name;
             if (prefilledName != null)
             {
                 name = prefilledName;
-                Console.WriteLine($"  Profile name: {name}");
+                Console.WriteLine($"Profile name: {name}");
             }
             else
             {
@@ -454,7 +446,7 @@ namespace ibsCompiler
         {
             while (true)
             {
-                Console.Write("  Profile name: ");
+                ConsoleMenu.WritePrompt("Profile name: ");
                 var name = Console.ReadLine()?.Trim().ToUpper() ?? "";
                 var err = ValidateNewProfileName(name);
                 if (err == null) return name;
@@ -505,7 +497,7 @@ namespace ibsCompiler
                 Environment.Exit(0);
             if (outcome != ProfileEditorOutcome.Saved)
             {
-                PrintDim("  Create cancelled — no profile saved.");
+                PrintDim("Create cancelled — no profile saved.");
                 return;
             }
 
@@ -520,7 +512,7 @@ namespace ibsCompiler
                 if (!profile.RawMode)
                     ibs_compiler_common.EnsureSymbolicLinks(profile.SqlSource ?? "");
 
-                Console.Write("\nTest connection now? (Y/n): ");
+                ConsoleMenu.WritePrompt("\nTest connection now? (Y/n): ");
                 var test = Console.ReadLine()?.Trim().ToUpper();
                 if (test != "N" && TestConnectionInteractive(profile))
                     SaveSettings();
@@ -532,40 +524,40 @@ namespace ibsCompiler
             // 2. Aliases
             Console.WriteLine();
             PrintStep(2, "Aliases (Optional)");
-            PrintDim("  Aliases allow shortcuts for this profile (e.g., 'G' for 'GONZO').");
+            PrintDim("Aliases allow shortcuts for this profile (e.g., 'G' for 'GONZO').");
             profile.Aliases = PromptAliases(name, new List<string>());
 
             // 3. Raw Mode (drives what else is asked)
             Console.WriteLine();
             PrintStep(3, "Raw Mode");
-            PrintDim("  Raw mode skips SBN-specific preprocessing (options files, changelog).");
-            PrintDim("  Use this for projects without the CSS/Setup/ directory structure.");
-            Console.Write("  Enable raw mode? [y/N]: ");
+            PrintDim("Raw mode skips SBN-specific preprocessing (options files, changelog).");
+            PrintDim("Use this for projects without the CSS/Setup/ directory structure.");
+            ConsoleMenu.WritePrompt("Enable raw mode? [y/N]: ");
             var raw = Console.ReadLine()?.Trim().ToUpper();
             profile.RawMode = raw == "Y";
 
             // 4. Platform
             Console.WriteLine();
             PrintStep(4, "Database Platform");
-            PrintDim("  Select the type of database server you are connecting to.");
+            PrintDim("Select the type of database server you are connecting to.");
             Console.WriteLine();
             var platformMenu = ibs_compiler_common.PlatformMenu;
             for (int mi = 0; mi < platformMenu.Length; mi++)
                 PrintMenu(mi + 1, ibs_compiler_common.CanonicalName(platformMenu[mi]));
             while (true)
             {
-                Console.Write($"\n  Choose [1-{platformMenu.Length}]: ");
+                ConsoleMenu.WritePrompt($"\nChoose [1-{platformMenu.Length}]: ");
                 var platform = Console.ReadLine()?.Trim();
                 if (int.TryParse(platform, out var psel) && psel >= 1 && psel <= platformMenu.Length)
                 {
                     profile.Platform = ibs_compiler_common.CanonicalName(platformMenu[psel - 1]);
                     break;
                 }
-                Console.WriteLine($"  Invalid choice. Please enter 1 through {platformMenu.Length}.");
+                Console.WriteLine($"Invalid choice. Please enter 1 through {platformMenu.Length}.");
             }
             if (profile.Platform == ibs_compiler_common.CanonicalName(SQLServerTypes.POSTGRES))
             {
-                Console.Write("  Database name [postgres]: ");
+                ConsoleMenu.WritePrompt("Database name [postgres]: ");
                 var db = Console.ReadLine()?.Trim();
                 profile.Database = string.IsNullOrEmpty(db) ? "postgres" : db;
             }
@@ -573,11 +565,11 @@ namespace ibsCompiler
             // 5. Host + Port
             Console.WriteLine();
             PrintStep(5, "Server Connection");
-            PrintDim("  Enter the hostname or IP address of your database server (do not include port).");
+            PrintDim("Enter the hostname or IP address of your database server (do not include port).");
             string host;
             while (true)
             {
-                Console.Write("  Hostname or IP: ");
+                ConsoleMenu.WritePrompt("Hostname or IP: ");
                 host = Console.ReadLine()?.Trim() ?? "";
                 if (!string.IsNullOrEmpty(host)) break;
                 PrintWarning("Server hostname is required.");
@@ -587,7 +579,7 @@ namespace ibsCompiler
             var defaultPort = ibs_compiler_common.DefaultPort(ibs_compiler_common.ParsePlatform(profile.Platform)).ToString();
             while (true)
             {
-                Console.Write($"  Port [{defaultPort}]: ");
+                ConsoleMenu.WritePrompt($"Port [{defaultPort}]: ");
                 var port = Console.ReadLine()?.Trim();
                 if (string.IsNullOrEmpty(port))
                 {
@@ -605,11 +597,11 @@ namespace ibsCompiler
             // 6. Credentials
             Console.WriteLine();
             PrintStep(6, "Database Credentials");
-            PrintDim("  Enter the username and password for the database server.");
+            PrintDim("Enter the username and password for the database server.");
             string username;
             while (true)
             {
-                Console.Write("  Username: ");
+                ConsoleMenu.WritePrompt("Username: ");
                 username = Console.ReadLine()?.Trim() ?? "";
                 if (!string.IsNullOrEmpty(username)) break;
                 PrintWarning("Username is required.");
@@ -619,7 +611,7 @@ namespace ibsCompiler
             string password;
             while (true)
             {
-                Console.Write("  Password: ");
+                ConsoleMenu.WritePrompt("Password: ");
                 password = ReadPassword();
                 Console.WriteLine();
                 if (!string.IsNullOrEmpty(password)) break;
@@ -638,19 +630,19 @@ namespace ibsCompiler
             {
                 Console.WriteLine();
                 PrintStep(7, "Company Number");
-                PrintDim("  The COMPANY number identifies your organization in the database.");
-                Console.Write("  Company [101]: ");
+                PrintDim("The COMPANY number identifies your organization in the database.");
+                ConsoleMenu.WritePrompt("Company [101]: ");
                 var company = Console.ReadLine()?.Trim();
                 profile.Company = string.IsNullOrEmpty(company) ? "101" : company;
 
                 Console.WriteLine();
                 PrintStep(8, "SQL Source Directory");
-                PrintDim("  The directory containing your SQL source files (CSS/, IBS/ folders).");
+                PrintDim("The directory containing your SQL source files (CSS/, IBS/ folders).");
                 var cwd = Directory.GetCurrentDirectory();
-                PrintDim($"  Enter '.' to use current directory: {cwd}");
+                PrintDim($"Enter '.' to use current directory: {cwd}");
                 while (true)
                 {
-                    Console.Write("\n  Path: ");
+                    ConsoleMenu.WritePrompt("\nPath: ");
                     var sqlSource = Console.ReadLine()?.Trim();
                     if (string.IsNullOrEmpty(sqlSource))
                     {
@@ -669,7 +661,7 @@ namespace ibsCompiler
                     else
                     {
                         PrintWarning($"Path does not exist: {sqlSource}");
-                        Console.Write("  Use anyway? [y/n]: ");
+                        ConsoleMenu.WritePrompt("Use anyway? [y/n]: ");
                         var useAnyway = Console.ReadLine()?.Trim().ToLower();
                         if (useAnyway != "y") continue;
                     }
@@ -690,7 +682,7 @@ namespace ibsCompiler
                     ibs_compiler_common.EnsureSymbolicLinks(profile.SqlSource ?? "");
 
                 // Test connection?
-                Console.Write("\nTest connection now? (Y/n): ");
+                ConsoleMenu.WritePrompt("\nTest connection now? (Y/n): ");
                 var test = Console.ReadLine()?.Trim().ToUpper();
                 if (test != "N" && TestConnectionInteractive(profile))
                     SaveSettings();
@@ -834,7 +826,7 @@ namespace ibsCompiler
                     var names = ListProfiles();
                     if (names.Count == 0) return;
 
-                    Console.Write($"Select [1-{names.Count}, name, or blank to cancel]: ");
+                    ConsoleMenu.WritePrompt($"Select [1-{names.Count}, name, or blank to cancel]: ");
                     input = Console.ReadLine()?.Trim();
                     if (string.IsNullOrEmpty(input)) return;
 
@@ -868,8 +860,18 @@ namespace ibsCompiler
                 PrintMenu(98, "Back");
                 PrintMenu(99, "Exit");
 
-                Console.Write("\nChoose [1-3]: ");
-                var choice = Console.ReadLine()?.Trim();
+                string? choice;
+                if (Console.IsInputRedirected || Console.IsOutputRedirected)
+                {
+                    ConsoleMenu.WritePrompt("\nChoose [1-3]: ");
+                    choice = Console.ReadLine()?.Trim();
+                }
+                else
+                {
+                    Console.WriteLine();
+                    choice = ConsoleMenu.ReadDeferredChoice();
+                    if (string.IsNullOrEmpty(choice)) return; // Esc → Back (98)
+                }
 
                 switch (choice)
                 {
@@ -905,6 +907,12 @@ namespace ibsCompiler
                 return;
             }
 
+            // Someone else's shared profile: the editor says so on its own screen, and a
+            // save that changes a shared field turns it into a plain local profile. The
+            // sequential fallback prints the same warning itself, so it is never doubled.
+            var sharedNotice = SharedFromOtherNotice(name, profile);
+            var sharedFromOther = sharedNotice != null;
+
             // Work on a JSON clone so a cancel leaves the stored profile untouched.
             var working = JsonSerializer.Deserialize<ProfileData>(JsonSerializer.Serialize(profile))!;
             var anySaved = false;
@@ -919,15 +927,21 @@ namespace ibsCompiler
                 onSave: w =>
                 {
                     var backup = JsonSerializer.Deserialize<ProfileData>(JsonSerializer.Serialize(profile))!;
+                    var detach = sharedFromOther && SharedFieldsDiffer(profile, w);
                     CopyProfileInto(profile, w);
+                    if (detach) Unlink(profile);
                     if (SaveSettings(quiet: true))
                     {
                         anySaved = true;
+                        if (detach) sharedFromOther = false;
                         return null;
                     }
                     CopyProfileInto(profile, backup);
+                    profile.SharedFrom = backup.SharedFrom;
+                    profile.SharedUpdated = backup.SharedUpdated;
                     return _lastSaveError ?? "unknown error";
-                });
+                },
+                notice: sharedNotice);
 
             void ReportUpdated()
             {
@@ -944,7 +958,7 @@ namespace ibsCompiler
                     return;
                 case ProfileEditorOutcome.Cancelled:
                     if (anySaved) ReportUpdated();
-                    else PrintDim("  Edit cancelled — no changes saved.");
+                    else PrintDim("Edit cancelled — no changes saved.");
                     return;
                 case ProfileEditorOutcome.Copy:
                     if (anySaved) ReportUpdated();
@@ -981,11 +995,15 @@ namespace ibsCompiler
         private static void EditProfileSequential(string name, ProfileData profile)
         {
             Console.WriteLine();
+            var sharedFromOther = WarnIfSharedFromOther(name, profile);
+            var before = sharedFromOther
+                ? JsonSerializer.Deserialize<ProfileData>(JsonSerializer.Serialize(profile))!
+                : null;
             PrintSubheader($"Edit Profile: {name}");
-            PrintDim("  Press Enter to keep current value.");
+            PrintDim("Press Enter to keep current value.");
             Console.WriteLine();
 
-            Console.Write($"  Aliases [{string.Join(", ", profile.Aliases ?? new List<string>())}] (enter 'clear' to remove): ");
+            Console.Write($"Aliases [{string.Join(", ", profile.Aliases ?? new List<string>())}] (enter 'clear' to remove): ");
             var aliasInput = Console.ReadLine()?.Trim();
             if (aliasInput?.ToLower() == "clear")
                 profile.Aliases = new List<string>();
@@ -993,9 +1011,9 @@ namespace ibsCompiler
                 profile.Aliases = PromptAliases(name, profile.Aliases ?? new List<string>(), aliasInput);
 
             // Raw Mode — drives what else is shown
-            PrintDim("  Raw mode skips SBN-specific preprocessing (options files, symlinks, changelog).");
+            PrintDim("Raw mode skips SBN-specific preprocessing (options files, symlinks, changelog).");
             var currentRaw = profile.RawMode ? "y" : "n";
-            Console.Write($"  Raw mode (y/N) [{currentRaw}]: ");
+            ConsoleMenu.WritePrompt($"Raw mode (y/N) [{currentRaw}]: ");
             var val = Console.ReadLine()?.Trim().ToLower();
             if (val == "y") profile.RawMode = true;
             else if (val == "n") profile.RawMode = false;
@@ -1003,24 +1021,24 @@ namespace ibsCompiler
             var editPlatformMenu = ibs_compiler_common.PlatformMenu;
             var editPlatformHint = string.Join(", ",
                 editPlatformMenu.Select((t, idx) => $"{idx + 1}={ibs_compiler_common.CanonicalName(t)}"));
-            Console.Write($"  Platform [{profile.Platform}] ({editPlatformHint}): ");
+            ConsoleMenu.WritePrompt($"Platform [{profile.Platform}] ({editPlatformHint}): ");
             val = Console.ReadLine()?.Trim();
             if (int.TryParse(val, out var esel) && esel >= 1 && esel <= editPlatformMenu.Length)
                 profile.Platform = ibs_compiler_common.CanonicalName(editPlatformMenu[esel - 1]);
 
-            Console.Write($"  Host [{profile.Host}] (do not include port): ");
+            ConsoleMenu.WritePrompt($"Host [{profile.Host}] (do not include port): ");
             val = Console.ReadLine()?.Trim();
             if (!string.IsNullOrEmpty(val)) profile.Host = val;
 
-            Console.Write($"  Port [{profile.Port}]: ");
+            ConsoleMenu.WritePrompt($"Port [{profile.Port}]: ");
             val = Console.ReadLine()?.Trim();
             if (!string.IsNullOrEmpty(val) && int.TryParse(val, out var port)) profile.Port = port;
 
-            Console.Write($"  Username [{profile.Username}]: ");
+            ConsoleMenu.WritePrompt($"Username [{profile.Username}]: ");
             val = Console.ReadLine()?.Trim();
             if (!string.IsNullOrEmpty(val)) profile.Username = val;
 
-            Console.Write("  Password [****]: ");
+            ConsoleMenu.WritePrompt("Password [****]: ");
             val = ReadPassword();
             Console.WriteLine();
             if (!string.IsNullOrEmpty(val)) profile.Password = val;
@@ -1032,22 +1050,24 @@ namespace ibsCompiler
             }
             else
             {
-                Console.Write($"  Company [{profile.Company}]: ");
+                ConsoleMenu.WritePrompt($"Company [{profile.Company}]: ");
                 val = Console.ReadLine()?.Trim();
                 if (!string.IsNullOrEmpty(val)) profile.Company = val;
 
-                Console.Write($"  SQL Source [{profile.SqlSource}]: ");
-                PrintDim($"    (Enter '.' for current directory: {Directory.GetCurrentDirectory()})");
-                Console.Write("    New value: ");
+                ConsoleMenu.WritePrompt($"SQL Source [{profile.SqlSource}]: ");
+                PrintDim($"(Enter '.' for current directory: {Directory.GetCurrentDirectory()})");
+                ConsoleMenu.WritePrompt("New value: ");
                 val = Console.ReadLine()?.Trim();
                 if (val == "." || val == "./" || val == ".\\")
                 {
                     profile.SqlSource = Directory.GetCurrentDirectory();
-                    Console.WriteLine($"    Using: {profile.SqlSource}");
+                    Console.WriteLine($"Using: {profile.SqlSource}");
                 }
                 else if (!string.IsNullOrEmpty(val))
                     profile.SqlSource = val;
             }
+
+            if (before != null && SharedFieldsDiffer(before, profile)) Unlink(profile);
 
             if (SaveSettings())
             {
@@ -1075,6 +1095,8 @@ namespace ibsCompiler
             var json = JsonSerializer.Serialize(sourceProfile);
             var working = JsonSerializer.Deserialize<ProfileData>(json)!;
             working.Aliases = new List<string>();
+            // A copy is a new local profile - only the original stays linked to its record.
+            Unlink(working);
 
             var nameHolder = new ProfileEditor.NameHolder { Value = "" };
             // profileName = "" so alias-conflict validation excludes nothing and checks
@@ -1094,7 +1116,7 @@ namespace ibsCompiler
                 Environment.Exit(0);
             if (outcome != ProfileEditorOutcome.Saved)
             {
-                PrintDim("  Copy cancelled — no profile saved.");
+                PrintDim("Copy cancelled — no profile saved.");
                 return;
             }
 
@@ -1112,7 +1134,7 @@ namespace ibsCompiler
 
         private static void CopyProfile(string sourceName, ProfileData sourceProfile)
         {
-            Console.Write("New profile name: ");
+            ConsoleMenu.WritePrompt("New profile name: ");
             var newName = Console.ReadLine()?.Trim().ToUpper();
             if (string.IsNullOrEmpty(newName) || !Regex.IsMatch(newName, @"^[A-Z0-9_]+$"))
             {
@@ -1128,12 +1150,13 @@ namespace ibsCompiler
             var json = JsonSerializer.Serialize(sourceProfile);
             var newProfile = JsonSerializer.Deserialize<ProfileData>(json)!;
             newProfile.Aliases = new List<string>();
+            Unlink(newProfile);
 
             _settings.Profiles[newName] = newProfile;
             if (SaveSettings())
             {
                 PrintSuccess($"Profile '{sourceName}' copied to '{newName}'.");
-                Console.Write("Edit the new profile? (Y/n): ");
+                ConsoleMenu.WritePrompt("Edit the new profile? (Y/n): ");
                 var edit = Console.ReadLine()?.Trim().ToUpper();
                 if (edit != "N")
                     EditProfile(newName, newProfile);
@@ -1147,7 +1170,7 @@ namespace ibsCompiler
             Console.WriteLine();
             DisplayProfile(name, _settings.Profiles[name]);
             Console.WriteLine();
-            Console.Write("Type 'delete' to confirm: ");
+            ConsoleMenu.WritePrompt("Type 'delete' to confirm: ");
             var confirm = Console.ReadLine()?.Trim().ToLower();
             if (confirm != "delete")
             {
@@ -1185,14 +1208,20 @@ namespace ibsCompiler
                     if (!TestConnectionInteractive(profile)) break;
                     if (persistTo == null || persistTo.Platform != profile.Platform)
                     {
-                        PrintDim("  New connection info is in the editor — choose Save to keep it.");
+                        PrintDim("New connection info is in the editor — choose Save to keep it.");
                         break;
                     }
                     var (oldHost, oldPort, oldUser, oldPass) = (persistTo.Host, persistTo.Port, persistTo.Username, persistTo.Password);
+                    var (oldFrom, oldUpdated) = (persistTo.SharedFrom, persistTo.SharedUpdated);
+                    // Host/port/username are shared fields: changing them on a copy of
+                    // someone else's record cuts it loose, exactly as an editor Save does.
+                    var detach = IsSharedFromOther(persistTo, out _)
+                                 && (persistTo.Host != profile.Host || persistTo.Port != profile.Port || persistTo.Username != profile.Username);
                     persistTo.Host = profile.Host;
                     persistTo.Port = profile.Port;
                     persistTo.Username = profile.Username;
                     persistTo.Password = profile.Password;
+                    if (detach) Unlink(persistTo);
                     if (SaveSettings())
                     {
                         saved = true;
@@ -1201,22 +1230,23 @@ namespace ibsCompiler
                     else
                     {
                         (persistTo.Host, persistTo.Port, persistTo.Username, persistTo.Password) = (oldHost, oldPort, oldUser, oldPass);
+                        (persistTo.SharedFrom, persistTo.SharedUpdated) = (oldFrom, oldUpdated);
                     }
                     break;
                 case "options":
-                    if (profile.RawMode) PrintDim("  (skipped: profile is in raw mode)");
+                    if (profile.RawMode) PrintDim("(skipped: profile is in raw mode)");
                     else TestOptions(name, profile, presetPlaceholder: resolve ?? "&users&", rebuild, interactive);
                     break;
                 case "table-locations":
-                    if (profile.RawMode) PrintDim("  (skipped: profile is in raw mode)");
+                    if (profile.RawMode) PrintDim("(skipped: profile is in raw mode)");
                     else TestTableLocations(name, profile, rebuild, interactive);
                     break;
                 case "changelog":
-                    if (profile.RawMode) PrintDim("  (skipped: profile is in raw mode)");
+                    if (profile.RawMode) PrintDim("(skipped: profile is in raw mode)");
                     else TestChangelog(name, profile);
                     break;
                 case "symlinks":
-                    if (profile.RawMode) PrintDim("  (skipped: profile is in raw mode)");
+                    if (profile.RawMode) PrintDim("(skipped: profile is in raw mode)");
                     else TestSymbolicLinks(profile);
                     break;
                 case "all":
@@ -1247,9 +1277,9 @@ namespace ibsCompiler
                 PrintSuccess($"SQL Source exists: {profile.SqlSource}");
                 var cssSetup = Path.Combine(profile.SqlSource, "css", "setup");
                 if (Directory.Exists(cssSetup))
-                    PrintSuccess($"  css/setup directory found: {cssSetup}");
+                    PrintSuccess($"css/setup directory found: {cssSetup}");
                 else
-                    PrintError($"  css/setup directory NOT found: {cssSetup}");
+                    PrintError($"css/setup directory NOT found: {cssSetup}");
             }
             else
             {
@@ -1345,21 +1375,21 @@ namespace ibsCompiler
                 if (!ConfirmYesNo("Change connection info and test again?", defaultYes: !ok))
                     break;
 
-                var newHost = ReadLinePrompt($"  Host [{profile.Host}]: ");
+                var newHost = ReadLinePrompt($"Host [{profile.Host}]: ");
                 if (!string.IsNullOrEmpty(newHost)) profile.Host = newHost;
 
                 while (true)
                 {
-                    var newPort = ReadLinePrompt($"  Port [{profile.Port}]: ");
+                    var newPort = ReadLinePrompt($"Port [{profile.Port}]: ");
                     if (string.IsNullOrEmpty(newPort)) break;
                     if (int.TryParse(newPort, out var p) && p > 0) { profile.Port = p; break; }
-                    PrintError("  Port must be a positive number.");
+                    PrintError("Port must be a positive number.");
                 }
 
-                var newUser = ReadLinePrompt($"  Username [{profile.Username}]: ");
+                var newUser = ReadLinePrompt($"Username [{profile.Username}]: ");
                 if (!string.IsNullOrEmpty(newUser)) profile.Username = newUser;
 
-                Console.Write("  Password [****]: ");
+                ConsoleMenu.WritePrompt("Password [****]: ");
                 var newPass = ReadPassword();
                 Console.WriteLine();
                 if (!string.IsNullOrEmpty(newPass)) profile.Password = newPass;
@@ -1400,31 +1430,31 @@ namespace ibsCompiler
             // options.{ServerType} — SQL-type defaults (optional)
             var optSql = Path.Combine(cssSetup, $"options.{serverType}");
             if (File.Exists(optSql))
-                PrintSuccess($"  options.{serverType} found ({CountLines(optSql)} lines)");
+                PrintSuccess($"options.{serverType} found ({CountLines(optSql)} lines)");
             else
-                PrintDim($"  options.{serverType} not found (optional)");
+                PrintDim($"options.{serverType} not found (optional)");
 
             // options.{company} — company-specific (required)
             var optCompany = Path.Combine(cssSetup, $"options.{company}");
             if (File.Exists(optCompany))
-                PrintSuccess($"  options.{company} found ({CountLines(optCompany)} lines)");
+                PrintSuccess($"options.{company} found ({CountLines(optCompany)} lines)");
             else
-                PrintError($"  options.{company} NOT found — this file is required");
+                PrintError($"options.{company} NOT found — this file is required");
 
             // options.{company}.{profile} — server-specific (optional)
             var optProfile = Path.Combine(cssSetup, $"options.{company}.{profileName}");
             if (File.Exists(optProfile))
-                PrintSuccess($"  options.{company}.{profileName} found ({CountLines(optProfile)} lines)");
+                PrintSuccess($"options.{company}.{profileName} found ({CountLines(optProfile)} lines)");
             else
-                PrintDim($"  options.{company}.{profileName} not found (optional)");
+                PrintDim($"options.{company}.{profileName} not found (optional)");
 
             // table_locations — required; merged into the resolved set so table
             // placeholders resolve. Its absence is why a bare &table& won't resolve.
             var tblLoc = Path.Combine(cssSetup, "table_locations");
             if (File.Exists(tblLoc))
-                PrintSuccess($"  table_locations found ({CountLines(tblLoc)} lines)");
+                PrintSuccess($"table_locations found ({CountLines(tblLoc)} lines)");
             else
-                PrintError($"  table_locations NOT found — this file is required");
+                PrintError($"table_locations NOT found — this file is required");
 
             var resolved = new ResolvedProfile
             {
@@ -1465,7 +1495,7 @@ namespace ibsCompiler
             else
             {
                 Console.WriteLine();
-                Console.Write("  Enter option or table to resolve [&users&]: ");
+                ConsoleMenu.WritePrompt("Enter option or table to resolve [&users&]: ");
                 var input = Console.ReadLine()?.Trim();
                 optionInput = string.IsNullOrEmpty(input) ? "&users&" : input;
             }
@@ -1485,9 +1515,9 @@ namespace ibsCompiler
 
             var result = myOptions.ReplaceOptions(optionInput);
             if (result == optionInput)
-                PrintWarning($"  {optionInput} could not be resolved (not found in options files)");
+                PrintWarning($"{optionInput} could not be resolved (not found in options files)");
             else
-                PrintSuccess($"  {optionInput} = {result}");
+                PrintSuccess($"{optionInput} = {result}");
         }
 
         private static int CountLines(string filePath)
@@ -1552,31 +1582,31 @@ namespace ibsCompiler
             if (File.Exists(cachePath))
             {
                 var age = (int)DateTime.Now.Subtract(new FileInfo(cachePath).CreationTime).TotalMinutes;
-                PrintSuccess($"  resolved options file: {cachePath}");
-                PrintDim($"    {CountLines(cachePath)} lines, {age} min old (rebuilt automatically after 60)");
+                PrintSuccess($"resolved options file: {cachePath}");
+                PrintDim($"{CountLines(cachePath)} lines, {age} min old (rebuilt automatically after 60)");
             }
             else
             {
-                PrintDim($"  resolved options file: {cachePath} (not built yet)");
+                PrintDim($"resolved options file: {cachePath} (not built yet)");
             }
 
             var doRebuild = rebuild;
             if (!doRebuild && interactive)
             {
-                Console.Write("  Clear and rebuild this file? [y/N]: ");
+                ConsoleMenu.WritePrompt("Clear and rebuild this file? [y/N]: ");
                 doRebuild = string.Equals(Console.ReadLine()?.Trim(), "y", StringComparison.OrdinalIgnoreCase);
             }
             if (!doRebuild) return;
 
             if (ibs_compiler_common.ClearResolvedOptions(cmdvars, profile))
-                PrintSuccess("  Cleared.");
+                PrintSuccess("Cleared.");
             else
-                PrintDim("  Nothing to clear.");
+                PrintDim("Nothing to clear.");
 
             if (new Options(cmdvars, profile, true).GenerateOptionFiles())
-                PrintSuccess($"  Rebuilt: {cachePath}");
+                PrintSuccess($"Rebuilt: {cachePath}");
             else
-                PrintError("  Rebuild failed — see the missing-file messages above.");
+                PrintError("Rebuild failed — see the missing-file messages above.");
         }
 
         private static void TestChangelog(string profileName, ProfileData profile)
@@ -1633,7 +1663,7 @@ namespace ibsCompiler
                 var chgDbArg = isPostgres ? resolved.AdminDatabase : dbpro;
 
                 // Step 1: Check if gclog12 is enabled
-                Console.Write("  Checking gclog12 option... ");
+                Console.Write("Checking gclog12 option... ");
                 var optionsTable = myOptions.ReplaceOptions("&options&");
                 var query = $"SELECT act_flg FROM {optionsTable} WHERE id = 'gclog12'";
                 var result = executor.ExecuteSql(query, chgDbArg, captureOutput: true);
@@ -1648,7 +1678,7 @@ namespace ibsCompiler
                 PrintSuccess("gclog12 is on.");
 
                 // Step 2: Check ba_gen_chg_log_new exists
-                Console.Write("  Checking ba_gen_chg_log_new... ");
+                Console.Write("Checking ba_gen_chg_log_new... ");
                 var spCheckSql = isPostgres
                     ? $"SELECT 1 WHERE to_regproc('{dbpro}.ba_gen_chg_log_new') IS NOT NULL"
                     : "SELECT 1 FROM sysobjects WHERE name = 'ba_gen_chg_log_new' AND type = 'P'";
@@ -1670,7 +1700,7 @@ namespace ibsCompiler
                 var description = $"User {osUser}: set_profile test".Replace("'", "''");
                 var cmdStr = $"{exePath}".Replace("'", "''");
 
-                Console.Write("  Inserting test entry... ");
+                Console.Write("Inserting test entry... ");
                 var insertSql = isPostgres
                     ? $"SELECT {dbpro}.ba_gen_chg_log_new('', '{description}', 'TEST', '', '{cmdStr}', '', 'X')"
                     : $"EXEC ba_gen_chg_log_new '', '{description}', 'TEST', '', '{cmdStr}', '', 'X'";
@@ -1689,7 +1719,7 @@ namespace ibsCompiler
                 if (chgLogTable != "&ba_gen_chg_log&")
                 {
                     Console.WriteLine();
-                    PrintDim("  Recent changelog entries:");
+                    PrintDim("Recent changelog entries:");
                     PrintDim("  " + new string('-', 66));
                     var recentQuery = isPostgres
                         ? $"SELECT to_char(TIMESTAMP '1980-01-01' + (tm || ' seconds')::interval, 'YYYY-MM-DD HH24:MI:SS') AS server_time, descr FROM {chgLogTable} ORDER BY tm DESC LIMIT 5"
@@ -1700,12 +1730,12 @@ namespace ibsCompiler
                         foreach (var line in recentResult.Output.Split('\n'))
                         {
                             if (!string.IsNullOrWhiteSpace(line))
-                                Console.WriteLine($"  {line}");
+                                Console.WriteLine($"{line}");
                         }
                     }
                     else
                     {
-                        PrintDim("  Could not retrieve changelog entries.");
+                        PrintDim("Could not retrieve changelog entries.");
                     }
                 }
             }
@@ -1739,9 +1769,9 @@ namespace ibsCompiler
             // created here.
             var defs = ibs_compiler_common.ShortcutDefinitionsFor(profile.SqlSource);
             if (ibs_compiler_common.ParseCreateLinks(profile.SqlSource).Count > 0)
-                PrintDim($"  Source: {Path.Combine(profile.SqlSource, "create_links.sh")} ({defs.Count} entries)");
+                PrintDim($"Source: {Path.Combine(profile.SqlSource, "create_links.sh")} ({defs.Count} entries)");
             else
-                PrintDim($"  Source: built-in shortcut list ({defs.Count} entries; no create_links.sh in SQL root)");
+                PrintDim($"Source: built-in shortcut list ({defs.Count} entries; no create_links.sh in SQL root)");
 
             // Per-entry status. Only entries that need a new symlink OR genuinely
             // fail are listed; the rest roll up into a single summary line to avoid
@@ -1767,7 +1797,7 @@ namespace ibsCompiler
                 {
                     // Neither the short path nor the legacy target exists. The
                     // compiler can't resolve files under this prefix at all.
-                    PrintDim($"  {link} — neither short path nor target {target} on disk");
+                    PrintDim($"{link} — neither short path nor target {target} on disk");
                     missing++;
                     continue;
                 }
@@ -1776,23 +1806,23 @@ namespace ibsCompiler
                 try
                 {
                     Directory.CreateSymbolicLink(linkPath, target);
-                    PrintSuccess($"  {link} — created -> {target}");
+                    PrintSuccess($"{link} — created -> {target}");
                     created++;
                 }
                 catch (UnauthorizedAccessException)
                 {
                     if (!windowsWarningShown)
                     {
-                        PrintWarning("  Symbolic link creation requires elevated privileges on Windows.");
-                        PrintWarning("  Run as Administrator, or enable Developer Mode in Windows Settings.");
+                        PrintWarning("Symbolic link creation requires elevated privileges on Windows.");
+                        PrintWarning("Run as Administrator, or enable Developer Mode in Windows Settings.");
                         windowsWarningShown = true;
                     }
-                    PrintError($"  {link} — permission denied");
+                    PrintError($"{link} — permission denied");
                     failed++;
                 }
                 catch (IOException ex)
                 {
-                    PrintError($"  {link} — {ex.Message}");
+                    PrintError($"{link} — {ex.Message}");
                     failed++;
                 }
             }
@@ -1824,7 +1854,7 @@ namespace ibsCompiler
             string? choice;
             if (Console.IsInputRedirected || Console.IsOutputRedirected)
             {
-                Console.Write("\nChoose [1]: ");
+                ConsoleMenu.WritePrompt("\nChoose [1]: ");
                 choice = Console.ReadLine()?.Trim();
             }
             else
@@ -1849,8 +1879,8 @@ namespace ibsCompiler
             Console.WriteLine();
             PrintSubheader("Add to VSCode");
             Console.WriteLine();
-            PrintDim("  This adds runsql build tasks to your global VSCode settings.");
-            PrintDim("  Press Ctrl+Shift+B in VSCode to compile the current SQL file.");
+            PrintDim("This adds runsql build tasks to your global VSCode settings.");
+            PrintDim("Press Ctrl+Shift+B in VSCode to compile the current SQL file.");
             Console.WriteLine();
 
             var profileNames = _settings.Profiles.Keys.ToList();
@@ -1867,7 +1897,7 @@ namespace ibsCompiler
             // Ask for databases
             WriteBright("  Enter databases (comma-separated), or press Enter to prompt each time:");
             Console.WriteLine();
-            Console.Write("  > ");
+            Console.Write("> ");
             var dbInput = Console.ReadLine()?.Trim() ?? "";
 
             var usePromptMode = string.IsNullOrEmpty(dbInput);
@@ -1895,7 +1925,7 @@ namespace ibsCompiler
                     string? choice;
                     if (Console.IsInputRedirected || Console.IsOutputRedirected)
                     {
-                        Console.Write($"  Choose [1-{profileNames.Count}]: ");
+                        ConsoleMenu.WritePrompt($"Choose [1-{profileNames.Count}]: ");
                         choice = Console.ReadLine()?.Trim();
                     }
                     else
@@ -1912,7 +1942,7 @@ namespace ibsCompiler
                     if (string.IsNullOrEmpty(choice) &&
                         !Console.IsInputRedirected && !Console.IsOutputRedirected)
                         continue; // Esc on a TTY → silently re-prompt
-                    Console.WriteLine($"  Please enter 1-{profileNames.Count}.");
+                    Console.WriteLine($"Please enter 1-{profileNames.Count}.");
                 }
             }
             else
@@ -1937,7 +1967,7 @@ namespace ibsCompiler
                     string? choice;
                     if (Console.IsInputRedirected || Console.IsOutputRedirected)
                     {
-                        Console.Write($"  Choose [1-{databases.Count}]: ");
+                        ConsoleMenu.WritePrompt($"Choose [1-{databases.Count}]: ");
                         choice = Console.ReadLine()?.Trim();
                     }
                     else
@@ -1954,7 +1984,7 @@ namespace ibsCompiler
                     if (string.IsNullOrEmpty(choice) &&
                         !Console.IsInputRedirected && !Console.IsOutputRedirected)
                         continue; // Esc on a TTY → silently re-prompt
-                    Console.WriteLine($"  Please enter 1-{databases.Count}.");
+                    Console.WriteLine($"Please enter 1-{databases.Count}.");
                 }
             }
             else if (!usePromptMode && databases.Count == 1)
@@ -1971,14 +2001,14 @@ namespace ibsCompiler
                 return;
             }
             var tasksPath = Path.Combine(vscodeDir, "tasks.json");
-            Console.Write("  Will write to: ");
+            ConsoleMenu.WritePrompt("Will write to: ");
             WriteColor(tasksPath, ConsoleColor.Yellow);
             Console.WriteLine();
             Console.WriteLine();
 
-            Console.Write("  Proceed? [Y/n]: ");
+            ConsoleMenu.WritePrompt("Proceed? [Y/n]: ");
             var confirm = Console.ReadLine()?.Trim().ToLower();
-            if (confirm == "n") { Console.WriteLine("  Cancelled."); return; }
+            if (confirm == "n") { Console.WriteLine("Cancelled."); return; }
 
             // Generate tasks
             Dictionary<string, object> tasksContent;
@@ -1993,13 +2023,13 @@ namespace ibsCompiler
                 Console.WriteLine();
                 PrintWarning("tasks.json already exists.");
                 Console.WriteLine();
-                WriteColor("  [O]", ConsoleColor.Cyan); Console.WriteLine("verwrite - Replace with new runsql tasks");
-                WriteColor("  [M]", ConsoleColor.Cyan); Console.WriteLine("erge     - Keep existing tasks, add/replace runsql tasks");
-                WriteColor("  [C]", ConsoleColor.Cyan); Console.WriteLine("ancel    - Abort");
+                WriteColor("[O]", ConsoleColor.Cyan); Console.WriteLine("verwrite - Replace with new runsql tasks");
+                WriteColor("[M]", ConsoleColor.Cyan); Console.WriteLine("erge     - Keep existing tasks, add/replace runsql tasks");
+                WriteColor("[C]", ConsoleColor.Cyan); Console.WriteLine("ancel    - Abort");
                 Console.WriteLine();
                 while (true)
                 {
-                    Console.Write("  Choose [O/M/C]: ");
+                    ConsoleMenu.WritePrompt("Choose [O/M/C]: ");
                     var fc = Console.ReadLine()?.Trim().ToUpper();
                     if (fc == "C") return;
                     if (fc == "O") break;
@@ -2018,7 +2048,7 @@ namespace ibsCompiler
                                     if (!label.StartsWith("runsql"))
                                         nonRunsql.Add(task);
                                 }
-                                Console.WriteLine($"  Keeping {nonRunsql.Count} existing non-runsql tasks.");
+                                Console.WriteLine($"Keeping {nonRunsql.Count} existing non-runsql tasks.");
                             }
                         }
                         catch
@@ -2027,7 +2057,7 @@ namespace ibsCompiler
                         }
                         break;
                     }
-                    Console.WriteLine("  Please enter O, M, or C.");
+                    Console.WriteLine("Please enter O, M, or C.");
                 }
             }
 
@@ -2044,7 +2074,7 @@ namespace ibsCompiler
                     PrintSuccess($"Added {profileNames.Count} tasks to VSCode (will prompt for database):");
                     foreach (var pn in profileNames)
                     {
-                        Console.Write($"  {Icons.ARROW} runsql {pn}");
+                        Console.Write($"{Icons.ARROW} runsql {pn}");
                         if (pn == defaultProfile)
                             WriteColor(" [default - Ctrl+Shift+B]", ConsoleColor.Green);
                         Console.WriteLine();
@@ -2058,8 +2088,8 @@ namespace ibsCompiler
                     {
                         foreach (var db in databases)
                         {
-                            Console.Write($"  {Icons.ARROW} runsql {pn} (");
-                            WriteColor(db, ConsoleColor.Magenta);
+                            Console.Write($"{Icons.ARROW} runsql {pn} (");
+                            WriteColor(db, ConsoleColor.Gray);
                             Console.Write(")");
                             if (pn == defaultProfile && db == defaultDb)
                                 WriteColor(" [default - Ctrl+Shift+B]", ConsoleColor.Green);
@@ -2232,7 +2262,7 @@ namespace ibsCompiler
         {
             if (input == null)
             {
-                Console.Write("  Aliases (comma-separated, optional): ");
+                ConsoleMenu.WritePrompt("Aliases (comma-separated, optional): ");
                 input = Console.ReadLine()?.Trim() ?? "";
             }
             if (string.IsNullOrEmpty(input)) return current;
@@ -2298,6 +2328,7 @@ namespace ibsCompiler
             var unshareName = CliArgs.GetOption(args, "--unshare");
             var fetchName   = CliArgs.GetOption(args, "--fetch");
             var listShared  = CliArgs.HasFlag(args, "--shared");
+            var sharedStatus = CliArgs.HasFlag(args, "--shared-status");
 
             int primary = 0;
             if (createName != null) primary++;
@@ -2310,14 +2341,15 @@ namespace ibsCompiler
             if (unshareName != null) primary++;
             if (fetchName != null)   primary++;
             if (listShared)          primary++;
+            if (sharedStatus)        primary++;
             if (primary > 1)
             {
-                Console.Error.WriteLine("ERROR: --create, --edit, --view, --copy, --delete, --test, --share, --unshare, --shared, --fetch are mutually exclusive.");
+                Console.Error.WriteLine("ERROR: --create, --edit, --view, --copy, --delete, --test, --share, --unshare, --shared, --shared-status, --fetch are mutually exclusive.");
                 return 1;
             }
             if (primary == 0)
             {
-                Console.Error.WriteLine("ERROR: headless mode requires one of --create, --edit, --view, --copy, --delete, --test, --share, --unshare, --shared, --fetch.");
+                Console.Error.WriteLine("ERROR: headless mode requires one of --create, --edit, --view, --copy, --delete, --test, --share, --unshare, --shared, --shared-status, --fetch.");
                 return 1;
             }
 
@@ -2331,6 +2363,7 @@ namespace ibsCompiler
             if (unshareName != null) return UnshareHeadless(unshareName, args);
             if (fetchName != null)   return FetchHeadless(fetchName, args);
             if (listShared)          return SharedListHeadless(args);
+            if (sharedStatus)        return SharedStatusHeadless();
             return 1;
         }
 
@@ -2433,6 +2466,8 @@ namespace ibsCompiler
                 return 1;
             }
             var (name, profile) = match.Value;
+            // Snapshot for the shared-link check below (same rule as the editor's Save).
+            var before = JsonSerializer.Deserialize<ProfileData>(JsonSerializer.Serialize(profile))!;
 
             if (!ApplyConnectionFlags(profile, args, isCreate: false)) return 1;
 
@@ -2469,6 +2504,14 @@ namespace ibsCompiler
                     }
                     profile.Aliases = aliases;
                 }
+            }
+
+            // A copy of someone else's shared record whose shared fields changed is now a
+            // plain local profile - it must stop reporting as synced.
+            if (SharedFieldsDiffer(before, profile) && IsSharedFromOther(before, out _))
+            {
+                Unlink(profile);
+                PrintDim($"'{name}' no longer syncs with the shared profile it came from.");
             }
 
             if (!SaveSettings()) return 1;
@@ -2525,6 +2568,7 @@ namespace ibsCompiler
             var json = JsonSerializer.Serialize(match.Value.Profile);
             var newProfile = JsonSerializer.Deserialize<ProfileData>(json)!;
             newProfile.Aliases = new List<string>();
+            Unlink(newProfile);
             _settings.Profiles[newName] = newProfile;
 
             if (!SaveSettings()) return 1;

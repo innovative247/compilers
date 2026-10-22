@@ -20,6 +20,15 @@ namespace ibsCompiler
     /// </summary>
     internal static class ConsoleMenu
     {
+        /// <summary>A question to the user: always Green (installers.md section 6, five colours).</summary>
+        internal static void WritePrompt(string prompt)
+        {
+            var prev = Console.ForegroundColor;
+            Console.ForegroundColor = ConsoleColor.Green;
+            Console.Write(prompt);
+            Console.ForegroundColor = prev;
+        }
+
         /// <summary>
         /// Ensures the console window is at least <paramref name="rows"/> x
         /// <paramref name="cols"/> before a full-screen widget draws, growing it
@@ -95,6 +104,29 @@ namespace ibsCompiler
         }
 
         /// <summary>
+        /// Hides the hardware caret. Call at the START of any redraw that writes more than
+        /// one spot (several rows, or a row away from where the user is typing): every
+        /// write moves the caret, so a visible one is seen jumping across the screen on
+        /// each keystroke. Rule: hide the caret before any multi-row redraw; show it last,
+        /// after positioning it on the input line (<see cref="ShowCaretAt"/>).
+        /// </summary>
+        internal static void HideCaret()
+        {
+            try { Console.CursorVisible = false; } catch { }
+        }
+
+        /// <summary>
+        /// Ends a redraw that leaves the user typing: positions the caret on the input
+        /// line FIRST and only then shows it, so it never flashes wherever the last write
+        /// left it. Pair with <see cref="HideCaret"/> at the start of the redraw.
+        /// </summary>
+        internal static void ShowCaretAt(int left, int top)
+        {
+            MoveTo(left, top);
+            try { Console.CursorVisible = true; } catch { }
+        }
+
+        /// <summary>
         /// Actionable companion to a failed <see cref="TryEnsureWindow"/>: tells the
         /// user the exact size the widget needs, what this window is, and how to get
         /// the full-screen experience next time.
@@ -102,8 +134,8 @@ namespace ibsCompiler
         internal static void ExplainTooSmall(string what, int rows, int cols)
         {
             Console.WriteLine();
-            Console.WriteLine($"  Terminal too small for {what} — it needs {cols} cols x {rows} rows; this window is {Console.WindowWidth}x{Console.WindowHeight}.");
-            Console.WriteLine("  Falling back to sequential prompts. Enlarge or maximize the window and rerun the command for the full-screen editor.");
+            Console.WriteLine($"Terminal too small for {what} — it needs {cols} cols x {rows} rows; this window is {Console.WindowWidth}x{Console.WindowHeight}.");
+            Console.WriteLine("Falling back to sequential prompts. Enlarge or maximize the window and rerun the command for the full-screen editor.");
         }
 
         /// <summary>
@@ -119,21 +151,24 @@ namespace ibsCompiler
         /// padding the rest of the line to erase prior content, and parks the hardware
         /// caret right after the buffer (the blinking underscore). Call with an empty
         /// <paramref name="buf"/> to render the label alone (entry-time / idle state).
+        /// <paramref name="showCaret"/> = false parks the caret there but leaves it hidden,
+        /// for callers whose idle caret belongs elsewhere (field navigation).
         /// </summary>
-        internal static void DrawChoiceBuffer(int row, string label, string buf, string? defaultChoice = null)
+        internal static void DrawChoiceBuffer(int row, string label, string buf, string? defaultChoice = null, bool showCaret = true)
         {
             int w = Math.Max(1, Console.WindowWidth - 1);
+            HideCaret();
             MoveTo(0, row);
             var labelText = BuildLabel(label, defaultChoice);
             var line = "  " + labelText + buf;
             line = line.Length < w ? line.PadRight(w) : line.Substring(0, w);
             var prev = Console.ForegroundColor;
-            Console.ForegroundColor = ConsoleColor.Cyan;
+            Console.ForegroundColor = ConsoleColor.Green;
             Console.Write(line);
             Console.ForegroundColor = prev;
-            Console.CursorVisible = true;
             int col = 2 + labelText.Length + buf.Length;
-            MoveTo(Math.Min(col, w), row);
+            if (showCaret) ShowCaretAt(Math.Min(col, w), row);
+            else MoveTo(Math.Min(col, w), row);
         }
 
         /// <summary>
@@ -165,6 +200,7 @@ namespace ibsCompiler
 
             void ClearLine()
             {
+                HideCaret();
                 MoveTo(0, row);
                 Console.Write(new string(' ', W()));
                 MoveTo(0, row);

@@ -232,7 +232,8 @@ namespace ibsCompiler
             Func<string, string?>? validateName = null,
             string? titleOverride = null,
             bool allowCopyDelete = false,
-            Func<ProfileData, string?>? onSave = null)
+            Func<ProfileData, string?>? onSave = null,
+            string? notice = null)
         {
             // Belt-and-suspenders: never drive a ReadKey loop on a redirected console.
             // The caller already routes those to the sequential/headless paths.
@@ -285,7 +286,17 @@ namespace ibsCompiler
                 Console.ForegroundColor = ConsoleColor.Cyan;
                 Console.WriteLine("  " + title);
                 Console.ForegroundColor = prev;
-                Console.WriteLine();
+                // The row under the title: blank, or the caller's warning (yellow) so it is
+                // on the editor's own screen rather than scrolled away above it.
+                if (string.IsNullOrEmpty(notice)) Console.WriteLine();
+                else
+                {
+                    var w = Math.Max(1, Console.WindowWidth - 1);
+                    var text = "  " + notice;
+                    Console.ForegroundColor = ConsoleColor.Yellow;
+                    Console.WriteLine(text.Length > w ? text.Substring(0, w) : text);
+                    Console.ForegroundColor = prev;
+                }
                 for (int i = 0; i < fields.Length; i++) Console.WriteLine();
                 Console.WriteLine();
                 Console.WriteLine(footer);
@@ -337,7 +348,7 @@ namespace ibsCompiler
                 if (!applicable)
                 {
                     var prev = Console.ForegroundColor;
-                    Console.ForegroundColor = ConsoleColor.DarkGray;
+                    Console.ForegroundColor = ConsoleColor.Gray;
                     Console.Write(line);
                     Console.ForegroundColor = prev;
                 }
@@ -392,6 +403,7 @@ namespace ibsCompiler
             {
                 if (cursor >= fields.Length) cursor = fields.Length - 1;
                 if (cursor < 0) cursor = 0;
+                ConsoleMenu.HideCaret();
                 for (int i = 0; i < fields.Length; i++)
                     DrawRow(i, i == cursor);
                 RenderMenu();
@@ -416,13 +428,9 @@ namespace ibsCompiler
             // only once menuBuf has already been cleared, so the buffer is always "".
             void ClearMessage()
             {
-                ConsoleMenu.DrawChoiceBuffer(messageRow, "Choice", "");
-                // DrawChoiceBuffer parks a visible caret for the "actively typing a
-                // choice" case; back at idle (field navigation) the caret belongs on
-                // the focused field row instead, so the following Render() call — every
-                // ClearMessage() call site is immediately followed by one — repositions
-                // it. Hide it here so there is no visible flash on the message row.
-                Console.CursorVisible = false;
+                // Back at idle (field navigation) the caret belongs on the focused field
+                // row, not the prompt line, so draw the label with the caret left hidden.
+                ConsoleMenu.DrawChoiceBuffer(messageRow, "Choice", "", showCaret: false);
             }
 
             // Draws the menu-choice row on the prompt line — `Choice: ` renders
@@ -447,15 +455,15 @@ namespace ibsCompiler
 
                 void Draw()
                 {
+                    ConsoleMenu.HideCaret();
                     ConsoleMenu.MoveTo(0, row);
                     var text = $"  > {f.Label,-16}: {buf}";
                     if (text.Length < Console.WindowWidth - 1) text = text.PadRight(Console.WindowWidth - 1);
                     else text = text.Substring(0, Console.WindowWidth - 1);
                     Console.Write(text);
-                    ConsoleMenu.MoveTo(Math.Min(labelCol + buf.Length, Console.WindowWidth - 1), row);
+                    ConsoleMenu.ShowCaretAt(Math.Min(labelCol + buf.Length, Console.WindowWidth - 1), row);
                 }
 
-                Console.CursorVisible = true;
                 Draw();
                 while (true)
                 {
@@ -468,7 +476,6 @@ namespace ibsCompiler
                         RescaffoldIfResized();
                         if (fellBack) { Console.CursorVisible = false; return buf.ToString(); }
                         row = startRow + fieldIdx;
-                        Console.CursorVisible = true;
                         Draw();
                     }
                     if (key.Key == ConsoleKey.Enter) { Console.CursorVisible = false; return buf.ToString(); }
@@ -509,15 +516,14 @@ namespace ibsCompiler
             // re-scaffold and redraw the editor intact. Shared by every Test menu item.
             void RunTestSuspended(string kind)
             {
-                Console.CursorVisible = true;
                 // Land on the message row (guaranteed to exist — see Scaffold), then
                 // WriteLine from there so the buffer scrolls as needed instead of
                 // SetCursorPosition-ing to a row that may not exist yet.
-                ConsoleMenu.MoveTo(0, messageRow);
+                ConsoleMenu.ShowCaretAt(0, messageRow);
                 Console.WriteLine();
                 Console.WriteLine();
                 var prevTestColor = Console.ForegroundColor;
-                Console.ForegroundColor = ConsoleColor.DarkGray;
+                Console.ForegroundColor = ConsoleColor.Gray;
                 Console.WriteLine("(testing current editor values — not yet saved)");
                 Console.ForegroundColor = prevTestColor;
                 if (onTest!(profile, kind))
@@ -583,10 +589,9 @@ namespace ibsCompiler
             {
                 if (!fields.Any(FieldDirty)) return true;
                 Message("Discard changes? (y/N) ", ConsoleColor.Yellow);
-                ConsoleMenu.MoveTo(
+                ConsoleMenu.ShowCaretAt(
                     Math.Min(2 + "Discard changes? (y/N) ".Length, Console.WindowWidth - 1),
                     messageRow);
-                Console.CursorVisible = true;
                 var ans = Console.ReadKey(intercept: true);
                 Console.CursorVisible = false;
                 if (ans.Key == ConsoleKey.Y) return true;
@@ -733,7 +738,7 @@ namespace ibsCompiler
                             ClearMessage();
                             if (!IsApplicable(cursor))
                             {
-                                Message(f.DisabledNote ?? "not applicable", ConsoleColor.DarkGray);
+                                Message(f.DisabledNote ?? "not applicable", ConsoleColor.Gray);
                                 break;
                             }
                             if (f.Kind == FieldKind.Bool)
