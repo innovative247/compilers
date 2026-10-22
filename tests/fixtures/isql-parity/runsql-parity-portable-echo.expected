@@ -1,0 +1,38 @@
+1> use tempdb
+1> print 'batch one'
+2> select 1, convert(money,1234.5), convert(datetime,'2026-01-02 03:04:05'), convert(numeric(10,3),1.5), null
+batch one
+                                                                     
+	                           
+ ----------- ------------------------ -------------------------------
+	 ------------- ----------- 
+           1                 1,234.50             Jan  2 2026  3:04AM
+	         1.500        NULL 
+
+(1 row affected)
+1> create table #r (a int, b int null)
+1> 
+2> insert #r values (1, 10)
+3> insert #r values (2, null)
+4> select * from #r
+(1 row affected)
+(1 row affected)
+ a           b           
+ ----------- ----------- 
+           1          10 
+           2        NULL 
+
+(2 rows affected)
+1> select a from #r where 1=2
+ a           
+ ----------- 
+
+(0 rows affected)
+1> set nocount on
+2> update #r set b = 0
+3> select b from #r
+ b           
+ ----------- 
+           0 
+           0 
+1> 

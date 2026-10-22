@@ -17,7 +17,9 @@ namespace ibsCompiler
         private static readonly Regex GoRegex = new(@"^\s*go\s*$",
             RegexOptions.IgnoreCase | RegexOptions.Multiline);
 
-        private static string[] SplitBatches(string sqlText, bool trackDollar)
+        // keepBlank: also return batches holding only blank lines - isql -e echoes them (as "1> ")
+        // though it sends nothing to the server.
+        private static string[] SplitBatches(string sqlText, bool trackDollar, bool keepBlank = false)
         {
             var batches = new List<string>();
             var current = new System.Text.StringBuilder();
@@ -86,7 +88,7 @@ namespace ibsCompiler
                 if (!lineStartedInBlockComment && !inDollarBody && GoRegex.IsMatch(line))
                 {
                     var batch = current.ToString();
-                    if (!string.IsNullOrWhiteSpace(batch))
+                    if (!string.IsNullOrWhiteSpace(batch) || (keepBlank && batch.Length > 0))
                         batches.Add(batch);
                     current.Clear();
                 }
@@ -94,7 +96,7 @@ namespace ibsCompiler
                 {
                     // exit/quit: flush current batch and stop — same effect as go + end of file
                     var batch = current.ToString();
-                    if (!string.IsNullOrWhiteSpace(batch))
+                    if (!string.IsNullOrWhiteSpace(batch) || (keepBlank && batch.Length > 0))
                         batches.Add(batch);
                     break;
                 }
@@ -107,7 +109,7 @@ namespace ibsCompiler
             }
 
             var remaining = current.ToString();
-            if (!string.IsNullOrWhiteSpace(remaining))
+            if (!string.IsNullOrWhiteSpace(remaining) || (keepBlank && remaining.Length > 0))
                 batches.Add(remaining);
 
             return batches.ToArray();
@@ -146,6 +148,8 @@ namespace ibsCompiler
                 proc.BeginOutputReadLine();
                 proc.BeginErrorReadLine();
                 proc.WaitForExit();
+                // isql's own line once the command has run
+                ibs_compiler_common.WriteLine($"[sh:{command}]", outFile);
                 return proc.ExitCode == 0;
             }
             catch (Exception ex)
@@ -155,10 +159,33 @@ namespace ibsCompiler
             }
         }
 
+        private static void WriteEcho(string line, string outFile)
+        {
+            if (!string.IsNullOrEmpty(outFile))
+                ibs_compiler_common.WriteLineToDisk(outFile, line);
+            else
+                Console.WriteLine(line);
+        }
+
+        // A batch legacy runsql sent ahead of the script: echoed under -e, output shown, and a
+        // failure here does not fail the user's run. run: false echoes it only; capture: true runs
+        // it with its output discarded.
+        private static void RunBookkeeping(ISqlExecutor executor, string batch, CommandVariables cmdvars,
+                                           bool run = true, bool capture = false)
+        {
+            if (cmdvars.EchoInput)
+                foreach (var line in IsqlFormatter.EchoLines(batch))
+                    WriteEcho(line, cmdvars.OutFile);
+            if (run) executor.ExecuteBatch(batch, capture, cmdvars.OutFile);
+        }
+
         public bool Run(CommandVariables cmdvars, ResolvedProfile profile, ISqlExecutor executor,
                         bool logFile = true, Options? existingOptions = null)
         {
             bool returncode = true;
+            // Output follows legacy runsql + isql on Sybase, on every platform
+            // (docs/architecture.md, "isql output format").
+            bool isPostgres = profile.ServerType == SQLServerTypes.POSTGRES;
 
             ibs_compiler_common.OutputToStdErr = cmdvars.Preview;
 
@@ -186,19 +213,24 @@ namespace ibsCompiler
             // Check for existence of source file
             if (!ibs_compiler_common.FindFile(ref cmdvars.Command))
             {
-                ibs_compiler_common.WriteLine(cmdvars.Command + " not found.", cmdvars.OutFile);
+                // Legacy runsql named the script by its full path.
+                ibs_compiler_common.WriteLine(Path.GetFullPath(cmdvars.Command) + " not found.", cmdvars.OutFile);
                 return false;
             }
 
             // Sequence loop
+            var seqStart = cmdvars.SeqFirst;
             while (cmdvars.SeqFirst <= cmdvars.SeqLast)
             {
                 var runStart = DateTime.Now;
                 string runningMsg;
-                if (cmdvars.SeqLast < 1)
-                    runningMsg = $"Running: {cmdvars.Command} on {cmdvars.ServerNameOnly}.{cmdvars.Database}";
-                else
-                    runningMsg = $"Running {cmdvars.SeqFirst} of {cmdvars.SeqLast}: {cmdvars.Command} on {cmdvars.ServerNameOnly}.{cmdvars.Database}";
+                {
+                    // Legacy runsql's own line: full script path, server, "in <db>", the sequence
+                    // number when -F/-L is given, and a trailing space.
+                    var dbtxt = string.IsNullOrEmpty(cmdvars.Database) ? "" : $"in {cmdvars.Database}";
+                    var seq = cmdvars.SeqLast < 1 ? "" : $" {cmdvars.SeqFirst}";
+                    runningMsg = $"Running {Path.GetFullPath(cmdvars.Command)} on {cmdvars.ServerNameOnly} {dbtxt}{seq} ";
+                }
                 ibs_compiler_common.WriteLine(runningMsg, cmdvars.OutFile);
 
                 // Build the changelog (audit) SQL separately from the user's script.
@@ -208,8 +240,9 @@ namespace ibsCompiler
                 // `if exists` guards in-stream makes ASE emit a query plan for that
                 // overhead — which the user mistakes for their own statement's plan.
                 // We run it below with its output discarded. (Skip in raw mode.)
+                // Legacy runsql logged a -F/-L run once, ahead of its first sequence.
                 var changelogLines = new List<string>();
-                if (!profile.RawMode)
+                if (!profile.RawMode && cmdvars.SeqFirst == seqStart)
                 {
                     foreach (var l in change_log.lines(cmdvars, profile))
                         changelogLines.Add(myOptions!.ReplaceOptions(l, cmdvars.SeqFirst));
@@ -220,6 +253,7 @@ namespace ibsCompiler
                 // plpgsql loop statement, not a client directive — honoring it there truncates the
                 // function body and surfaces as "unterminated dollar-quoted string" (SR 52910).
                 var userLines = new List<string>();
+                bool exited = false;
                 var readDollar = profile.ServerType == SQLServerTypes.POSTGRES
                     ? new ibs_compiler_common.PgDollarQuoteTracker() : null;
                 using (var source = new StreamReader(cmdvars.Command))
@@ -231,6 +265,7 @@ namespace ibsCompiler
                         {
                             // Treat exit as an implicit go — flush accumulated content as a batch
                             userLines.Add("go");
+                            exited = true;
                             break;
                         }
                         // Convert Sybase-style // line comments to MSSQL/PostgreSQL-compatible --
@@ -240,10 +275,21 @@ namespace ibsCompiler
                             if (cs < line.Length - 1 && line[cs] == '/' && line[cs + 1] == '/')
                                 line = line[..cs] + "--" + line[(cs + 2)..];
                         }
-                        userLines.Add(profile.RawMode ? line : myOptions!.ReplaceOptions(line, cmdvars.SeqFirst));
+                        if (!profile.RawMode)
+                        {
+                            // Legacy substitute_options also replaced &db& and &sv&, e.g. in an
+                            // upgrade script's `!!runsql tbl_x.sql &db& &sv&`.
+                            line = myOptions!.ReplaceOptions(line, cmdvars.SeqFirst).Replace("&sv&", cmdvars.Server);
+                            if (!string.IsNullOrEmpty(cmdvars.Database)) line = line.Replace("&db&", cmdvars.Database);
+                        }
+                        userLines.Add(line);
                         readDollar?.Consume(line);
                     }
                 }
+                // Legacy runsql ends the script with an empty line and a go, so isql -e echoes a
+                // final "N> " line; the blank batch itself runs nothing. Its -F/-L form had no
+                // empty line.
+                if (!exited && cmdvars.SeqLast < 1) userLines.Add("");
                 userLines.Add("go");
 
                 var changelogText = string.Join(Environment.NewLine, changelogLines);
@@ -265,7 +311,7 @@ namespace ibsCompiler
                     // Split the user's script into GO-delimited batches and execute each
                     // on a single persistent connection (preserves USE database, temp
                     // tables, session state, etc.)
-                    var batches = SplitBatches(userText, profile.ServerType == SQLServerTypes.POSTGRES);
+                    var batches = SplitBatches(userText, profile.ServerType == SQLServerTypes.POSTGRES, keepBlank: true);
                     bool anyFailed = false;
                     var errorOutput = new System.Text.StringBuilder();
 
@@ -277,8 +323,18 @@ namespace ibsCompiler
                         // session diagnostics (showplan / statistics io) never report on
                         // runsql's own overhead. Best-effort: a changelog failure does not
                         // fail the user's run (the `if exists` guards already make it safe).
-                        foreach (var clBatch in SplitBatches(changelogText, profile.ServerType == SQLServerTypes.POSTGRES))
-                            executor.ExecuteBatch(clBatch, captureOutput: true, cmdvars.OutFile);
+                        //
+                        // Legacy runsql piped "use <db>" and the changelog into isql ahead of the
+                        // script, so their echo and output (the changelog proc's return status) are
+                        // part of what it printed. The connection is fresh here, so no session
+                        // diagnostics can be on yet. POSTGRES: the connection already sits in the
+                        // database/schema (a `use` naming the connection database would point the
+                        // search_path at a schema that is not there), and the changelog's DO block
+                        // prints nothing legacy would - so both are echoed only / run silently.
+                        if (!string.IsNullOrEmpty(cmdvars.Database))
+                            RunBookkeeping(executor, $"use {cmdvars.Database}" + Environment.NewLine, cmdvars, run: !isPostgres);
+                        foreach (var clBatch in SplitBatches(changelogText, isPostgres))
+                            RunBookkeeping(executor, clBatch, cmdvars, capture: isPostgres);
 
                         for (int batchIndex = 0; batchIndex < batches.Length; batchIndex++)
                         {
@@ -300,34 +356,19 @@ namespace ibsCompiler
 
                             var trimmedBatch = batch.Trim('\r', '\n');
 
-                            // Echo mode: print batch lines with per-batch line numbers
+                            // Echo mode (isql -e): batch lines numbered from 1, go not echoed
                             if (cmdvars.EchoInput)
                             {
-                                var batchLines = trimmedBatch.Split(new[] { Environment.NewLine, "\n" }, StringSplitOptions.None);
-                                for (int i = 0; i < batchLines.Length; i++)
-                                {
-                                    var echoLine = $"{i + 1}> {batchLines[i]}";
-                                    if (!string.IsNullOrEmpty(cmdvars.OutFile))
-                                        ibs_compiler_common.WriteLineToDisk(cmdvars.OutFile, echoLine);
-                                    else
-                                        Console.WriteLine(echoLine);
-                                }
-
-                                // Echo the GO separator
-                                var goLine = $"{batchLines.Length + 1}> go";
-                                if (!string.IsNullOrEmpty(cmdvars.OutFile))
-                                    ibs_compiler_common.WriteLineToDisk(cmdvars.OutFile, goLine);
-                                else
-                                    Console.WriteLine(goLine);
+                                foreach (var echoLine in IsqlFormatter.EchoLines(batch))
+                                    WriteEcho(echoLine, cmdvars.OutFile);
                             }
+
+                            if (string.IsNullOrWhiteSpace(batch)) continue;
 
                             // Execute this batch on the persistent connection
                             var result = executor.ExecuteBatch(batch, false, cmdvars.OutFile);
-                            if (result.Returncode)
-                            {
-                                ibs_compiler_common.WriteLine("(return status = 0)", cmdvars.OutFile);
-                            }
-                            else
+                            // isql prints a return status only after a procedure - the executor does that.
+                            if (!result.Returncode)
                             {
                                 anyFailed = true;
                                 if (!string.IsNullOrWhiteSpace(result.Output))

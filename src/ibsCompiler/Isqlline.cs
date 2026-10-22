@@ -12,43 +12,17 @@ namespace ibsCompiler
     {
         public static ExecReturn Run(CommandVariables cmdvars, ResolvedProfile profile, ISqlExecutor executor, bool redirectOutput = false)
         {
-            var result = new ExecReturn { Output = "", Returncode = false };
-
             // In raw mode, skip option file processing entirely
             Options? myOptions = null;
             if (!profile.RawMode)
             {
                 myOptions = new Options(cmdvars, profile);
-                if (!myOptions.GenerateOptionFiles()) return result;
+                if (!myOptions.GenerateOptionFiles()) return new ExecReturn { Output = "", Returncode = false };
             }
 
-            // Build SQL text (no changelog — isqlline is for ad-hoc commands)
-            var sqlLines = new List<string>();
-            string resolvedCommand;
-            if (!profile.RawMode)
-            {
-                resolvedCommand = myOptions!.ReplaceOptions(cmdvars.Command);
-            }
-            else
-            {
-                resolvedCommand = cmdvars.Command;
-            }
-            sqlLines.Add(resolvedCommand);
-            sqlLines.Add("go");
-
-            var sqlText = string.Join(Environment.NewLine, sqlLines);
-
-            // Echo mode: print command with line numbers
-            if (cmdvars.EchoInput)
-                EchoSql(sqlText, cmdvars.OutFile);
-
-            // Execute via ADO.NET
-            result = executor.ExecuteSql(sqlText, cmdvars.Database, redirectOutput, cmdvars.OutFile);
-
-            if (!result.Returncode)
-                ibs_compiler_common.WriteLine("ERROR! Failed to Run.", cmdvars.OutFile);
-
-            return result;
+            // No changelog — isqlline is for ad-hoc commands
+            var resolvedCommand = profile.RawMode ? cmdvars.Command : myOptions!.ReplaceOptions(cmdvars.Command);
+            return Execute(cmdvars, profile, executor, resolvedCommand, redirectOutput);
         }
 
         /// <summary>
@@ -57,41 +31,27 @@ namespace ibsCompiler
         /// </summary>
         public static ExecReturn Run(CommandVariables cmdvars, ResolvedProfile profile, ISqlExecutor executor, Options? existingOptions, bool redirectOutput = false)
         {
-            var result = new ExecReturn { Output = "", Returncode = false };
-
-            var sqlLines = new List<string>();
-            string resolvedCommand;
-            if (!profile.RawMode)
-            {
-                resolvedCommand = existingOptions!.ReplaceOptions(cmdvars.Command);
-            }
-            else
-            {
-                resolvedCommand = cmdvars.Command;
-            }
-            sqlLines.Add(resolvedCommand);
-            sqlLines.Add("go");
-
-            var sqlText = string.Join(Environment.NewLine, sqlLines);
-
-            // Echo mode: print command with line numbers
-            if (cmdvars.EchoInput)
-                EchoSql(sqlText, cmdvars.OutFile);
-
-            result = executor.ExecuteSql(sqlText, cmdvars.Database, redirectOutput, cmdvars.OutFile);
-
-            if (!result.Returncode)
-                ibs_compiler_common.WriteLine("ERROR! Failed to Run.", cmdvars.OutFile);
-
-            return result;
+            var resolvedCommand = profile.RawMode ? cmdvars.Command : existingOptions!.ReplaceOptions(cmdvars.Command);
+            return Execute(cmdvars, profile, executor, resolvedCommand, redirectOutput);
         }
 
-        private static void EchoSql(string sqlText, string outFile)
+        private static ExecReturn Execute(CommandVariables cmdvars, ResolvedProfile profile, ISqlExecutor executor, string resolvedCommand, bool redirectOutput)
         {
-            var lines = sqlText.Split(new[] { Environment.NewLine, "\n" }, StringSplitOptions.None);
-            for (int i = 0; i < lines.Length; i++)
+            // Every platform prints what legacy isqlline (isql) printed on Sybase
+            // (docs/architecture.md, "isql output format").
+            // The batch legacy isqlline hands isql: an empty line, then the command (its wrapper
+            // builds "use db / go / <newline> cmd / go"). The leading line is why the server
+            // reports a one-line command's errors at Line 2 - kept so messages match.
+            var batch = Environment.NewLine + resolvedCommand + Environment.NewLine;
+            if (cmdvars.EchoInput)
+                WriteEcho(IsqlFormatter.EchoLines(batch), cmdvars.OutFile);
+            return executor.ExecuteSql(batch + "go", cmdvars.Database, redirectOutput, cmdvars.OutFile);
+        }
+
+        private static void WriteEcho(IEnumerable<string> lines, string outFile)
+        {
+            foreach (var line in lines)
             {
-                var line = $"{i + 1}> {lines[i]}";
                 if (!string.IsNullOrEmpty(outFile))
                     ibs_compiler_common.WriteLineToDisk(outFile, line);
                 else

@@ -7,3 +7,7 @@
 # checkout and a Linux checkout assert against identical bytes.
 *.tsv text eol=lf
 tests/error-reporting/cases/*.sql text eol=lf
+
+# Charset parity fixtures hold the server's raw bytes (cp850 / UTF-8), compared byte for byte.
+tests/fixtures/isql-parity/*-charset.expected binary
+tests/fixtures/isql-parity/isqlline-compute.expected text eol=lf

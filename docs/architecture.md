@@ -34,32 +34,63 @@ var executor = SqlExecutorFactory.Create(profile);  // MssqlExecutor, SybaseExec
 | Sybase | SELECT → tab-delimited file | Row-by-row INSERT |
 | PostgreSQL | `BeginTextExport` (`COPY ... TO STDOUT (FORMAT text)`), unescaped to tab-delimited file | `BeginTextImport` (`COPY ... FROM STDIN (FORMAT text)`), PG-escaped straight from the tab-delimited file |
 
-### Result-Set Display Widths
+### isql output format
 
-Column widths in streamed result-sets (`isqlline`, `runsql`, anything that hits `StreamOneResultSetAsync`) are computed from three inputs, taking the max:
+Everything an executor prints — result sets, row counts, return statuses, messages, errors — is what legacy `isqlline` / `runsql` (ksh wrappers around OCS `isql` 15.5 on Yoda) print against a Sybase server: byte for byte on Sybase except where noted below, and in the same layout on MSSQL and PostgreSQL, with each server's types mapped to the Sybase type that prints alike (mappings below). `IsqlFormatter` renders it for all three executors; it is platform-neutral (fed column widths/alignment and value strings) and also holds the value formats (`Money`, `Float`, `DateTimeValue` …). `SybaseExecutor` runs each batch with `AseCommand.ResultObserver` (IBS AseClient fork), which hands over row formats, rows, done tokens and return statuses in server order while `InfoMessage` delivers messages on the same thread — so everything interleaves as the server sent it. Fixtures and parity tests: `tests/fixtures/isql-parity` (the `.expected` files are legacy output captured on Yoda), suite cases `*_isql_parity*`.
 
-1. `SchemaTable.ColumnSize` (capped at `MaxColumnWidth = 256`)
-2. The column header text length
-3. **`MinDisplayWidthForType(t)`** — a per-.NET-type display floor
+- **Line width (`W`).** Console: the window width. Redirected output, `-O` files and captured output: 80 — legacy's effective width, since `isqlline` passes `-w $COLUMNS` and `COLUMNS` is not exported (isql's default is 80) and `runsql` passes no `-w`.
+- **Column widths:** `tinyint` 3, `smallint` 6, `int` 11, `bigint` 20, `unsigned smallint/int/bigint` 5/10/20, `bit` 1, `real`/`float` 27, `money`/`smallmoney` 24, `numeric(p,s)` p+3, `datetime`/`smalldatetime` 31, `date` 16, `time` 15, char types their byte length, `binary`/`varbinary` 2+2×length, `text`/`image` 512; every width capped at 512, then widened to the column name. `unichar`/`univarchar`: 2+2×length shown as hex in an `isqlline` session, length/2×3 as text in a `runsql` session (below).
+- **Layout.** Each column is `" " + value` padded to its width; a row ends with one more space. A column moves to a new line starting with a tab when `pos + width + 2 > W` (a column alone on its line may overflow). Headings are always left-aligned and never cut. Numbers, money and dates are right-aligned; NULL prints `NULL` in the column's alignment. A left-aligned value longer than `W - pos - 2` is cut: `W - pos - 1` characters, then tab-indented pieces, the last padded to what remains of the column width; `text`/`image` values are never cut.
+- **Values.** `datetime` `Jan  2 2026  3:04AM`; `date` `Jan  2 2026`; `time` ` 3:04AM`; money 2 places with thousands separators, rounded half away from zero; `float`/`real` 6 places, or `1.000000000000e+20` past 27 characters; numeric at its declared scale; `bit` 1/0; binary `0x` + lower-case hex.
+- **Counts.** A heading prints with the first row, or at the end of an empty result set — not when the statement fails first. A top-level statement prints `(N rows affected)` / `(1 row affected)` unless `set nocount on`, after a blank line when it ended a result set. Inside a procedure only a statement that ends a result set prints a count, and it prints the latest count the server flagged in that procedure (isql's client library holds a count until it reports it). `(return status = N)` follows every procedure.
+- **Messages.** Prints and informational messages print their text; errors print `Msg n, Level l, State s:` / `Server 'x', [Procedure 'p', ]Line n:` / text. Text longer than `W` breaks at its last space before `W`; text with no such space is not broken. Database, language and charset-change messages (5701/5703/5704) are not printed. A one-line `isqlline` command is sent after an empty line, as legacy's wrapper does, so errors report `Line 2`.
+- **Echo (`-E`).** Each batch as `isql -e` prints it: `1> `, `2> ` … per line, `go` not echoed. `runsql` also echoes (and runs) `use <db>` and the changelog batch first, and a final `1> ` for the empty batch legacy appended to every script.
+- **runsql.** `Running <full path> on <server> in <db> ` (trailing space; ` <n>` before it with -F/-L), on every platform; a missing script prints `<full path> not found.`; no per-batch status line; `&db&` and `&sv&` are replaced by the database and server as given (legacy substitute_options); a `!!` command's output is followed by isql's `[sh:<command>]`; the changelog record is legacy's (`runsql [-F<n> -L<n> ]<path> <db> <server> <company>`, `-r` refno, an -F/-L run logged once); the changelog's output is printed (PostgreSQL: echoed, run silently, and `use <db>` echoed but not run — the connection already sits in that database/schema). On Sybase its session asks for the utf8 client charset (legacy runsql ran isql without `-J`), so the server converts char data and sizes char columns ×3 — falling back to the server charset where utf8 is refused. `isqlline` (legacy `-J`) uses the server charset.
+- **runcreate.** Legacy runcreate's frame: a line holding one space, `>>>>>>> RUNCREATE  <script>  <server>  ><out>.out <out>.err` (script, server and outfile as given; `> ` with no outfile), the date as Unix `date` prints it (`Wed Oct 21 15:28:41 CDT 2026`), a one-space line; the same four lines with `<<<<<<< END RUNCREATE` at the end. A missing script prints `Can't find create script: <script>`. The `.err` beside the `.out` always exists, empty when nothing failed. It logs nothing itself: each runsql it dispatches logs its script, as legacy's did, so each prints its changelog output.
+- **i_run_upgrade.** Legacy's ksh flow: in master, a select of `&upgrades&` for `CONTROL` (missing: `Upgrade table does not exist or control record missing on server <server>`) and for the upgrade (found: `This upgrade has already been run !!! `), printing nothing; then the insert (its `(1 row affected)`), the whole script through runsql (with `-r` as its refno), and, unless the script was not found, the `end_tm` update (its count).
+- **compute.** Each compute row (the driver parses `TDS_ALTFMT`/`TDS_ALTROW` and reports `ComputeRow` events) prints as a heading line of its aggregates' blank names, `Compute Result:`, a separator and the values: the aggregates left to right, each at its own type's width (not under the column it aggregates), laid out like a row. A row after a compute row (the next group of `compute ... by`) repeats the result set's heading. The statement's count includes the compute rows (the server counts them).
+- **Charset.** Output is the server's bytes in the session charset (isqlline: the server's, cp850 on GONZO; runsql: utf8), to the console and to `-O` files, as legacy wrote them. isql measures, pads and cuts in bytes, so `SybaseExecutor` feeds the formatter every server string as one character per byte and writes its lines as those bytes; in a utf8 session a value is never cut inside a character. On a Windows console the output code page is switched to the session charset's while output is written and restored after (Ctrl+C included). Profile `DATA_CHARSET` reinterpretation applies to bcp only, not to isql output. MSSQL and PostgreSQL output is unchanged (console encoding, UTF-8 files).
 
-Input #3 exists because `SchemaTable.ColumnSize` reports the **byte width** for fixed-length types — `datetime`=8, `int`=4, `bigint`=8, `bit`=1, `uniqueidentifier`=16. Without a type-aware floor, those byte counts collapse the column to ~10 chars (the hardcoded baseline) and `Substring(0, width)` in the row loop chops the rendered string. The original symptom: `dateadd(ss, min(int_col), "800101")` rendered as `MM/dd/yyyy` with the time silently dropped, while a non-aggregate `dateadd(ss, literal, ...)` in the same SELECT kept its time because that column's name/text happened to push the width higher.
+#### MSSQL mapping
 
-Floors (kept symmetric in `SybaseExecutor.cs`, `MssqlExecutor.cs`, and `PostgresExecutor.cs`):
+`MssqlExecutor` opens every session with `FireInfoMessageEventOnUserErrors`, so errors arrive through `InfoMessage` in server order with prints and rows (severity 20+ still throws), and takes row counts from `SqlCommand.StatementCompleted` (one per DONE token that carries a count; `set nocount on` sends none). The error header names `@@servername`.
 
-| .NET type | Floor | Rationale |
+| SQL Server type | prints as Sybase | width |
 |---|---|---|
-| `DateTime`, `DateTimeOffset` | 26 | `MM/dd/yyyy h:mm:ss tt` and Sybase isql's `Mon DD YYYY HH:MM:SS.fffAM` |
-| `Guid` | 36 | `xxxxxxxx-xxxx-…` canonical form |
-| `long`, `decimal`, `double` | 24 | room for `-9223372036854775808` and scaled decimal |
-| `int` | 11 | `-2147483648` |
-| `short` | 6 | `-32768` |
-| `byte` | 3 | `255` |
-| `float` | 14 | scientific notation |
-| `TimeSpan` | 16 | `-d.hh:mm:ss.fffffff` |
-| `bool` | 5 | `False` |
-| anything else (e.g. `string`, `byte[]`) | 0 | fall back to `ColumnSize`, which IS the printed width for these |
+| `tinyint` `smallint` `int` `bigint` | same | 3 / 6 / 11 / 20 |
+| `bit` | `bit` (1/0) | 1 |
+| `real` `float` | `float` | 27 |
+| `money` `smallmoney` | `money` | 24 |
+| `decimal(p,s)` `numeric(p,s)` | `numeric(p,s)` | p+3 |
+| `datetime` `smalldatetime` `datetime2` `datetimeoffset` | `datetime` (`datetimeoffset` at its own offset) | 31 |
+| `date` / `time` | `date` / `time` | 16 / 15 |
+| `char` `varchar` `nchar` `nvarchar` (n) | `char`/`varchar` (n characters) | n |
+| `varchar(max)` `nvarchar(max)` `text` `ntext` `xml` | `text` | 512, never cut |
+| `binary` `varbinary` (n), `timestamp`/`rowversion` | `binary` | 2+2n |
+| `varbinary(max)` `image` | `image` | 512, never cut |
+| `uniqueidentifier` | `char(36)` | 36 |
 
-When extending: if the AseClient or SqlClient starts returning a new fixed-length .NET type, add its row here — don't reach for `MaxColumnWidth` (that's the *cap*, not a default).
+Not matched on MSSQL: `(return status = N)` — SqlClient does not surface the return status of an `exec` inside a text batch (only of an RPC call, which would change the batch's scope); accepted, as the F4.8 compilers' `sqlcmd` never printed it either; a counted statement inside a procedure prints its count, because `StatementCompleted` does not say whether a DONE came from inside a procedure; error and message texts, numbers and line numbers are SQL Server's own.
+
+#### PostgreSQL mapping
+
+`PostgresExecutor` runs a chunk statement by statement (D3), synchronously, so notices interleave with rows. A notice prints like a print. `set nocount on|off` (T-SQL) is taken as a client setting and suppresses the counts. A statement's count is the rows it returned, or `RecordsAffected` for one that returned none; DDL, `DO` and `SET` print none. An error prints as `Msg <SQLSTATE>, Level 16, State 1:` (FATAL 20, PANIC 21) / `Line n:` / text: no `Server` part (PostgreSQL has no `@@servername`), the line is the batch line the error position points at (a whole-statement error: the statement's first line); an error raised inside a PL/pgSQL function shows `Procedure '<function>', Line <its line>:`, one in a `DO` block the batch line.
+
+| PostgreSQL type | prints as Sybase | width |
+|---|---|---|
+| `smallint` `integer` `bigint` (`oid`) | `smallint` `int` `bigint` | 6 / 11 / 20 |
+| `boolean` | `bit` (1/0) | 1 |
+| `real` `double precision` | `float` | 27 |
+| `money` | `money` | 24 |
+| `numeric(p,s)` | `numeric(p,s)` | p+3 |
+| `timestamp` `timestamptz` (local time) | `datetime` | 31 |
+| `date` / `time` `timetz` | `date` / `time` | 16 / 15 |
+| `char(n)` `varchar(n)` | `char`/`varchar` | n |
+| `uuid` | `char(36)` | 36 |
+| `bytea` | `varbinary` (0x hex) | sized to the longest value |
+| `text`, `varchar`, `numeric` without a modifier, and every other type (json, arrays, interval …) | `varchar` (numeric right-aligned) | sized to the longest value, capped at 512 |
+
+A result set with a column sized to its values is read whole before it prints; the others stream row by row. Not matched on PostgreSQL: a column without an alias is headed by PostgreSQL's own name (`?column?` prints as isql's blank heading, but `int4`, `repeat`, `now` … print); there is no `(return status = N)` and no `print` (use `RAISE NOTICE`); error texts are PostgreSQL's.
 
 ---
 
@@ -303,6 +334,10 @@ Runsql.Run(executor, profile, args);
 | `version` | Print version and exit |
 | `update` | Download latest from GitHub Releases |
 | `configure` | Show configuration status, add to PATH |
+
+### Full-screen console widgets — caret rule
+
+Hide the caret before any multi-row redraw; show it last, after positioning it on the input line (`ConsoleMenu.HideCaret` / `ConsoleMenu.ShowCaretAt`). A visible caret is seen jumping across the screen on every keystroke. Applies to `ProfilePicker`, `ProfileEditor`, `MessageForm`, `MessageBrowser`, `InteractiveCheckbox` and `ConsoleMenu.DrawChoiceBuffer`.
 
 ---
 

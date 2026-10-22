@@ -297,7 +297,8 @@ function Test-AdHocQueries {
     Test-Case 'isqlline.echo' {
         $r = Invoke-Cli isqlline 'SELECT(1+1)' 'master' $script:SourceProfile '-E'
         Assert-ExitCode $r
-        if ($r.StdOut -notmatch '1> SELECT\(1\+1\)') { throw "expected echo line numbers in output. stdout: $($r.StdOut)" }
+        # Legacy isqlline sends an empty line ahead of the command, so isql -e echoes "1> " first.
+        if ($r.StdOut -notmatch '(?m)^1> \r?\n2> SELECT\(1\+1\)') { throw "expected echo line numbers in output. stdout: $($r.StdOut)" }
     }
     Test-Case 'isqlline.outfile' {
         $out = Join-Path $script:Scratch 'isqlline.out'
@@ -326,7 +327,7 @@ function Test-AdHocQueries {
         $r = Invoke-Cli isqlline 'SELECT(1+1)' 'master' $script:SourceProfile '-POSTGRES'
         if ($r.ExitCode -eq 0) { throw '-POSTGRES against a non-Postgres server should not succeed' }
         if ($r.StdOut -match 'Usage:') { throw "-POSTGRES should be consumed as a valid flag, not rejected as bad usage. stdout: $($r.StdOut)" }
-        if ($r.StdOut -notmatch 'ERROR! Failed to Run\.') { throw "expected a dispatched-but-failed connection attempt, not a parse error. stdout: $($r.StdOut)" }
+        if ($r.StdOut -notmatch '(?m)^ERROR! ') { throw "expected a dispatched-but-failed connection attempt, not a parse error. stdout: $($r.StdOut)" }
     }
     Test-Case 'isqlline.error_bad_profile' {
         $r = Invoke-Cli isqlline 'SELECT(1+1)' 'master' 'NO_SUCH_PROFILE_XYZ'
@@ -402,19 +403,139 @@ function Test-AdHocQueries {
     }
     Test-Case 'isqlline.sybase_decimal_scale' {
         # AseClient returns numeric/money as a Decimal with the scale already stripped,
-        # so 1.00 arrived as 1 and printed as "1" where isql and SQL Server print "1.00".
-        # SybaseExecutor re-applies the declared scale; money reports NumericScale = -1
-        # and is resolved from the type name (always 4 places).
+        # so 1.00 arrived as 1 and printed as "1" where isql prints "1.00".
+        # SybaseExecutor re-applies the declared scale; money prints as isql prints it,
+        # with 2 places.
         $r = Invoke-Cli isqlline 'select(convert(numeric(10,3),2.5)),(convert(money,12.5)),(convert(int,7))' 'master' 'GONZO'
         Assert-ExitCode $r
         $out = $r.StdOut
-        foreach ($needle in @('2.500', '12.5000')) {
+        foreach ($needle in @('2.500', '12.50')) {
             if ($out -notmatch [regex]::Escape($needle)) {
                 throw "expected '$needle' - declared decimal scale must survive rendering. stdout: $out"
             }
         }
         # Integer columns must NOT pick up decimal places.
         if ($out -match '\b7\.0') { throw "int column was formatted as a decimal. stdout: $out" }
+    }
+    # Sybase output must be exactly what legacy isqlline / runsql (OCS isql 15.5 on Yoda) print
+    # against the same server. The .expected files in tests/fixtures/isql-parity were captured
+    # there (runsql's: without its running line and changelog, which --changelog:n drops here).
+    # Rules: docs/architecture.md, "isql output format". Output is redirected, so width 80.
+    $parityDir = Join-Path $PSScriptRoot 'fixtures\isql-parity'
+    function ConvertTo-LfText([string]$Text) { ($Text -replace "`r`n", "`n").TrimEnd("`n") }
+    Test-Case 'isqlline.sybase_isql_parity' {
+        $cases = @(
+            @{ Sql = 'select(1),(convert(money,1234.5)),(convert(numeric(10,3),1.5)),(convert(float,2.25)),(null)'; File = 'isqlline-select.expected' },
+            @{ Sql = 'select*from[no_such_table]'; File = 'isqlline-error.expected' }
+        )
+        foreach ($c in $cases) {
+            $r = Invoke-Cli isqlline $c.Sql 'master' 'GONZO'
+            $want = ConvertTo-LfText (Get-Content (Join-Path $parityDir $c.File) -Raw)
+            $got = ConvertTo-LfText $r.StdOut
+            if ($got -cne $want) { throw "isqlline output differs from legacy isql for $($c.Sql).`n--- want ---`n$want`n--- got ---`n$got" }
+        }
+    }
+    Test-Case 'runsql.sybase_isql_parity' {
+        $sqlFile = Join-Path $parityDir 'runsql-parity.sql'
+        $cases = @(
+            @{ Flags = @(); File = 'runsql-parity.expected' },
+            @{ Flags = @('-E'); File = 'runsql-parity-echo.expected' }
+        )
+        foreach ($c in $cases) {
+            $flags = $c.Flags
+            $r = Invoke-Cli runsql $sqlFile 'tempdb' 'GONZO' '--changelog:n' @flags
+            $lines = (ConvertTo-LfText $r.StdOut) -split "`n"
+            if ($lines[0] -cne "Running $sqlFile on GONZO in tempdb ") { throw "running line differs from legacy runsql's: '$($lines[0])'" }
+            $got = ($lines | Select-Object -Skip 1) -join "`n"
+            $want = ConvertTo-LfText (Get-Content (Join-Path $parityDir $c.File) -Raw)
+            if ($got -cne $want) { throw "runsql $($c.Flags) output differs from legacy runsql.`n--- want ---`n$want`n--- got ---`n$got" }
+        }
+    }
+    Test-Case 'isqlline.sybase_isql_parity_compute' {
+        # compute ... by: each group's rows, its compute block (blank aggregate heading, "Compute
+        # Result:", separator, values), the heading again for the next group; the count includes
+        # the compute rows. The driver parses TDS_ALTFMT/TDS_ALTROW for this.
+        $sql = "`"set nocount on create table #t (g int, a int, m money null, s varchar(10)) insert #t values (1,10,1.5,'aa') insert #t values (1,20,null,'bb') insert #t values (2,5,3.25,'cc') insert #t values (3,7,0,'dd') insert #t values (3,8,2,'ee') set nocount off select g, a, m from #t order by g compute sum(a), max(m) by g compute count(a)`""
+        $r = Invoke-Cli isqlline $sql 'tempdb' 'GONZO'
+        $want = ConvertTo-LfText (Get-Content (Join-Path $parityDir 'isqlline-compute.expected') -Raw)
+        $got = ConvertTo-LfText $r.StdOut
+        if ($got -cne $want) { throw "isqlline compute output differs from legacy isql.`n--- want ---`n$want`n--- got ---`n$got" }
+    }
+    # Non-ASCII data: legacy wrote the server's bytes in the session charset (isqlline: the
+    # server's, cp850 on GONZO; runsql: utf8, where isql pads and cuts in bytes and never inside
+    # a character). Compared byte for byte through -O files.
+    function Assert-SameBytes([string]$File, [byte[]]$Want, [int]$SkipLines = 0) {
+        $got = [IO.File]::ReadAllBytes($File)
+        for ($i = 0; $i -lt $SkipLines; $i++) { $got = $got[([Array]::IndexOf($got, [byte]10) + 1)..($got.Length - 1)] }
+        $got = [byte[]]($got | Where-Object { $_ -ne 13 }); $Want = [byte[]]($Want | Where-Object { $_ -ne 13 })
+        if ([Convert]::ToBase64String($got) -cne [Convert]::ToBase64String($Want)) {
+            throw "bytes differ from legacy.`n--- want ---`n$([BitConverter]::ToString($Want))`n--- got ---`n$([BitConverter]::ToString($got))"
+        }
+    }
+    Test-Case 'isqlline.sybase_isql_parity_charset' {
+        $out = [IO.Path]::GetTempFileName()
+        try {
+            $r = Invoke-Cli isqlline "`"select x=char(201)+'tude', y=convert(char(4), char(233)+'a')`"" 'tempdb' 'GONZO' '-O' $out
+            Assert-ExitCode $r
+            Assert-SameBytes $out ([IO.File]::ReadAllBytes((Join-Path $parityDir 'isqlline-charset.expected')))
+        } finally { Remove-Item $out -ErrorAction SilentlyContinue }
+    }
+    Test-Case 'runsql.sybase_isql_parity_charset' {
+        $out = [IO.Path]::GetTempFileName()
+        try {
+            $r = Invoke-Cli runsql (Join-Path $parityDir 'runsql-charset.sql') 'tempdb' 'GONZO' '--changelog:n' '-O' $out
+            Assert-ExitCode $r
+            # The first line is runsql's running line.
+            Assert-SameBytes $out ([IO.File]::ReadAllBytes((Join-Path $parityDir 'runsql-charset.expected'))) 1
+        } finally { Remove-Item $out -ErrorAction SilentlyContinue }
+    }
+    # MSSQL and PostgreSQL print the same isql layout. The *-portable / -named fixtures are legacy
+    # Sybase output (isql on Yoda) for SQL each platform runs alike, so the comparison is against
+    # legacy itself. Error text and server names are the server's own; only their layout is checked.
+    function Invoke-RunsqlParity([string]$Profile, [string]$Db) {
+        $sqlFile = Join-Path $parityDir 'runsql-parity-portable.sql'
+        foreach ($c in @(@{ Flags = @(); File = 'runsql-parity-portable.expected' },
+                         @{ Flags = @('-E'); File = 'runsql-parity-portable-echo.expected' })) {
+            $flags = $c.Flags
+            $r = Invoke-Cli runsql $sqlFile $Db $Profile '--changelog:n' @flags
+            $lines = (ConvertTo-LfText $r.StdOut) -split "`n"
+            if ($lines[0] -cne "Running $sqlFile on $Profile in $Db ") { throw "running line differs from legacy runsql's: '$($lines[0])'" }
+            $got = ($lines | Select-Object -Skip 1) -join "`n"
+            $want = ConvertTo-LfText (Get-Content (Join-Path $parityDir $c.File) -Raw)
+            if ($got -cne $want) { throw "runsql $($c.Flags) on $Profile differs from legacy runsql.`n--- want ---`n$want`n--- got ---`n$got" }
+        }
+    }
+    Test-Case 'runsql.sybase_isql_parity_portable' { Invoke-RunsqlParity 'GONZO' 'tempdb' }
+    Test-Case 'runsql.mssql_isql_parity' { Invoke-RunsqlParity $script:SourceProfile 'tempdb' }
+    Test-Case 'isqlline.mssql_isql_parity' {
+        $cases = @(
+            @{ Sql = 'select(1),(convert(money,1234.5)),(convert(numeric(10,3),1.5)),(convert(float,2.25)),(null)'; File = 'isqlline-select.expected' },
+            @{ Sql = "`"print 'batch one' select a=1, m=convert(money,1234.5), d=convert(datetime,'2026-01-02 03:04:05'), n=convert(numeric(10,3),1.5), z=convert(int,null) create table #r (a int, b int null) insert #r values (1, 10) insert #r values (2, null) select * from #r select a from #r where 1=2 set nocount on update #r set b = 0 select b from #r`""; File = 'isqlline-named.expected' }
+        )
+        foreach ($c in $cases) {
+            $r = Invoke-Cli isqlline $c.Sql 'tempdb' $script:SourceProfile
+            $want = ConvertTo-LfText (Get-Content (Join-Path $parityDir $c.File) -Raw)
+            $got = ConvertTo-LfText $r.StdOut
+            if ($got -cne $want) { throw "MSSQL isqlline output differs from legacy isql for $($c.Sql).`n--- want ---`n$want`n--- got ---`n$got" }
+        }
+        $r = Invoke-Cli isqlline 'select*from[no_such_table]' 'tempdb' $script:SourceProfile
+        $lines = (ConvertTo-LfText $r.StdOut) -split "`n"
+        if ($lines[0] -cne 'Msg 208, Level 16, State 1:' -or $lines[1] -notmatch "^Server '.+', Line 2:$") {
+            throw "MSSQL error is not in isql's Msg/Server/Line layout:`n$($r.StdOut)"
+        }
+    }
+    Test-Case 'isqlline.postgres_isql_parity' {
+        $named = "`"do `$`$ begin raise notice 'batch one'; end `$`$; select 1 as a, 1234.5::money as m, timestamp '2026-01-02 03:04:05' as d, 1.5::numeric(10,3) as n, null::int as z; create temp table r (a int, b int null); insert into r values (1, 10); insert into r values (2, null); select * from r; select a from r where 1=2; set nocount on; update r set b = 0; select b from r`""
+        foreach ($c in @(@{ Sql = $named; File = 'isqlline-named.expected' },
+                         @{ Sql = 'select(1/0)'; File = 'isqlline-postgres-error.expected' })) {
+            $r = Invoke-Cli isqlline $c.Sql 'pgtest' 'PGTEST'
+            if ("$($r.StdOut)" -match 'Failed to connect') {
+                throw 'PGTEST is not reachable - start local Postgres (localhost:54329) to run this case'
+            }
+            $want = ConvertTo-LfText (Get-Content (Join-Path $parityDir $c.File) -Raw)
+            $got = ConvertTo-LfText $r.StdOut
+            if ($got -cne $want) { throw "PostgreSQL isqlline output differs from legacy isql for $($c.Sql).`n--- want ---`n$want`n--- got ---`n$got" }
+        }
     }
     Test-Case 'isqlline.error_postgres_exit_code' {
         # ExecReturn is a struct: RunChunk once took it by value, so every Postgres error
@@ -501,7 +622,9 @@ function Test-ScriptExecution {
     Test-Case 'runsql.basic' {
         $r = Invoke-Cli runsql $sql 'master' $script:SourceProfile '--changelog:n'
         Assert-ExitCode $r
-        if ($r.StdOut -notmatch 'return status = 0') { throw "expected 'return status = 0'. stdout: $($r.StdOut)" }
+        if ($r.StdOut -notmatch '\(1 row affected\)') { throw "expected '(1 row affected)'. stdout: $($r.StdOut)" }
+        # Legacy isql prints a return status only after a procedure, never per batch.
+        if ($r.StdOut -match 'return status') { throw "no procedure ran, so no return status. stdout: $($r.StdOut)" }
     }
     Test-Case 'runsql.echo' {
         $r = Invoke-Cli runsql $sql 'master' $script:SourceProfile '-E' '--changelog:n'
@@ -513,13 +636,31 @@ function Test-ScriptExecution {
         $r = Invoke-Cli runsql $sql 'master' $script:SourceProfile '--preview' '--changelog:n'
         Assert-ExitCode $r
         if ($r.StdOut -notmatch 'SELECT 1') { throw "preview should include the SQL. stdout: $($r.StdOut)" }
-        if ($r.StdOut -match 'return status = 0') { throw "preview should NOT execute (saw 'return status = 0')" }
+        if ($r.StdOut -match 'row affected') { throw "preview should NOT execute (saw '(1 row affected)')" }
     }
     Test-Case 'runsql.no_changelog' {
         # --changelog:n should suppress the ba_gen_chg_log_new exec
         $r = Invoke-Cli runsql $sql 'master' $script:SourceProfile '--changelog:n'
         Assert-ExitCode $r
         if ($r.StdOut -match 'ba_gen_chg_log_new') { throw "--changelog:n should suppress changelog SQL but it appeared" }
+    }
+    Test-Case 'runsql.changelog_legacy_record' {
+        # Legacy runsql's changelog record, with -r as its refno; the -F/-L form is logged once.
+        $r = Invoke-Cli runsql $sql 'master' $script:TestProfile '--preview' '-r' 'R42'
+        Assert-ExitCode $r
+        if ($r.StdOut -notmatch "'RUNSQL', '',  'runsql \S+ master $($script:TestProfile) \S*', 'R42', 'X'") { throw "changelog record differs from legacy runsql's. stdout: $($r.StdOut)" }
+        $r = Invoke-Cli runsql $sql 'master' $script:TestProfile '--preview' '-F1' '-L2'
+        Assert-ExitCode $r
+        $logs = [regex]::Matches($r.StdOut, "'runsql -F1 -L2 \S+ master $($script:TestProfile) \S*', '','X'").Count
+        if ($logs -ne 1) { throw "expected one -F/-L changelog record, saw $logs. stdout: $($r.StdOut)" }
+    }
+    Test-Case 'runsql.substitutes_db_and_sv' {
+        # Legacy substitute_options replaced &db& and &sv& (upgrade scripts' `!!runsql x.sql &db& &sv&`).
+        $s = Join-Path $script:Scratch 'dbsv.sql'
+        @("select '&db&', '&sv&'", 'go') | Set-Content $s -Encoding ASCII
+        $r = Invoke-Cli runsql $s 'master' $script:TestProfile '--preview' '--changelog:n'
+        Assert-ExitCode $r
+        if ($r.StdOut -notmatch "select 'master', '$($script:TestProfile)'") { throw "&db&/&sv& not substituted. stdout: $($r.StdOut)" }
     }
     Test-Case 'runsql.outfile' {
         # runsql -O writes to the named file directly (no auto-suffix).
@@ -530,14 +671,14 @@ function Test-ScriptExecution {
         Assert-ExitCode $r
         if (-not (Test-Path $out)) { throw "outfile not created at $out" }
         $content = Get-Content $out -Raw
-        if ($content -notmatch 'return status = 0') { throw "outfile lacks 'return status = 0'" }
+        if ($content -notmatch '\(1 row affected\)') { throw "outfile lacks '(1 row affected)'" }
     }
     Test-Case 'runsql.seq' {
         # Sequence loop: -F1 -L3 should run the script three times.
         $r = Invoke-Cli runsql $sql 'master' $script:SourceProfile '-F1' '-L3' '--changelog:n'
         Assert-ExitCode $r
-        # Each iteration prints "Running N of 3:" — count occurrences
-        $runs = ([regex]::Matches($r.StdOut, 'Running \d+ of 3')).Count
+        # Each iteration prints legacy runsql's "Running <script> on <server> in <db> <N> " — count them
+        $runs = ([regex]::Matches($r.StdOut, '(?m)^Running .+ on \S+ in master [123] \r?$')).Count
         if ($runs -ne 3) { throw "expected 3 sequenced runs, saw $runs. stdout: $($r.StdOut)" }
     }
     Test-Case 'runsql.shell_escape' {
@@ -548,8 +689,10 @@ function Test-ScriptExecution {
         $r = Invoke-Cli runsql $sh 'master' $script:SourceProfile '--changelog:n'
         Assert-ExitCode $r
         if ($r.StdOut -notmatch 'SHELL-ESCAPE-OK') { throw "!! command output missing. stdout: $($r.StdOut)" }
-        $statuses = ([regex]::Matches($r.StdOut, 'return status = 0')).Count
-        if ($statuses -ne 2) { throw "expected both SELECT batches to run (saw $statuses statuses). stdout: $($r.StdOut)" }
+        # isql's own line follows the command's output
+        if ($r.StdOut -notmatch '(?m)SHELL-ESCAPE-OK\s*\r?\n\[sh:echo SHELL-ESCAPE-OK\]') { throw "expected isql's '[sh:<command>]' after the output. stdout: $($r.StdOut)" }
+        $statuses = ([regex]::Matches($r.StdOut, '\(1 row affected\)')).Count
+        if ($statuses -ne 2) { throw "expected both SELECT batches to run (saw $statuses row counts). stdout: $($r.StdOut)" }
     }
     Test-Case 'runsql.shell_escape_fail' {
         # A !! command with a non-zero exit code fails the run.
@@ -598,9 +741,16 @@ function Test-ScriptExecution {
     Test-Case 'runcreate.basic' {
         $r = Invoke-Cli runcreate $createFile $script:TestProfile
         Assert-ExitCode $r
-        if ($r.StdOut -notmatch 'started')   { throw "expected 'started' marker. stdout: $($r.StdOut)" }
-        if ($r.StdOut -notmatch 'total time') { throw "expected 'total time' marker. stdout: $($r.StdOut)" }
-        if ($r.StdOut -notmatch 'return status = 0') { throw "dispatched runsql should produce 'return status = 0'" }
+        # Legacy runcreate's banners: " ", the RUNCREATE line, Unix date, " " - and the same closing.
+        $lines = ($r.StdOut -replace "`r`n", "`n") -split "`n"
+        $date = '^\w{3} \w{3} [ \d]\d \d\d:\d\d:\d\d \S+ \d{4}$'
+        # (option-file warnings from building the options may come first)
+        $i = [array]::IndexOf($lines, ">>>>>>> RUNCREATE  $createFile  $($script:TestProfile)  > ")
+        if ($i -lt 1 -or $lines[$i - 1] -cne ' ' -or $lines[$i + 1] -notmatch $date -or $lines[$i + 2] -cne ' ') {
+            throw "opening banner differs from legacy runcreate's. stdout: $($r.StdOut)"
+        }
+        if ($r.StdOut -notmatch "(?m)^<<<<<<< END RUNCREATE  $([regex]::Escape($createFile))  $($script:TestProfile)  > \r?$") { throw "expected the END RUNCREATE banner. stdout: $($r.StdOut)" }
+        if ($r.StdOut -notmatch '\(1 row affected\)') { throw "dispatched runsql should produce '(1 row affected)'" }
     }
     Test-Case 'runcreate.outfile' {
         $out = Join-Path $script:Scratch 'rc-log'
@@ -608,8 +758,37 @@ function Test-ScriptExecution {
         $r = Invoke-Cli runcreate $createFile $script:TestProfile $out
         Assert-ExitCode $r
         if (-not (Test-Path "$out.out")) { throw ".out file not created at $out.out" }
+        # Legacy runcreate always leaves the .err beside the .out, empty when nothing failed.
+        if (-not (Test-Path "$out.err")) { throw ".err file not created at $out.err" }
         $content = Get-Content "$out.out" -Raw
-        if ($content -notmatch 'return status = 0') { throw ".out file lacks 'return status = 0'" }
+        if ($content -notmatch '\(1 row affected\)') { throw ".out file lacks '(1 row affected)'" }
+        if ($content -notmatch [regex]::Escape(">>>>>>> RUNCREATE  $createFile  $($script:TestProfile)  >$out.out $out.err")) { throw ".out file lacks the RUNCREATE banner naming the outfiles: $content" }
+    }
+    Test-Case 'runcreate.legacy_dash_o' {
+        # Legacy `runcreate -o <script> <server> [outfile]`: console output, the outfile ignored.
+        $out = Join-Path $script:Scratch 'rc-dash-o'
+        Remove-Item "$out.out","$out.err" -Force -ErrorAction SilentlyContinue
+        $r = Invoke-Cli runcreate '-o' $createFile $script:TestProfile $out '--changelog:n'
+        Assert-ExitCode $r
+        if ($r.StdOut -notmatch '\(1 row affected\)') { throw "-o should print to the console. stdout: $($r.StdOut)" }
+        if ((Test-Path "$out.out") -or (Test-Path "$out.err")) { throw '-o should ignore the outfile' }
+    }
+    Test-Case 'runcreate.outfile_errors_stay_in_out' {
+        # Legacy runcreate's .err was a diff of the output against itself: empty even when a script
+        # fails. The error belongs in the .out, and nothing (no "Elapsed:") goes anywhere else.
+        $bad = Join-Path $script:Scratch 'rc-bad.sql'
+        "selec 2`ngo" | Set-Content $bad -Encoding ASCII
+        $badCreate = Join-Path $script:Scratch 'bad.create'
+        'runsql $ir>rc-bad.sql -Dmaster' | Set-Content $badCreate -Encoding ASCII
+        $out = Join-Path $script:Scratch 'rc-bad-log'
+        Remove-Item "$out.out","$out.err" -Force -ErrorAction SilentlyContinue
+        $r = Invoke-Cli runcreate $badCreate $script:TestProfile $out '--changelog:n'
+        if (-not (Test-Path "$out.err")) { throw ".err file not created at $out.err" }
+        $err = [string](Get-Content "$out.err" -Raw)
+        if ($err.Length -gt 0) { throw ".err should be empty as legacy left it: $err" }
+        $content = Get-Content "$out.out" -Raw
+        if ($content -notmatch 'Msg 2812') { throw ".out lacks the script's error: $content" }
+        if ($content -match 'Elapsed:' -or $r.StdOut -match 'Elapsed:') { throw "legacy printed no 'Elapsed:' line" }
     }
     Test-Case 'runcreate.platform_lines' {
         $platCreate = Join-Path $script:Scratch 'platform.create'
@@ -620,9 +799,9 @@ function Test-ScriptExecution {
         ) | Set-Content $platCreate -Encoding ASCII
         $r = Invoke-Cli runcreate $platCreate $script:TestProfile
         Assert-ExitCode $r
-        $runs = ([regex]::Matches($r.StdOut, 'Running:')).Count
+        $runs = ([regex]::Matches($r.StdOut, '(?m)^Running .+ on ')).Count
         if ($runs -ne 1) { throw "expected exactly 1 #NT dispatch (got $runs). stdout: $($r.StdOut)" }
-        if ($r.StdOut -notmatch 'return status = 0') { throw "the #NT dispatch should produce a successful run" }
+        if ($r.StdOut -notmatch '\(1 row affected\)') { throw "the #NT dispatch should produce a successful run" }
     }
     Skip-Case 'runcreate.platform_lines_postgres' 'the #NT/#UNIX prefixes here are OS dispatch lines, not DB platform (-MSSQL/-POSTGRES); no Postgres-specific create-file directive exists to mirror'
     Test-Case 'runcreate.dispatch_unknown_verb' {
@@ -663,6 +842,75 @@ function Test-ScriptExecution {
         # PS5 Start-Process rejects empty -ArgumentList; pass a single bogus arg.
         $r = Invoke-Cli i_run_upgrade 'bogus'
         if ($r.ExitCode -eq 0) { throw 'i_run_upgrade with insufficient args should fail' }
+    }
+    if (-not (Get-Profile $SybaseProfile)) {
+        foreach ($id in 'iupgrade.legacy_flow', 'iupgrade.bang_runsql_mock') {
+            Skip-Case $id "profile '$SybaseProfile' not in settings.json - needs a live Sybase profile with &upgrades& and sbntest"
+        }
+    } else {
+        Test-Case 'iupgrade.legacy_flow' {
+            # Legacy ksh flow: the insert's count, runsql's output, the end_tm update's count; a
+            # second run refuses. The throwaway upgrade row is removed afterwards.
+            $upg = "ZZ.TEST.$PID"
+            # The whole script goes through runsql, which (like legacy) sends `#` lines to the server.
+            $flowScript = Join-Path $script:Scratch 'upgrade-flow.sql'
+            @('SELECT 1', 'go') | Set-Content $flowScript -Encoding ASCII
+            try {
+                $r = Invoke-Cli i_run_upgrade 'tempdb' $SybaseProfile $upg $flowScript '--changelog:n'
+                Assert-ExitCode $r
+                $o = $r.StdOut -replace "`r`n", "`n"
+                if ($o -notmatch '^\(1 row affected\)\nRunning \S+ on \S+ in tempdb \n') { throw "expected the insert's count, then runsql's Running line. stdout: $o" }
+                if ($o -notmatch '\(1 row affected\)\n\(1 row affected\)\s*$') { throw "expected the script's count, then the update's. stdout: $o" }
+                $r = Invoke-Cli i_run_upgrade 'tempdb' $SybaseProfile $upg $flowScript '--changelog:n'
+                if ($r.StdOut -notmatch 'This upgrade has already been run !!! ') { throw "second run should refuse. stdout: $($r.StdOut)" }
+            } finally {
+                $d = Invoke-Cli isqlline "`"delete &upgrades& where upgrade_no = '$upg'`"" 'master' $SybaseProfile
+                if ($d.StdOut -notmatch '\(1 row affected\)') { throw "could not remove upgrade row $upg from $SybaseProfile. stdout: $($d.StdOut)" }
+            }
+        }
+        Test-Case 'iupgrade.bang_runsql_mock' {
+            # A mock of a real upgrade script (sct_HELP_MESSAGES_bef.sql): sp_renametoold, then
+            # `!!runsql tbl_x.sql &db& &sv&` recreates the table with a new column, then the old
+            # rows are copied back. The nested runsql is the one under test (first on PATH) and logs
+            # its changelog like the real thing. Afterwards the mock tables, the upgrade row and
+            # the changelog rows are removed, and that is checked.
+            $tbl = "zz_upgmock_$PID"; $upg = "ZZ.MOCK.$PID"
+            $dir = Join-Path $script:Scratch "upgmock$PID"
+            New-Item -ItemType Directory -Force $dir | Out-Null
+            @("if exists (select * from sysobjects where name = '$tbl' and type = 'U')", "    drop table $tbl", 'go',
+              "create table $tbl (id int not null, name varchar(20) not null, added varchar(10) default '' not null)", 'go') |
+                Set-Content (Join-Path $dir "tbl_$tbl.sql") -Encoding ASCII
+            $sct = Join-Path $dir "sct_$upg`_bef.sql"
+            @('use sbntest', 'go', "exec sp_renametoold $tbl", 'go', "!!runsql tbl_$tbl.sql  &db& &sv&", 'go',
+              "insert $tbl", "  select *,''", "  from $($tbl)_old", 'go', "update statistics $tbl", 'go',
+              "select * from $tbl order by id", 'go', "drop table $($tbl)_old", 'go') | Set-Content $sct -Encoding ASCII
+            $drop = "if exists (select * from sysobjects where name = '$tbl') drop table $tbl " +
+                    "if exists (select * from sysobjects where name = '$($tbl)_old') drop table $($tbl)_old"
+            $oldPath = $env:PATH; $oldCwd = Get-Location
+            try {
+                $env:PATH = "$script:Bin;$oldPath"
+                Set-Location $dir
+                # (a drop and a create of one name must be separate batches on Sybase)
+                Invoke-Cli isqlline "`"$drop`"" 'sbntest' $SybaseProfile | Out-Null
+                $s = Invoke-Cli isqlline "`"create table $tbl (id int not null, name varchar(20) not null) insert $tbl values (1,'one') insert $tbl values (2,'two') insert $tbl values (3,'three')`"" 'sbntest' $SybaseProfile
+                if ($s.StdOut -match 'Msg ') { throw "could not seed $tbl. stdout: $($s.StdOut)" }
+                $r = Invoke-Cli i_run_upgrade 'sbntest' $SybaseProfile $upg $sct '--changelog:n'
+                Assert-ExitCode $r
+                $o = $r.StdOut -replace "`r`n", "`n"
+                if ($o -match 'Msg \d+') { throw "the mock upgrade raised a server error. stdout: $o" }
+                if ($o -notmatch "Renaming $tbl to $($tbl)_old") { throw "sp_renametoold did not run. stdout: $o" }
+                if ($o -notmatch "(?m)^Running \S+tbl_$tbl\.sql on $SybaseProfile in sbntest \n") { throw "the !!runsql did not run the table script in sbntest. stdout: $o" }
+                if ($o -notmatch "(?m)^\[sh:runsql tbl_$tbl\.sql  sbntest $SybaseProfile\]$") { throw "expected isql's [sh:] line with &db& and &sv& substituted. stdout: $o" }
+                if ($o -notmatch '(?s)\n +1 one .*\n +2 two .*\n +3 three .*\(3 rows affected\)') { throw "the old rows were not copied into the recreated table. stdout: $o" }
+            } finally {
+                Set-Location $oldCwd; $env:PATH = $oldPath
+                Invoke-Cli isqlline "`"$drop`"" 'sbntest' $SybaseProfile | Out-Null
+                Invoke-Cli isqlline "`"delete &upgrades& where upgrade_no = '$upg'`"" 'master' $SybaseProfile | Out-Null
+                Invoke-Cli isqlline "`"delete sbnmaster..ba_gen_chg_log where n_val like '%upgmock$PID%'`"" 'master' $SybaseProfile | Out-Null
+                $left = Invoke-Cli isqlline "`"select left_over = (select count(*) from sbntest..sysobjects where name like '$tbl%') + (select count(*) from &upgrades& where upgrade_no = '$upg') + (select count(*) from sbnmaster..ba_gen_chg_log where n_val like '%upgmock$PID%')`"" 'master' $SybaseProfile
+                if ($left.StdOut -notmatch '(?m)^\s+0\s*$') { throw "mock upgrade left rows or tables behind on $SybaseProfile. stdout: $($left.StdOut)" }
+            }
+        }
     }
 
     # ===== SR 52910: PostgreSQL splitter / cache-concurrency regressions =====
@@ -714,7 +962,7 @@ function Test-ScriptExecution {
         $lines | Set-Content $manifest -Encoding ASCII
         $r = Invoke-Cli runcreate $manifest $script:TestProfile '--changelog:n'
         Assert-ExitCode $r
-        $ok = ([regex]::Matches($r.StdOut, 'return status = 0')).Count
+        $ok = ([regex]::Matches($r.StdOut, '\(1 row affected\)')).Count
         if ($ok -lt 60) { throw "expected >=60 successful dispatches, saw $ok. stdout tail: $($r.StdOut.Substring([Math]::Max(0,$r.StdOut.Length-400)))" }
     }
 
@@ -738,13 +986,13 @@ function Test-ScriptExecution {
         $procs | ForEach-Object { $_.WaitForExit() }
         # Assert on captured OUTPUT, not $proc.ExitCode — the latter is unreliable via
         # Start-Process -PassThru under a busy harness. A crash would leave an unhandled-exception /
-        # sharing-violation trace on stderr; a partial/empty options load would lose 'return status'.
+        # sharing-violation trace on stderr; a partial/empty options load would lose the row count.
         $crash = 0; $noSucc = 0
         1..8 | ForEach-Object {
             $o = [string](Get-Content (Join-Path $script:Scratch "conc_$_.out") -Raw -EA SilentlyContinue)
             $e = [string](Get-Content (Join-Path $script:Scratch "conc_$_.err") -Raw -EA SilentlyContinue)
             if ($e -match 'Unhandled exception' -or $e -match 'being used by another process') { $crash++ }
-            if ($o -notmatch 'return status = 0') { $noSucc++ }
+            if ($o -notmatch '\(1 row affected\)') { $noSucc++ }
         }
         if ($crash -gt 0)  { throw "$crash of 8 concurrent runsql processes crashed (options-cache sharing violation)" }
         if ($noSucc -gt 0) { throw "$noSucc of 8 concurrent processes lacked a successful run (empty/partial options)" }
@@ -2154,6 +2402,23 @@ function Test-ProfileManagement {
         }
     }
 
+    Test-Case 'set_profile.save_keeps_unknown_sections' {
+        # A set_profile save rewrites settings.json; a top-level section it does not
+        # model (e.g. data_transfer) must survive the round trip.
+        $settingsPath = Join-Path $script:Bin 'settings.json'
+        $backup = [IO.File]::ReadAllText($settingsPath)
+        try {
+            $obj = $backup | ConvertFrom-Json
+            $obj | Add-Member -NotePropertyName 'suite_unknown_section' -NotePropertyValue ([pscustomobject]@{ keep = 'me' }) -Force
+            [IO.File]::WriteAllText($settingsPath, ($obj | ConvertTo-Json -Depth 20))
+            Assert-ExitCode (Invoke-Cli set_profile '--edit' $scratchProfile '--port' '1435')
+            $after = [IO.File]::ReadAllText($settingsPath) | ConvertFrom-Json
+            if (-not $after.PSObject.Properties['suite_unknown_section']) { throw "an unknown top-level section was dropped by the save" }
+            if ($after.suite_unknown_section.keep -ne 'me') { throw "unknown section content changed: $($after.suite_unknown_section | ConvertTo-Json -Compress)" }
+        }
+        finally { [IO.File]::WriteAllText($settingsPath, $backup) }
+    }
+
     Test-Case 'set_profile.copy' {
         $r = Invoke-Cli set_profile '--copy' $scratchProfile '--to' "${scratchProfile}_2"
         Assert-ExitCode $r
@@ -2446,11 +2711,16 @@ function Test-SharedProfiles {
         Set-Content -Path $emptyConfig -Value '' -Encoding ascii
         $savedGlobal = $env:GIT_CONFIG_GLOBAL
         $savedSystem = $env:GIT_CONFIG_SYSTEM
+        $savedCwd = [Environment]::CurrentDirectory
         try {
             # Scoped to the child processes this test starts - the machine's real
             # git config is never touched.
             $env:GIT_CONFIG_GLOBAL = $emptyConfig
             $env:GIT_CONFIG_SYSTEM = $emptyConfig
+            # Run from outside any repo: a checkout's own .git/config user.email would
+            # otherwise satisfy the identity check and hide the denial.
+            [Environment]::CurrentDirectory = $script:Scratch
+            Push-Location $script:Scratch
 
             foreach ($call in @(@('--shared'),
                                 @('--share', $script:TestProfile, '--dry-run'),
@@ -2458,18 +2728,26 @@ function Test-SharedProfiles {
                 $r = Invoke-Cli -Exe set_profile -Args $call
                 if ($r.ExitCode -eq 0) { throw "set_profile $($call -join ' ') must be denied without a git identity" }
                 $combined = "$($r.StdOut)`n$($r.StdErr)"
-                if ($combined -notmatch 'no git identity') {
+                if ($combined -notmatch 'no GitHub account is set') {
                     throw "expected the identity message for '$($call -join ' ')'. output: $combined"
                 }
-                if ($combined -notmatch 'innovative247/compiler-profiles') {
-                    throw "the denial must name the repo access is needed for. output: $combined"
+                if ($combined -match 'compilers-profiles') {
+                    throw "the denial must never show the shared-profiles repo URL. output: $combined"
                 }
-                if ($combined -notmatch 'git config --global user\.email') {
+                if ($combined -notmatch 'Shared profiles') {
                     throw "the denial must say how to fix it. output: $combined"
+                }
+                if ($combined -notmatch 'Next: .*Shared profiles') {
+                    throw "the denial must name the next step to take. output: $combined"
+                }
+                if ($combined -match 'git config --global') {
+                    throw "the denial must not tell the developer to change machine-wide git config. output: $combined"
                 }
             }
         }
         finally {
+            Pop-Location
+            [Environment]::CurrentDirectory = $savedCwd
             $env:GIT_CONFIG_GLOBAL = $savedGlobal
             $env:GIT_CONFIG_SYSTEM = $savedSystem
         }
@@ -2479,6 +2757,103 @@ function Test-SharedProfiles {
         $r = Invoke-Cli set_profile '--shared' '--view' $script:TestProfile
         if ($r.ExitCode -eq 0) { throw "--shared and --view together must fail" }
         if ("$($r.StdErr)" -notmatch 'mutually exclusive') { throw "expected 'mutually exclusive'. stderr: $($r.StdErr)" }
+    }
+
+    # Runs $Body with git config blanked, outside any repo, and settings.json carrying $Section (restored after).
+    function Invoke-WithScopedSharedSettings {
+        param($Section, [scriptblock]$Body)
+        $emptyConfig = Join-Path $script:Scratch 'empty-scoped.gitconfig'
+        Set-Content -Path $emptyConfig -Value '' -Encoding ascii
+        $settingsPath = Join-Path $script:Bin 'settings.json'
+        $backup = [IO.File]::ReadAllText($settingsPath)
+        $savedGlobal = $env:GIT_CONFIG_GLOBAL; $savedSystem = $env:GIT_CONFIG_SYSTEM
+        $savedCwd = [Environment]::CurrentDirectory
+        try {
+            $obj = $backup | ConvertFrom-Json
+            if ($obj.PSObject.Properties['SharedProfiles']) { $obj.PSObject.Properties.Remove('SharedProfiles') }
+            if ($Section) { $obj | Add-Member -NotePropertyName SharedProfiles -NotePropertyValue ([pscustomobject]$Section) }
+            [IO.File]::WriteAllText($settingsPath, ($obj | ConvertTo-Json -Depth 20))
+            $env:GIT_CONFIG_GLOBAL = $emptyConfig
+            $env:GIT_CONFIG_SYSTEM = $emptyConfig
+            [Environment]::CurrentDirectory = $script:Scratch
+            Push-Location $script:Scratch
+            & $Body
+            if ((Get-Content $emptyConfig -Raw) -match '\S') { throw "global git config was modified: $(Get-Content $emptyConfig -Raw)" }
+        }
+        finally {
+            Pop-Location
+            [Environment]::CurrentDirectory = $savedCwd
+            $env:GIT_CONFIG_GLOBAL = $savedGlobal
+            $env:GIT_CONFIG_SYSTEM = $savedSystem
+            [IO.File]::WriteAllText($settingsPath, $backup)
+        }
+    }
+
+    Test-Case 'set_profile.shared_settings_email_satisfies_identity' {
+        # No git identity anywhere, but SharedProfiles.Email is set in Compilers
+        # settings: that is the publishing identity, and --dry-run shows it as owner.
+        $email = 'suite.person@example.test'
+        Invoke-WithScopedSharedSettings @{ Email = $email; Name = 'Suite Person' } {
+            $r = Invoke-Cli -Exe set_profile -Args @('--share', $script:TestProfile, '--dry-run')
+            if ($r.ExitCode -ne 0) { throw "settings Email must satisfy identity. stdout: $($r.StdOut) stderr: $($r.StdErr)" }
+            if ("$($r.StdOut)" -notmatch [regex]::Escape($email)) { throw "owner must be the settings email. stdout: $($r.StdOut)" }
+        }
+    }
+
+    Test-Case 'set_profile.shared_status_reports_email_source' {
+        Invoke-WithScopedSharedSettings @{ Email = 'suite.person@example.test' } {
+            $r = Invoke-Cli -Exe set_profile -Args @('--shared-status')
+            $out = "$($r.StdOut)"
+            if ($out -notmatch 'suite\.person@example\.test') { throw "status must show the publishing email. stdout: $out" }
+            if ($out -notmatch 'from Compilers settings') { throw "status must name the settings as the source. stdout: $out" }
+            if ($out -notmatch 'Access:') { throw "status must report the access check. stdout: $out" }
+            $ok = $out -match 'Access:\s+OK'
+            if ($ok -and $r.ExitCode -ne 0) { throw "access OK must exit 0, got $($r.ExitCode)" }
+            if (-not $ok -and $r.ExitCode -ne 1) { throw "access not OK must exit 1, got $($r.ExitCode)" }
+        }
+        Invoke-WithScopedSharedSettings $null {
+            $r = Invoke-Cli -Exe set_profile -Args @('--shared-status')
+            if ("$($r.StdOut)" -notmatch 'Publish as:\s+not set') { throw "no identity must read 'not set'. stdout: $($r.StdOut)" }
+        }
+    }
+
+    Test-Case 'set_profile.shared_status_mutually_exclusive' {
+        $r = Invoke-Cli set_profile '--shared-status' '--shared'
+        if ($r.ExitCode -eq 0) { throw "--shared-status and --shared together must fail" }
+        if ("$($r.StdErr)" -notmatch 'mutually exclusive') { throw "expected 'mutually exclusive'. stderr: $($r.StdErr)" }
+    }
+
+    Test-Case 'set_profile.damaged_cache_never_touches_enclosing_repo' {
+        # A cache left with a .git folder but no HEAD (half-deleted) must not make git walk up
+        # into the repo that contains it. Runs on a scratch copy of the binaries inside a scratch repo.
+        $outer = Join-Path $script:Scratch 'outer-repo'
+        New-Item -ItemType Directory -Path $outer -Force | Out-Null
+        $emptyConfig = Join-Path $script:Scratch 'empty-damaged.gitconfig'
+        Set-Content -Path $emptyConfig -Value '' -Encoding ascii
+        $savedGlobal = $env:GIT_CONFIG_GLOBAL; $savedSystem = $env:GIT_CONFIG_SYSTEM; $savedBin = $script:Bin
+        try {
+            $env:GIT_CONFIG_GLOBAL = $emptyConfig; $env:GIT_CONFIG_SYSTEM = $emptyConfig
+            git -C $outer init -q
+            git -C $outer -c user.email=t@example.test -c user.name=t commit -q --allow-empty -m base
+            $headBefore = (git -C $outer rev-parse HEAD)
+            $copy = Join-Path $outer 'bin'
+            robocopy $script:Bin $copy /E /XD shared-profiles /NFL /NDL /NJH /NJS /NP | Out-Null
+            $obj = Get-Content (Join-Path $copy 'settings.json') -Raw | ConvertFrom-Json
+            $obj | Add-Member -NotePropertyName SharedProfiles -NotePropertyValue ([pscustomobject]@{ Email = 'suite.person@example.test' }) -Force
+            [IO.File]::WriteAllText((Join-Path $copy 'settings.json'), ($obj | ConvertTo-Json -Depth 20))
+            New-Item -ItemType Directory -Path (Join-Path $copy 'shared-profiles\.git\objects') -Force | Out-Null
+            Set-Content -Path (Join-Path $copy 'shared-profiles\.git\locked.tmp') -Value 'x' -Encoding ascii
+
+            $script:Bin = $copy
+            Invoke-Cli -Exe set_profile -Args @('--shared') | Out-Null
+            if (git -C $outer config --get remote.origin.url) { throw "the enclosing repo gained an origin remote" }
+            if ((git -C $outer rev-parse HEAD) -ne $headBefore) { throw "the enclosing repo's HEAD moved" }
+            if (git -C $outer status --porcelain --untracked-files=no) { throw "the enclosing repo's tree was changed" }
+        }
+        finally {
+            $script:Bin = $savedBin
+            $env:GIT_CONFIG_GLOBAL = $savedGlobal; $env:GIT_CONFIG_SYSTEM = $savedSystem
+        }
     }
 
     # The contract: a password never reaches the shared payload. --dry-run runs the
@@ -2516,6 +2891,42 @@ function Test-SharedProfiles {
         Assert-ExitCode $r
         if ($r.StdOut -notmatch 'nothing was published') { throw "dry run must say so. stdout: $($r.StdOut)" }
         if (-not $before -and (Test-Path $cache)) { throw "dry run created the store cache" }
+    }
+
+    # The repo was renamed with no redirect, so a cache cloned before it must be
+    # re-pointed at compilers-profiles. Offline: a pre-seeded cache, no network call.
+    Test-Case 'set_profile.cache_origin_migrated_to_renamed_repo' {
+        $gitOk = $false
+        try { & git --version *> $null; $gitOk = ($LASTEXITCODE -eq 0) } catch { }
+        if (-not $gitOk) { throw "git is required for this test" }
+
+        $cache = Join-Path $script:Bin 'shared-profiles'
+        $oldUrl = 'https://github.com/innovative247/compiler-profiles.git'
+        $created = -not (Test-Path (Join-Path $cache '.git'))
+        $prior = $null
+        if ($created) {
+            New-Item -ItemType Directory -Path $cache -Force | Out-Null
+            & git -C $cache init -q 2>&1 | Out-Null
+            & git -C $cache remote add origin $oldUrl 2>&1 | Out-Null
+        } else {
+            $prior = (& git -C $cache remote get-url origin).Trim()
+            & git -C $cache remote set-url origin $oldUrl 2>&1 | Out-Null
+        }
+        try {
+            $r = Invoke-Cli set_profile '--shared'
+            if ($r.ExitCode -ne 0 -and "$($r.StdOut)$($r.StdErr)" -match 'no GitHub account is set') {
+                Skip-Case 'set_profile.cache_origin_migrated_to_renamed_repo' 'no git identity on this machine'
+                return
+            }
+            $now = (& git -C $cache remote get-url origin).Trim()
+            if ($now -ne 'https://github.com/innovative247/compilers-profiles.git') {
+                throw "origin was not migrated. now: $now. output: $($r.StdOut) $($r.StdErr)"
+            }
+        }
+        finally {
+            if ($created) { Remove-Item $cache -Recurse -Force -ErrorAction SilentlyContinue }
+            elseif ($prior) { & git -C $cache remote set-url origin $prior 2>&1 | Out-Null }
+        }
     }
 
     # ---- store-backed: skipped cleanly when the developer has no access ----

@@ -78,7 +78,20 @@ namespace ibsCompiler
                 {
                     yield return "if exists (select * from &options& where id = 'gclog12' and act_flg = '+') ";
                     yield return "if exists (select * from &dbpro&..sysobjects where name = 'ba_gen_chg_log_new') ";
-                    yield return $"exec &dbpro&..ba_gen_chg_log_new '', '{descr}', '{prgno}', '', '{fullPath}', '{refno}','X'";
+                    if (prgno == "RUNSQL")
+                    {
+                        // The legacy ksh runsql's record, character for character - it is what -E echoes.
+                        // Its -F/-L form is logged once, on the first sequence (the caller's job).
+                        var who = $"User {WhoAmI} recompiled sproc or ran sql".Replace("'", "''");
+                        var seq = cmdvars.SeqLast < 1 ? "" : $"-F{cmdvars.SeqFirst} -L{cmdvars.SeqLast} ";
+                        var run = $"runsql {seq}{fullPath} {cmdvars.Database.Replace("'", "''")} {profile.ProfileName} {profile.Company}";
+                        var refNo = (cmdvars.RefNo ?? "").Replace("'", "''");
+                        yield return seq.Length == 0
+                            ? $"exec &dbpro&..ba_gen_chg_log_new '', '{who}', 'RUNSQL', '',  '{run}', '{refNo}', 'X'"
+                            : $"exec &dbpro&..ba_gen_chg_log_new '', '{who}', 'RUNSQL', '',  '{run}', '{refNo}','X'";
+                    }
+                    else
+                        yield return $"exec &dbpro&..ba_gen_chg_log_new '', '{descr}', '{prgno}', '', '{fullPath}', '{refno}','X'";
                     yield return "go";
                     yield return "";
                 }

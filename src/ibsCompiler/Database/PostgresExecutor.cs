@@ -7,8 +7,8 @@ using ibsCompiler.Configuration;
 namespace ibsCompiler.Database
 {
     /// <summary>
-    /// PostgreSQL executor (Npgsql). Mirrors MssqlExecutor's shape — streaming result
-    /// sets, per-call OutputSink wiring, GO-batch splitting — with the PG-specific
+    /// PostgreSQL executor (Npgsql). Mirrors MssqlExecutor's shape — result sets in isql's
+    /// layout through IsqlFormatter, per-call OutputSink wiring, GO-batch splitting — with the PG-specific
     /// behaviors the compiler needs:
     ///   * SBN "databases" are PG *schemas* in one physical database, so a `database`
     ///     argument that isn't the connection DB becomes `SET search_path TO <schema>, public`
@@ -51,25 +51,13 @@ namespace ibsCompiler.Database
         private bool _statistics;
         private bool _noexec;
 
-        // Width cap for streamed result-set columns (mirrors isql -w300).
-        private const int MaxColumnWidth = 256;
+        // set nocount on|off: T-SQL, not PG - tracked here and applied to the row counts printed.
+        private static readonly Regex NocountRegex = new(@"^\s*set\s+nocount\s+(on|off)\s*$", RegexOptions.IgnoreCase);
+        private bool _nocount;
 
-        // Minimum display width per .NET type. ColumnSize reports byte size for fixed-length
-        // types, which is too small for the rendered string. Returns 0 for variable-length
-        // types (string, byte[]) — they rely on ColumnSize directly.
-        private static int MinDisplayWidthForType(Type t)
-        {
-            if (t == typeof(DateTime) || t == typeof(DateTimeOffset)) return 26;
-            if (t == typeof(Guid)) return 36;
-            if (t == typeof(bool)) return 5;
-            if (t == typeof(long) || t == typeof(decimal) || t == typeof(double)) return 24;
-            if (t == typeof(int)) return 11;
-            if (t == typeof(short)) return 6;
-            if (t == typeof(byte)) return 3;
-            if (t == typeof(float)) return 14;
-            if (t == typeof(TimeSpan)) return 16;
-            return 0;
-        }
+        // isql-style renderer for the chunk currently executing; notices go through it too
+        // (docs/architecture.md, "isql output format").
+        private IsqlFormatter? _fmt;
 
         private static bool IsNumericType(Type t) =>
             t == typeof(int) || t == typeof(long) || t == typeof(short) ||
@@ -146,6 +134,7 @@ namespace ibsCompiler.Database
             _showplan = false;
             _statistics = false;
             _noexec = false;
+            _nocount = false;
         }
 
         public ExecReturn ExecuteSql(string sqlText, string database, bool captureOutput = false, string outputFile = "")
@@ -163,11 +152,12 @@ namespace ibsCompiler.Database
                 InitSession(conn, searchPath);
                 ResetDiagnostics();
 
+                int width = IsqlFormatter.ResolveWidth(captureOutput, outputFile);
                 foreach (var chunk in SplitBatches(sqlText))
                 {
                     if (string.IsNullOrWhiteSpace(chunk)) continue;
                     if (ExitRegex.IsMatch(chunk.Trim())) break;
-                    RunChunk(conn, chunk, sink.Emit, ref result);
+                    RunChunk(conn, chunk, sink.Emit, width, ref result);
                 }
             }
             catch (Exception ex)
@@ -204,7 +194,8 @@ namespace ibsCompiler.Database
             try
             {
                 if (!string.IsNullOrWhiteSpace(batch) && _persistentConn != null)
-                    RunChunk(_persistentConn, batch, sink.Emit, ref result);
+                    RunChunk(_persistentConn, batch, sink.Emit,
+                        IsqlFormatter.ResolveWidth(captureOutput, outputFile), ref result);
             }
             catch (Exception ex)
             {
@@ -233,47 +224,72 @@ namespace ibsCompiler.Database
         // `result` MUST be by-ref: ExecReturn is a struct (CommandVariables.cs:80), so a
         // by-value parameter would take the failure flag to the grave and every PG error
         // would print but still exit 0.
-        private void RunChunk(NpgsqlConnection conn, string chunk, Action<string> emit, ref ExecReturn result)
+        private void RunChunk(NpgsqlConnection conn, string chunk, Action<string> emit, int width, ref ExecReturn result)
         {
-            foreach (var stmt in SplitStatements(chunk))
+            var fmt = new IsqlFormatter(emit, width);
+            _fmt = fmt;
+            try
             {
-                // `use <db>` → schema switch (D1). Only statement-level substitution.
-                var useM = UseRegex.Match(stmt);
-                if (useM.Success)
+                int searchFrom = 0;
+                foreach (var stmt in SplitStatements(chunk))
                 {
+                    // The statement's first line within the chunk, which errors are reported from.
+                    int at = chunk.IndexOf(stmt, searchFrom, StringComparison.Ordinal);
+                    if (at < 0) at = searchFrom;
+                    int stmtLine = 1 + chunk.Take(at).Count(ch => ch == '\n');
+                    searchFrom = at + stmt.Length;
+
+                    // `use <db>` → schema switch (D1). Only statement-level substitution.
+                    var useM = UseRegex.Match(stmt);
+                    if (useM.Success)
+                    {
+                        var useSql = $"SET search_path TO {useM.Groups[1].Value}, public";
+                        try
+                        {
+                            using var uc = new NpgsqlCommand(useSql, conn);
+                            uc.ExecuteNonQuery();
+                        }
+                        catch (PostgresException ex)
+                        {
+                            EmitPgException(ex, fmt, useSql, stmtLine, 0);
+                            result.Returncode = false;
+                            return;
+                        }
+                        continue;
+                    }
+
+                    // Diagnostic set-statement — track state, emit nothing (matches Sybase silence).
+                    var diagM = DiagSetRegex.Match(stmt);
+                    if (diagM.Success)
+                    {
+                        UpdateDiagnostics(diagM);
+                        continue;
+                    }
+                    var nocountM = NocountRegex.Match(stmt);
+                    if (nocountM.Success)
+                    {
+                        _nocount = nocountM.Groups[1].Value.Equals("on", StringComparison.OrdinalIgnoreCase);
+                        continue;
+                    }
+
+                    var sql = ApplyDiagPrefix(stmt);
                     try
                     {
-                        using var uc = new NpgsqlCommand($"SET search_path TO {useM.Groups[1].Value}, public", conn);
-                        uc.ExecuteNonQuery();
+                        RunStatement(conn, sql, fmt);
                     }
                     catch (PostgresException ex)
                     {
-                        EmitPgException(ex, emit);
+                        EmitPgException(ex, fmt, sql, stmtLine, sql.Length - stmt.Length);
+                        // The failed statement's result set, if one had begun, ends here.
+                        fmt.Done(false, 0, isError: true);
                         result.Returncode = false;
-                        return;
+                        return; // abort remainder of this GO-chunk
                     }
-                    continue;
                 }
-
-                // Diagnostic set-statement — track state, emit nothing (matches Sybase silence).
-                var diagM = DiagSetRegex.Match(stmt);
-                if (diagM.Success)
-                {
-                    UpdateDiagnostics(diagM);
-                    continue;
-                }
-
-                var sql = ApplyDiagPrefix(stmt);
-                try
-                {
-                    StreamCommandAsync(conn, sql, emit).GetAwaiter().GetResult();
-                }
-                catch (PostgresException ex)
-                {
-                    EmitPgException(ex, emit);
-                    result.Returncode = false;
-                    return; // abort remainder of this GO-chunk
-                }
+            }
+            finally
+            {
+                _fmt = null;
             }
         }
 
@@ -305,21 +321,8 @@ namespace ibsCompiler.Database
             if (emit == null) return;
             var sev = e.Notice.Severity ?? "";
             if (sev.StartsWith("DEBUG", StringComparison.OrdinalIgnoreCase)) return; // NOTICE/INFO/WARNING pass
-            emit(e.Notice.MessageText);
-        }
-
-        // Mirror EmitSqlException's shape as closely as PG fields allow: a header line then the
-        // message text, plus Where/Line when the server supplied them.
-        private static void EmitPgException(PostgresException ex, Action<string> emit)
-        {
-            // NOTE: ex.Line is the PG *server source* line (errors.c:872), not the user's SQL —
-            // reporting it as "Line" is actively misleading. ex.Position is the 1-based
-            // character offset into the statement that was sent, which is what the user can act on.
-            var header = $"Msg {ex.SqlState}, Severity {ex.Severity}";
-            if (ex.Position > 0) header += $", Position {ex.Position}";
-            emit(header);
-            emit(ex.MessageText);
-            if (!string.IsNullOrEmpty(ex.Where)) emit(ex.Where);
+            // A notice prints like an isql print / informational message: its text, wrapped.
+            (_fmt ?? new IsqlFormatter(emit, IsqlFormatter.DefaultWidth)).Message(e.Notice.MessageText);
         }
 
         public ExecReturn BulkCopy(string table, BcpDirection direction, string dataFile, string formatFile = "", string fieldTerminator = "\t", int batchSize = 0)
@@ -652,71 +655,6 @@ namespace ibsCompiler.Database
         // Dollar-tag recognition lives in ibs_compiler_common.MatchDollarTag (shared with the
         // batch-level PgDollarQuoteTracker) so the splitter and tracker agree on body boundaries.
 
-        // Execute one statement and stream its output (D6: refcursor auto-dereference).
-        //
-        // SBN procs ported to PG are authored as `returns setof refcursor` — one cursor per
-        // Sybase result set. `select * from proc(...)` then yields a result set of cursor
-        // *names* (`<unnamed portal 1>`…), and the cursors themselves die at end of the
-        // producing statement's transaction. To reproduce Sybase isql's multi-resultset output,
-        // when the result set is refcursor-typed we collect the names and `FETCH ALL FROM` each,
-        // in order, streaming those sets through the normal formatter — the name result is not
-        // printed.
-        //
-        // Both the producing statement and the FETCHes must run in the SAME transaction (a
-        // non-holdable cursor only lives to the end of the transaction that opened it), so the
-        // statement is wrapped in an explicit BEGIN/COMMIT. A single statement inside BEGIN/COMMIT
-        // is autocommit-equivalent, so this is invisible for the non-refcursor path — same result,
-        // same durability, locks released at commit exactly as before. We can't know a statement
-        // is refcursor-typed until after it executes, hence the wrapper is unconditional.
-        private static async System.Threading.Tasks.Task StreamCommandAsync(NpgsqlConnection conn, string sql, Action<string> emit)
-        {
-            await using var tx = await conn.BeginTransactionAsync();
-
-            List<string>? cursorNames = null;
-            using (var cmd = new NpgsqlCommand(sql, conn) { CommandTimeout = 0, Transaction = tx })
-            using (var reader = await cmd.ExecuteReaderAsync())
-            {
-                if (ResultIsAllRefcursor(reader))
-                    cursorNames = CollectCursorNames(reader);   // no output for the name result
-                else
-                    await StreamReaderAsync(reader, emit);       // untouched non-refcursor path
-            } // producing reader closed; tx still open → its refcursors stay alive to FETCH
-
-            if (cursorNames != null)
-                foreach (var name in cursorNames)
-                {
-                    using var fcmd = new NpgsqlCommand($"FETCH ALL FROM {QuoteIdent(name)}", conn)
-                        { CommandTimeout = 0, Transaction = tx };
-                    using var freader = await fcmd.ExecuteReaderAsync();
-                    await StreamReaderAsync(freader, emit);
-                }
-
-            await tx.CommitAsync();
-        }
-
-        // Stream every result set an open reader carries, mirroring Sybase/MSSQL multi-set output.
-        private static async System.Threading.Tasks.Task StreamReaderAsync(NpgsqlDataReader reader, Action<string> emit)
-        {
-            bool hadResultSet = false;
-            do
-            {
-                if (reader.FieldCount > 0)
-                {
-                    hadResultSet = true;
-                    await StreamOneResultSetAsync(reader, emit);
-                }
-            } while (await reader.NextResultAsync());
-
-            if (!hadResultSet)
-            {
-                int n = reader.RecordsAffected;
-                if (n < 0) n = 0;
-                var rowWord = n == 1 ? "row" : "rows";
-                emit($"({n} {rowWord} affected)");
-                emit("");
-            }
-        }
-
         // True only when the reader's current result set has ≥1 column and EVERY column is the
         // PG `refcursor` type. Mixed columns (refcursor + other) return false — we print the raw
         // result then, rather than guess (matches the SR 52910 contract).
@@ -751,87 +689,274 @@ namespace ibsCompiler.Database
             return names;
         }
 
-        private static async System.Threading.Tasks.Task StreamOneResultSetAsync(NpgsqlDataReader reader, Action<string> emit)
+        // Execute one statement and render its output (D6: refcursor auto-dereference).
+        //
+        // SBN procs ported to PG are authored as `returns setof refcursor` — one cursor per
+        // Sybase result set. `select * from proc(...)` then yields a result set of cursor
+        // *names* (`<unnamed portal 1>`…), and the cursors themselves die at end of the
+        // producing statement's transaction. To reproduce Sybase isql's multi-resultset output,
+        // when the result set is refcursor-typed we collect the names and `FETCH ALL FROM` each,
+        // in order, rendering those sets through the isql formatter — the name result is not
+        // printed.
+        //
+        // Both the producing statement and the FETCHes must run in the SAME transaction (a
+        // non-holdable cursor only lives to the end of the transaction that opened it), so the
+        // statement is wrapped in an explicit BEGIN/COMMIT. A single statement inside BEGIN/COMMIT
+        // is autocommit-equivalent, so this is invisible for the non-refcursor path — same result,
+        // same durability, locks released at commit exactly as before. We can't know a statement
+        // is refcursor-typed until after it executes, hence the wrapper is unconditional.
+        //
+        // Everything runs synchronously so notices (raised on the reading thread) interleave with
+        // rows exactly as the server sent them.
+        private void RunStatement(NpgsqlConnection conn, string sql, IsqlFormatter fmt)
         {
-            int colCount = reader.FieldCount;
+            using var tx = conn.BeginTransaction();
 
-            // PG fix (1): never GetSchemaTable() — use GetColumnSchema() guarded by try/catch,
-            // falling back to type-based widths on any failure (Sybase no-schema pattern).
+            List<string>? cursorNames = null;
+            using (var cmd = new NpgsqlCommand(sql, conn) { CommandTimeout = 0, Transaction = tx })
+            using (var reader = cmd.ExecuteReader())
+            {
+                if (ResultIsAllRefcursor(reader))
+                    cursorNames = CollectCursorNames(reader);   // no output for the name result
+                else
+                    RenderReader(reader, fmt);
+            } // producing reader closed; tx still open → its refcursors stay alive to FETCH
+
+            if (cursorNames != null)
+                foreach (var name in cursorNames)
+                {
+                    using var fcmd = new NpgsqlCommand($"FETCH ALL FROM {QuoteIdent(name)}", conn)
+                        { CommandTimeout = 0, Transaction = tx };
+                    using var freader = fcmd.ExecuteReader();
+                    RenderReader(freader, fmt);
+                }
+
+            tx.Commit();
+        }
+
+        // Every result set an open reader carries, then the statement's row count the way isql
+        // reports it: after a result set, or alone for a statement that changed rows. A statement
+        // with no count (DDL, DO, SET) prints nothing.
+        private void RenderReader(NpgsqlDataReader reader, IsqlFormatter fmt)
+        {
+            bool hadResultSet = false;
+            do
+            {
+                if (reader.FieldCount > 0)
+                {
+                    hadResultSet = true;
+                    RenderResultSet(reader, fmt);
+                }
+            } while (reader.NextResult());
+
+            if (!hadResultSet)
+            {
+                int n = reader.RecordsAffected;
+                fmt.Done(n >= 0 && !_nocount, Math.Max(n, 0));
+            }
+        }
+
+        // How one PG column displays: its isql width, or -1 when the type has no declared width
+        // (text, unconstrained varchar/numeric, bytea, json, arrays ...) and the width comes from
+        // the values instead.
+        private sealed class PgColumn
+        {
+            public string Name = "";
+            public string Type = "";
+            public int Width;
+            public bool Right;
+            public int Scale = -1;
+        }
+
+        private static readonly Regex TypeModifier = new(@"\(\s*(\d+)\s*(?:,\s*(\d+)\s*)?\)");
+
+        private static PgColumn[] PgColumns(NpgsqlDataReader reader)
+        {
             System.Collections.ObjectModel.ReadOnlyCollection<NpgsqlDbColumn>? schema = null;
             try { schema = reader.GetColumnSchema(); }
             catch { schema = null; }
 
-            var widths = new int[colCount];
-            var names = new string[colCount];
-            var isNumeric = new bool[colCount];
-
-            for (int i = 0; i < colCount; i++)
+            var cols = new PgColumn[reader.FieldCount];
+            for (int i = 0; i < cols.Length; i++)
             {
-                names[i] = reader.GetName(i);
-                var t = reader.GetFieldType(i);
-                isNumeric[i] = IsNumericType(t);
-
-                int colSize;
-                if (schema != null && i < schema.Count)
+                var c = new PgColumn { Name = reader.GetName(i) ?? "" };
+                // PG names an expression column ?column?; isql shows such a column with no heading.
+                if (c.Name == "?column?") c.Name = "";
+                // Npgsql names the type with its modifier - "character varying(10)", "numeric(10,3)",
+                // "timestamp(3) without time zone": the base name picks the mapping, the modifier
+                // gives the length / precision and scale.
+                var full = (reader.GetDataTypeName(i) ?? "").ToLowerInvariant();
+                var mod = TypeModifier.Match(full);
+                c.Type = mod.Success ? TypeModifier.Replace(full, "").Trim() : full;
+                int? size = schema != null && i < schema.Count ? schema[i].ColumnSize : null;
+                int? precision = schema != null && i < schema.Count ? schema[i].NumericPrecision : null;
+                int? scale = schema != null && i < schema.Count ? schema[i].NumericScale : null;
+                if (mod.Success)
                 {
-                    var cs = schema[i].ColumnSize;
-                    // PG fix (2): ColumnSize null/<=0 covers both fixed-length types (int4, timestamp,
-                    // bool — Npgsql never reports a size for these) and genuinely unbounded text/varchar.
-                    // Use the type's display-width floor when it has one; only fall back to MaxColumnWidth
-                    // for the true unbounded case (floor 0) — NOT the 30 default, to avoid silent truncation.
-                    if (cs.HasValue && cs.Value > 0)
-                        colSize = Math.Min(cs.Value, MaxColumnWidth);
-                    else
-                        colSize = MinDisplayWidthForType(t) > 0 ? MinDisplayWidthForType(t) : MaxColumnWidth;
+                    int first = int.Parse(mod.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture);
+                    size ??= first;
+                    precision ??= first;
+                    if (mod.Groups[2].Success)
+                        scale ??= int.Parse(mod.Groups[2].Value, System.Globalization.CultureInfo.InvariantCulture);
+                    else if (c.Type == "numeric") scale ??= 0;
                 }
+                c.Right = true;
+                switch (c.Type)
+                {
+                    case "smallint": c.Width = 6; break;
+                    case "integer":
+                    case "oid": c.Width = 11; break;
+                    case "bigint": c.Width = 20; break;
+                    case "boolean": c.Width = 1; break;
+                    case "real":
+                    case "double precision": c.Width = 27; break;
+                    case "money": c.Width = 24; break;
+                    case "numeric":
+                        if (precision is int p && p > 0) { c.Width = p + 3; c.Scale = scale ?? -1; }
+                        else c.Width = -1;
+                        break;
+                    case "timestamp without time zone":
+                    case "timestamp with time zone": c.Width = 31; break;
+                    case "date": c.Width = 16; break;
+                    case "time without time zone":
+                    case "time with time zone": c.Width = 15; break;
+                    case "uuid": c.Width = 36; c.Right = false; break;
+                    case "character":
+                    case "character varying":
+                        c.Right = false;
+                        c.Width = size is int n && n > 0 ? n : -1;
+                        break;
+                    default:
+                        c.Right = false;
+                        c.Width = -1;
+                        break;
+                }
+                cols[i] = c;
+            }
+            return cols;
+        }
+
+        // A value as isql prints the equivalent Sybase type.
+        private static string FormatValue(PgColumn c, object v)
+        {
+            var inv = System.Globalization.CultureInfo.InvariantCulture;
+            switch (c.Type)
+            {
+                case "money":
+                    return IsqlFormatter.Money(Convert.ToDecimal(v, inv));
+                case "numeric":
+                    return v is decimal d ? IsqlFormatter.Numeric(d, c.Scale) : Convert.ToString(v, inv) ?? "";
+                case "real":
+                case "double precision":
+                    return IsqlFormatter.Float(v is float f ? f : Convert.ToDouble(v, inv));
+                case "date":
+                    if (v is DateTime dd) return IsqlFormatter.DateValue(dd);
+                    if (v is DateOnly donly) return IsqlFormatter.DateValue(donly.ToDateTime(TimeOnly.MinValue));
+                    break;
+                case "time without time zone":
+                case "time with time zone":
+                    if (v is TimeSpan ts) return IsqlFormatter.TimeValue(ts.Hours, ts.Minutes);
+                    if (v is TimeOnly to) return IsqlFormatter.TimeValue(to.Hour, to.Minute);
+                    if (v is DateTimeOffset tz) return IsqlFormatter.TimeValue(tz.Hour, tz.Minute);
+                    break;
+            }
+            return v switch
+            {
+                bool b => IsqlFormatter.Bit(b),
+                byte[] bytes => IsqlFormatter.Hex(bytes),
+                // timestamptz arrives as UTC; isql-style output shows the client's local time.
+                DateTime dt => IsqlFormatter.DateTimeValue(dt.Kind == DateTimeKind.Utc ? dt.ToLocalTime() : dt),
+                DateTimeOffset dto => IsqlFormatter.DateTimeValue(dto.LocalDateTime),
+                string str => str,
+                _ => Convert.ToString(v, inv) ?? ""
+            };
+        }
+
+        // One result set through the isql formatter. Rows stream as they arrive when every column
+        // has a declared width; a column without one is sized to its longest value (capped at
+        // isql's 512), so that result set is read whole before it prints.
+        private void RenderResultSet(NpgsqlDataReader reader, IsqlFormatter fmt)
+        {
+            var cols = PgColumns(reader);
+            bool sized = cols.All(c => c.Width >= 0);
+            int rowCount = 0;
+
+            string?[] ReadRow()
+            {
+                var values = new string?[cols.Length];
+                for (int i = 0; i < cols.Length; i++)
+                    values[i] = reader.IsDBNull(i) ? null : FormatValue(cols[i], reader.GetValue(i));
+                return values;
+            }
+
+            IsqlColumn[] Layout(List<string?[]>? rows) => cols.Select((c, i) =>
+            {
+                int width = c.Width;
+                if (width < 0)
+                {
+                    width = 1;
+                    if (rows != null)
+                        foreach (var r in rows) width = Math.Max(width, (r[i] ?? "NULL").Length);
+                }
+                return IsqlFormatter.Column(c.Name, width, c.Right);
+            }).ToArray();
+
+            if (sized)
+            {
+                fmt.BeginResultSet(Layout(null));
+                while (reader.Read())
+                {
+                    fmt.Row(ReadRow());
+                    rowCount++;
+                }
+            }
+            else
+            {
+                var rows = new List<string?[]>();
+                while (reader.Read()) rows.Add(ReadRow());
+                fmt.BeginResultSet(Layout(rows));
+                foreach (var r in rows) fmt.Row(r);
+                rowCount = rows.Count;
+            }
+            fmt.Done(!_nocount, rowCount);
+        }
+
+        // A server error in isql's layout: the SQLSTATE as the message number, ERROR as level 16
+        // (FATAL 20, PANIC 21), state 1. The line is the batch line the error points at - the
+        // statement's own line plus the line of the error position within it - or, for an error
+        // raised inside a PL/pgSQL function, that function and its line, as isql reports a proc.
+        private static void EmitPgException(PostgresException ex, IsqlFormatter fmt, string sent, int stmtLine, int prefixLength)
+        {
+            string? proc = null;
+            int line = stmtLine;
+            var where = ex.Where ?? "";
+            var m = PlpgsqlWhere.Match(where);
+            if (m.Success)
+            {
+                int fnLine = int.Parse(m.Groups[2].Value, System.Globalization.CultureInfo.InvariantCulture);
+                if (m.Groups[1].Value == "inline_code_block")
+                    line = stmtLine + fnLine - 1;    // a DO block: its body's line, from the statement
                 else
                 {
-                    // No schema: type-based render width, else the variable-width cap.
-                    colSize = MinDisplayWidthForType(t) > 0 ? MinDisplayWidthForType(t) : MaxColumnWidth;
+                    proc = m.Groups[1].Value;
+                    line = fnLine;
                 }
-
-                widths[i] = Math.Max(Math.Max(Math.Max(colSize, names[i].Length), 10), MinDisplayWidthForType(t));
             }
-
-            var line = new StringBuilder();
-
-            // Header
-            for (int i = 0; i < colCount; i++)
+            else if (ex.Position > 0)
             {
-                if (i > 0) line.Append(' ');
-                line.Append(isNumeric[i] ? names[i].PadLeft(widths[i]) : names[i].PadRight(widths[i]));
+                int pos = Math.Min(ex.Position - 1 - prefixLength, sent.Length - prefixLength);
+                if (pos > 0) line = stmtLine + sent.Substring(prefixLength, pos).Count(ch => ch == '\n');
             }
-            emit(line.ToString());
-
-            // Separator
-            line.Clear();
-            for (int i = 0; i < colCount; i++)
+            int level = (ex.Severity ?? "").ToUpperInvariant() switch
             {
-                if (i > 0) line.Append(' ');
-                line.Append(new string('-', widths[i]));
-            }
-            emit(line.ToString());
-
-            // Stream rows as the server delivers them.
-            int rowCount = 0;
-            while (await reader.ReadAsync())
-            {
-                line.Clear();
-                for (int i = 0; i < colCount; i++)
-                {
-                    string val = reader.IsDBNull(i) ? "NULL" : (reader[i].ToString() ?? "").TrimEnd();
-                    if (val.Length > widths[i]) val = val.Substring(0, widths[i]);
-                    if (i > 0) line.Append(' ');
-                    line.Append(isNumeric[i] ? val.PadLeft(widths[i]) : val.PadRight(widths[i]));
-                }
-                emit(line.ToString());
-                rowCount++;
-            }
-
-            var rowWord = rowCount == 1 ? "row" : "rows";
-            emit($"({rowCount} {rowWord} affected)");
-            emit("");
+                "FATAL" => 20,
+                "PANIC" => 21,
+                _ => 16
+            };
+            fmt.Error(ex.SqlState, level, 1, null, proc, line, ex.MessageText);
         }
+
+        private static readonly Regex PlpgsqlWhere = new(@"PL/pgSQL function ([^\s(]+)\(.*?\) line (\d+)", RegexOptions.IgnoreCase);
 
         public void Dispose()
         {

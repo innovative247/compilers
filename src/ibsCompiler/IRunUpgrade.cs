@@ -1,201 +1,71 @@
-using System.Text.RegularExpressions;
 using ibsCompiler.Configuration;
 using ibsCompiler.Database;
 
 namespace ibsCompiler
 {
     /// <summary>
-    /// Port of F4.8 i_run_upgrade.cs.
-    /// Runs upgrade scripts with ba_upgrades_check verification.
+    /// Port of legacy i_run_upgrade (ksh): skip an upgrade already recorded in &amp;upgrades&amp;,
+    /// record it, run its script with runsql, then stamp its end time. It prints what legacy
+    /// printed: the insert's and the update's row counts around runsql's own output.
     /// </summary>
     public class i_run_upgrade_main
     {
-        private static readonly Regex RxUpgradeCheck = new(@"return[\s\r\n-]+(\d)?[\s\r\n]+");
-
-        private static string FindUpgradeReturnValue(string sqlOutput)
-        {
-            var m = RxUpgradeCheck.Match(sqlOutput);
-            return m.Success ? m.Groups[1].Value : "";
-        }
-
-        // PostgreSQL: ba_upgrades_check is invoked as SELECT and returns a single-column
-        // result set rather than "return N" text. The status is the lone digit data row.
-        private static string FindUpgradePgReturnValue(string sqlOutput)
-        {
-            if (string.IsNullOrEmpty(sqlOutput)) return "";
-            foreach (var raw in sqlOutput.Split('\n'))
-            {
-                var t = raw.Trim();
-                if (t.Length == 1 && char.IsDigit(t[0]))
-                    return t;
-            }
-            return "";
-        }
-
         public bool Run(CommandVariables cmdvars, ResolvedProfile profile, ISqlExecutor executor, Options? existingOptions = null)
         {
-            var originalCommand = cmdvars.Command;
-
             if (profile.RawMode && existingOptions == null)
             {
                 ibs_compiler_common.WriteLine("ERROR: i_run_upgrade requires option file processing and is not available in raw mode.", cmdvars.OutFile);
                 return false;
             }
 
-            // Build options
-            Options myOptions;
-            if (existingOptions == null)
+            var myOptions = existingOptions ?? new Options(cmdvars, profile);
+            if (existingOptions == null && !myOptions.GenerateOptionFiles()) return false;
+
+            bool isPostgres = profile.ServerType == SQLServerTypes.POSTGRES;
+            var upgradeNo = cmdvars.Upgrade_no.Replace("'", "''");
+
+            // Legacy's isqlline calls: in master, never echoed, no changelog.
+            var sqlVars = cmdvars;
+            sqlVars.EchoInput = false;
+            sqlVars.Database = profile.AdminDatabase;
+
+            // Legacy grepped the select's output for the value.
+            bool Recorded(string value)
             {
-                myOptions = new Options(cmdvars, profile);
-                if (!myOptions.GenerateOptionFiles()) return false;
-            }
-            else
-            {
-                myOptions = existingOptions;
+                sqlVars.Command = $"select upgrade_no from &upgrades& where upgrade_no = '{value.Replace("'", "''")}'";
+                var r = isqlline_main.Run(sqlVars, profile, executor, myOptions, redirectOutput: true);
+                return (r.Output ?? "").Split('\n').Any(l => l.Contains(value));
             }
 
-            if (!ibs_compiler_common.FindFile(ref cmdvars.Command))
+            if (!Recorded("CONTROL"))
             {
-                ibs_compiler_common.WriteLine(cmdvars.Command + " not found.", cmdvars.OutFile);
+                ibs_compiler_common.WriteLine($"Upgrade table does not exist or control record missing on server {cmdvars.ServerNameOnly}", cmdvars.OutFile);
                 return false;
             }
-            ibs_compiler_common.WriteLine($"Upgrade script: {cmdvars.Command}", cmdvars.OutFile);
-
-            // Execute changelog once at top level
-            if (cmdvars.ChangeLog && !profile.RawMode)
+            if (Recorded(cmdvars.Upgrade_no))
             {
-                var chgDb = cmdvars.Database;
-                if (string.IsNullOrEmpty(chgDb))
-                    chgDb = myOptions.ReplaceOptions("&dbpro&");
-
-                if (!string.IsNullOrEmpty(chgDb))
-                {
-                    var chgLines = new List<string>();
-                    foreach (var l in change_log.lines(cmdvars, profile))
-                        chgLines.Add(myOptions.ReplaceOptions(l, cmdvars.SeqFirst));
-                    chgLines.Add("go");
-                    var chgSql = string.Join(Environment.NewLine, chgLines);
-                    executor.ExecuteSql(chgSql, chgDb, false, cmdvars.OutFile);
-                }
-                cmdvars.ChangeLog = false; // Don't log again for inner runsql calls
-            }
-
-            // Check if upgrade has already been run
-            if (profile.ServerType == SQLServerTypes.POSTGRES)
-                cmdvars.Command = myOptions.ReplaceOptions($"SELECT &dbpro&.ba_upgrades_check('{cmdvars.Upgrade_no}')");
-            else
-                cmdvars.Command = myOptions.ReplaceOptions($"&dbpro&..ba_upgrades_check '{cmdvars.Upgrade_no}'");
-            ibs_compiler_common.WriteLine($"Executing {cmdvars.Command}...", cmdvars.OutFile);
-            var result = isqlline_main.Run(cmdvars, profile, executor, myOptions, redirectOutput: true);
-
-            var upgradeControlValue = profile.ServerType == SQLServerTypes.POSTGRES
-                ? FindUpgradePgReturnValue(result.Output)
-                : FindUpgradeReturnValue(result.Output);
-            if (upgradeControlValue == "1")
-            {
-                ibs_compiler_common.WriteLine(myOptions.ReplaceOptions("Upgrade control table &upgrades& does not exist or control record missing on server."), cmdvars.OutFile);
-                return false;
-            }
-            else if (upgradeControlValue == "2")
-            {
-                ibs_compiler_common.WriteLine($"Upgrade {cmdvars.Upgrade_no} has already been run!!!", cmdvars.OutFile);
+                ibs_compiler_common.WriteLine("This upgrade has already been run !!! ", cmdvars.OutFile);
                 return false;
             }
 
-            // Loop through upgrade file
-            ibs_compiler_common.WriteLine($"Processing upgrade file: {originalCommand}", cmdvars.OutFile);
-            using var sourceFile = new StreamReader(originalCommand);
-            string? line;
-            var batchLines = new List<string>();
-            while ((line = sourceFile.ReadLine()) != null)
-            {
-                line = line.Trim();
-                if (line.Length == 0 || line.StartsWith("#")) continue;
+            sqlVars.Command = (isPostgres ? "insert into" : "insert") +
+                $" &upgrades& (upgrade_no,version,ix,opc,filename) values('{upgradeNo}','',0,1,'')";
+            isqlline_main.Run(sqlVars, profile, executor, myOptions);
 
-                if (line.StartsWith("use "))
-                {
-                    var resolvedDb = myOptions.ReplaceOptions(line.Replace("use ", ""));
-                    ibs_compiler_common.WriteLine($"Switching database to {resolvedDb}", cmdvars.OutFile);
-                    cmdvars.Database = resolvedDb;
-                }
-                else if (line.Contains("runsql"))
-                {
-                    cmdvars.Command = line.Replace("runsql", "").Replace("!", "").Replace("&db&", "").Replace("&sv&", "").Trim();
-                    GetSeq(ref cmdvars);
-                    ibs_compiler_common.WriteLine("Running " + cmdvars.Command, cmdvars.OutFile);
-                    var runsql = new runsql_main();
-                    runsql.Run(cmdvars, profile, executor, true, myOptions);
-                    cmdvars.SeqFirst = -1;
-                    cmdvars.SeqLast = -1;
-                }
-                else if (line.Contains("sp_renametoold"))
-                {
-                    cmdvars.Command = line;
-                    ibs_compiler_common.WriteLine($"Executing {myOptions.ReplaceOptions(line)}", cmdvars.OutFile);
-                    isqlline_main.Run(cmdvars, profile, executor, myOptions);
-                }
-                else if (line.StartsWith("go"))
-                {
-                    batchLines.Add(line);
-                    if (batchLines.Count > 1)
-                    {
-                        // Write batch to temp file and execute via runsql
-                        var tempFile = ibs_compiler_common.GetTempFile();
-                        File.WriteAllLines(tempFile, batchLines);
-                        cmdvars.Command = tempFile;
-                        ibs_compiler_common.WriteLine($"Executing SQL batch ({batchLines.Count - 1} lines)...", cmdvars.OutFile);
-                        var runsql = new runsql_main();
-                        runsql.Run(cmdvars, profile, executor, false, myOptions);
-                        try { File.Delete(tempFile); } catch { }
-                    }
-                    batchLines.Clear();
-                }
-                else
-                {
-                    batchLines.Add(line);
-                }
-            }
+            // The whole script through runsql, which logs it; legacy's runsql failed only on a
+            // missing script, and only then was the end time left unset.
+            var script = cmdvars.Command;
+            var found = ibs_compiler_common.FindFile(ref script);
+            var runVars = cmdvars;
+            runVars.CommandName = "runsql";
+            new runsql_main().Run(runVars, profile, executor, true, myOptions);
+            if (!found) return false;
 
-            // Set upgrade end time
-            if (profile.ServerType == SQLServerTypes.POSTGRES)
-                cmdvars.Command = myOptions.ReplaceOptions($"update &upgrades& set end_tm=EXTRACT(EPOCH FROM (now() - TIMESTAMP '1980-01-01'))::int where upgrade_no='{cmdvars.Upgrade_no}' and ix=0 and opc=1");
-            else
-                cmdvars.Command = myOptions.ReplaceOptions($"update &upgrades& set end_tm=datediff(ss,'800101',getdate()) where upgrade_no='{cmdvars.Upgrade_no}' and ix=0 and opc=1");
-            ibs_compiler_common.WriteLine($"Executing {cmdvars.Command}", cmdvars.OutFile);
-            isqlline_main.Run(cmdvars, profile, executor, myOptions, redirectOutput: true);
-
-            ibs_compiler_common.WriteLine($"Upgrade {cmdvars.Upgrade_no} DONE.", cmdvars.OutFile);
+            sqlVars.Command = isPostgres
+                ? $"update &upgrades& set end_tm=EXTRACT(EPOCH FROM (now() - TIMESTAMP '1980-01-01'))::int where upgrade_no = '{upgradeNo}' and ix = 0 and opc = 1"
+                : $"update &upgrades& set end_tm=datediff(ss,'800101',getdate()) where upgrade_no = '{upgradeNo}' and ix = 0 and opc = 1";
+            isqlline_main.Run(sqlVars, profile, executor, myOptions);
             return true;
-        }
-
-        private void GetSeq(ref CommandVariables cmd)
-        {
-            if (cmd.Command.Contains("-F"))
-            {
-                cmd.Command = cmd.Command.Replace("-F", "");
-                try
-                {
-                    var lIdx = cmd.Command.IndexOf("-L");
-                    cmd.SeqFirst = Convert.ToInt16(cmd.Command.Substring(0, lIdx).Trim());
-                    cmd.Command = cmd.Command.Substring(lIdx);
-                }
-                catch
-                {
-                    cmd.SeqFirst = -1;
-                }
-            }
-            if (cmd.Command.Contains("-L"))
-            {
-                cmd.Command = cmd.Command.Replace("-L", "");
-                string compare = "";
-                if (cmd.Command.IndexOf("pro_") > -1) compare = "pro_";
-                else if (cmd.Command.IndexOf("tbl_") > -1) compare = "tbl_";
-                if (!string.IsNullOrEmpty(compare))
-                {
-                    cmd.SeqLast = Convert.ToInt16(cmd.Command.Substring(0, cmd.Command.IndexOf(compare)).Trim());
-                    cmd.Command = cmd.Command.Substring(cmd.Command.IndexOf(compare));
-                }
-            }
         }
     }
 }

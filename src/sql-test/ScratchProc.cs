@@ -442,9 +442,11 @@ public sealed class RunsqlScratchCompiler(
         return null;
     }
 
-    private static readonly Regex Framing = new(@"^(Running( \d+ of \d+)?:|Elapsed:).*$\n?", RegexOptions.Multiline);
+    private static readonly Regex Framing = new(@"^(Running( \d+ of \d+)?:|Running .+ on \S+ |Elapsed:).*$\n?", RegexOptions.Multiline);
 
-    // runsql brackets its errors with a `Running: <temp path>` line and an `Elapsed:` line.
+    // runsql brackets its errors with a running line and an `Elapsed:` line. The running line is
+    // `Running: <temp path> on <server>.<db>`, or on SYBASE legacy runsql's own
+    // `Running <temp path> on <server> in <db> `.
     internal static string StripFraming(string text) => Framing.Replace(text, "").Trim();
 
     private static bool Runsql(CommandVariables cmdvars, ResolvedProfile p, ibsCompiler.Options opts)

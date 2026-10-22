@@ -21,26 +21,21 @@ namespace ibsCompiler.Database
         // Persistent connection for batch-at-a-time execution (OpenConnection/ExecuteBatch/CloseConnection)
         private SqlConnection? _persistentConn;
 
-        // Width cap for streamed result-set columns (mirrors isql -w300).
-        private const int MaxColumnWidth = 256;
+        // isql-style renderer for the batch currently executing. Server messages (InfoMessage)
+        // go through it too, so they interleave with result sets as isql's do
+        // (docs/architecture.md, "isql output format").
+        private IsqlFormatter? _fmt;
 
-        // Minimum display width per .NET type. The schema's ColumnSize reports byte
-        // size for fixed-length types (datetime=8, int=4, etc.), which is too small
-        // for the rendered string. Returns 0 for variable-length types (string, byte[])
-        // — they rely on ColumnSize directly.
-        private static int MinDisplayWidthForType(Type t)
-        {
-            if (t == typeof(DateTime) || t == typeof(DateTimeOffset)) return 26;
-            if (t == typeof(Guid)) return 36;
-            if (t == typeof(bool)) return 5;
-            if (t == typeof(long) || t == typeof(decimal) || t == typeof(double)) return 24;
-            if (t == typeof(int)) return 11;
-            if (t == typeof(short)) return 6;
-            if (t == typeof(byte)) return 3;
-            if (t == typeof(float)) return 14;
-            if (t == typeof(TimeSpan)) return 16;
-            return 0;
-        }
+        // Whether the batch currently executing raised a server error (severity 11+). Errors reach
+        // InfoMessage in server order because the connection fires it for user errors too.
+        private bool _batchHadError;
+        // An error arrived since the current result set began: the statement failed, so isql
+        // prints no heading for it.
+        private bool _errorInResultSet;
+
+        // @@servername of the session, which isql's error header names (SqlError.Server holds the
+        // client's data source instead).
+        private string? _serverName;
 
         public MssqlExecutor(ResolvedProfile profile)
         {
@@ -120,29 +115,15 @@ namespace ibsCompiler.Database
 
             try
             {
-                using var connection = new SqlConnection(BuildConnectionString(database));
-                connection.InfoMessage += OnInfoMessage;
-                connection.Open();
-                ExecuteInitScript(connection);
+                using var connection = OpenSession(database);
 
+                int width = IsqlFormatter.ResolveWidth(captureOutput, outputFile);
                 var batches = SplitBatches(sqlText);
                 foreach (var batch in batches)
                 {
                     if (string.IsNullOrWhiteSpace(batch)) continue;
                     if (ExitRegex.IsMatch(batch.Trim())) break;
-                    try
-                    {
-                        using var cmd = new SqlCommand(batch, connection);
-                        cmd.CommandTimeout = 0;
-
-                        using var reader = cmd.ExecuteReader();
-                        StreamReaderAsync(reader, sink.Emit).GetAwaiter().GetResult();
-                    }
-                    catch (SqlException ex)
-                    {
-                        EmitSqlException(ex, sink.Emit);
-                        result.Returncode = false;
-                    }
+                    if (!RunBatch(connection, batch, sink.Emit, width)) result.Returncode = false;
                 }
             }
             catch (Exception ex)
@@ -162,10 +143,30 @@ namespace ibsCompiler.Database
 
         public void OpenConnection(string database)
         {
-            _persistentConn = new SqlConnection(BuildConnectionString(database));
-            _persistentConn.InfoMessage += OnInfoMessage;
-            _persistentConn.Open();
-            ExecuteInitScript(_persistentConn);
+            _persistentConn = OpenSession(database);
+        }
+
+        private SqlConnection OpenSession(string database)
+        {
+            var conn = new SqlConnection(BuildConnectionString(database));
+            // User errors (severity 11-19) come through InfoMessage, in order with prints and
+            // result sets, instead of as one exception at the end of the batch.
+            conn.FireInfoMessageEventOnUserErrors = true;
+            conn.InfoMessage += OnInfoMessage;
+            try
+            {
+                conn.Open();
+                ExecuteInitScript(conn);
+                if (_serverName == null)
+                    using (var q = new SqlCommand("select @@servername", conn))
+                        _serverName = q.ExecuteScalar() as string ?? "";
+            }
+            catch
+            {
+                conn.Dispose();
+                throw;
+            }
+            return conn;
         }
 
         public ExecReturn ExecuteBatch(string batch, bool captureOutput = false, string outputFile = "")
@@ -177,19 +178,9 @@ namespace ibsCompiler.Database
 
             try
             {
-                if (!string.IsNullOrWhiteSpace(batch))
-                {
-                    using var cmd = new SqlCommand(batch, _persistentConn);
-                    cmd.CommandTimeout = 0;
-
-                    using var reader = cmd.ExecuteReader();
-                    StreamReaderAsync(reader, sink.Emit).GetAwaiter().GetResult();
-                }
-            }
-            catch (SqlException ex)
-            {
-                EmitSqlException(ex, sink.Emit);
-                result.Returncode = false;
+                if (!string.IsNullOrWhiteSpace(batch) && _persistentConn != null)
+                    result.Returncode = RunBatch(_persistentConn, batch, sink.Emit,
+                        IsqlFormatter.ResolveWidth(captureOutput, outputFile));
             }
             finally
             {
@@ -207,32 +198,198 @@ namespace ibsCompiler.Database
             _persistentConn = null;
         }
 
+        // Runs one batch the way isql does: result sets, row counts (StatementCompleted, one per
+        // DONE token that carries a count) and messages (InfoMessage) all reach the isql formatter
+        // in the order the server sent them. Returns false when the batch raised a server error.
+        private bool RunBatch(SqlConnection connection, string batch, Action<string> emit, int width)
+        {
+            var fmt = new IsqlFormatter(emit, width);
+            _fmt = fmt;
+            _batchHadError = false;
+            bool counted = false;
+            try
+            {
+                using var cmd = new SqlCommand(batch, connection) { CommandTimeout = 0 };
+                // A statement's DONE token with a count. SqlClient cannot tell a statement inside a
+                // procedure from a top-level one, so every counted statement prints, as top-level.
+                cmd.StatementCompleted += (_, e) =>
+                {
+                    counted = true;
+                    fmt.Done(true, e.RecordCount);
+                };
+                using var reader = cmd.ExecuteReader();
+                bool more = true;
+                while (more)
+                {
+                    if (reader.FieldCount == 0)
+                    {
+                        more = reader.NextResult();
+                        continue;
+                    }
+                    var cols = Columns(reader);
+                    fmt.BeginResultSet(cols.Select(c => c.Col).ToArray());
+                    counted = false;
+                    _errorInResultSet = false;
+                    while (reader.Read())
+                    {
+                        var values = new string?[cols.Length];
+                        for (int i = 0; i < cols.Length; i++)
+                            values[i] = reader.IsDBNull(i) ? null : FormatValue(cols[i], reader.GetValue(i));
+                        fmt.Row(values);
+                    }
+                    more = reader.NextResult();
+                    // Under set nocount on the result set's DONE carries no count, so nothing
+                    // reported its end: close it here (prints the heading of an empty one).
+                    if (!counted) fmt.Done(false, 0, isError: _errorInResultSet);
+                }
+                return !_batchHadError;
+            }
+            catch (SqlException ex)
+            {
+                // Severity 20+ (and connection failures) still arrive as an exception.
+                foreach (SqlError err in ex.Errors) EmitError(err, fmt);
+                return false;
+            }
+            finally
+            {
+                _fmt = null;
+            }
+        }
+
+        private sealed record MssqlColumn(IsqlColumn Col, string Type, int Scale);
+
+        // isql display width and alignment per SQL Server type (docs/architecture.md,
+        // "isql output format" - MSSQL mapping).
+        private static MssqlColumn[] Columns(SqlDataReader reader)
+        {
+            var schema = reader.GetSchemaTable();
+            var cols = new MssqlColumn[reader.FieldCount];
+            for (int i = 0; i < cols.Length; i++)
+            {
+                var type = (reader.GetDataTypeName(i) ?? "").ToLowerInvariant();
+                int size = -1, precision = 0, scale = -1;
+                bool isLong = false;
+                if (schema != null && i < schema.Rows.Count)
+                {
+                    var row = schema.Rows[i];
+                    size = IntOf(row["ColumnSize"], -1);
+                    precision = IntOf(row["NumericPrecision"], 0);
+                    scale = IntOf(row["NumericScale"], -1);
+                    isLong = row.Table.Columns.Contains("IsLong") && row["IsLong"] is bool l && l;
+                }
+                int width;
+                bool right = true, noChunk = false;
+                switch (type)
+                {
+                    case "tinyint": width = 3; break;
+                    case "smallint": width = 6; break;
+                    case "int": width = 11; break;
+                    case "bigint": width = 20; break;
+                    case "bit": width = 1; break;
+                    case "real":
+                    case "float": width = 27; break;
+                    case "money":
+                    case "smallmoney": width = 24; break;
+                    case "numeric":
+                    case "decimal": width = (precision > 0 ? precision : 38) + 3; break;
+                    case "datetime":
+                    case "smalldatetime":
+                    case "datetime2":
+                    case "datetimeoffset": width = 31; break;
+                    case "date": width = 16; break;
+                    case "time": width = 15; break;
+                    case "uniqueidentifier": width = 36; right = false; break;
+                    case "binary":
+                    case "varbinary":
+                    case "timestamp":
+                    case "rowversion":
+                        right = false;
+                        if (isLong || size <= 0 || size > IsqlFormatter.MaxColumnWidth) { width = IsqlFormatter.MaxColumnWidth; noChunk = true; }
+                        else width = 2 + 2 * size;
+                        break;
+                    case "image":
+                    case "text":
+                    case "ntext":
+                    case "xml": width = IsqlFormatter.MaxColumnWidth; right = false; noChunk = true; break;
+                    default:
+                        // char types: their length in characters; (max) types print like text.
+                        right = false;
+                        if (isLong || size <= 0 || size > 8000) { width = IsqlFormatter.MaxColumnWidth; noChunk = true; }
+                        else width = size;
+                        break;
+                }
+                cols[i] = new MssqlColumn(IsqlFormatter.Column(reader.GetName(i) ?? "", width, right, noChunk), type, scale);
+            }
+            return cols;
+        }
+
+        private static int IntOf(object o, int fallback)
+        {
+            if (o == null || o is DBNull) return fallback;
+            try { return Convert.ToInt32(o, System.Globalization.CultureInfo.InvariantCulture); } catch { return fallback; }
+        }
+
+        // A value as isql prints the equivalent Sybase type.
+        private static string FormatValue(MssqlColumn c, object v)
+        {
+            var inv = System.Globalization.CultureInfo.InvariantCulture;
+            switch (c.Type)
+            {
+                case "money":
+                case "smallmoney":
+                    return IsqlFormatter.Money(Convert.ToDecimal(v, inv));
+                case "numeric":
+                case "decimal":
+                    return v is decimal d ? IsqlFormatter.Numeric(d, c.Scale) : Convert.ToString(v, inv) ?? "";
+                case "real":
+                case "float":
+                    return IsqlFormatter.Float(v is float f ? f : Convert.ToDouble(v, inv));
+                case "date":
+                    if (v is DateTime dd) return IsqlFormatter.DateValue(dd);
+                    break;
+                case "time":
+                    if (v is TimeSpan ts) return IsqlFormatter.TimeValue(ts.Hours, ts.Minutes);
+                    break;
+            }
+            return v switch
+            {
+                bool b => IsqlFormatter.Bit(b),
+                byte[] bytes => IsqlFormatter.Hex(bytes),
+                DateTime dt => IsqlFormatter.DateTimeValue(dt),
+                DateTimeOffset dto => IsqlFormatter.DateTimeValue(dto.DateTime),
+                string str => str,
+                _ => Convert.ToString(v, inv) ?? ""
+            };
+        }
+
+        // Messages isql does not print: database, language and character set changes.
+        private static bool IsSuppressed(SqlError err) =>
+            err.Number == 5701 || err.Number == 5703 || err.Number == 5704 ||
+            err.Message.StartsWith("Changed database context") ||
+            err.Message.StartsWith("Changed language setting");
+
         private void OnInfoMessage(object sender, SqlInfoMessageEventArgs e)
         {
             var emit = _emit;
             if (emit == null) return;
+            var fmt = _fmt ?? new IsqlFormatter(emit, IsqlFormatter.DefaultWidth);
             foreach (SqlError err in e.Errors)
             {
-                if (err.Class >= 11) continue; // errors handled by SqlException catch
-                var msg = err.Message;
-                if (msg.StartsWith("Changed database context")) continue;
-                emit(msg);
+                if (err.Class >= 11)
+                {
+                    _batchHadError = true;
+                    _errorInResultSet = true;
+                    EmitError(err, fmt);
+                    continue;
+                }
+                if (IsSuppressed(err)) continue;
+                fmt.Message(err.Message);
             }
         }
 
-        private static void EmitSqlException(SqlException ex, Action<string> emit)
-        {
-            foreach (SqlError err in ex.Errors)
-            {
-                var msg = $"Msg {err.Number}, Level {err.Class}, State {err.State}";
-                if (err.Procedure != null && err.Procedure.Length > 0)
-                    msg += $", Procedure {err.Procedure}";
-                if (err.LineNumber > 0)
-                    msg += $", Line {err.LineNumber}";
-                emit(msg);
-                emit(err.Message);
-            }
-        }
+        private void EmitError(SqlError err, IsqlFormatter fmt) =>
+            fmt.Error(err.Number, err.Class, err.State, string.IsNullOrEmpty(_serverName) ? err.Server : _serverName,
+                err.Procedure, err.LineNumber, err.Message);
 
         public ExecReturn BulkCopy(string table, BcpDirection direction, string dataFile, string formatFile = "", string fieldTerminator = "\t", int batchSize = 0)
         {
@@ -431,90 +588,6 @@ namespace ibsCompiler.Database
             return GoRegex.Split(sqlText)
                 .Where(b => !string.IsNullOrWhiteSpace(b))
                 .ToArray();
-        }
-
-        private static async System.Threading.Tasks.Task StreamReaderAsync(SqlDataReader reader, Action<string> emit)
-        {
-            do
-            {
-                if (reader.FieldCount > 0)
-                    await StreamOneResultSetAsync(reader, emit);
-            } while (await reader.NextResultAsync());
-        }
-
-        private static async System.Threading.Tasks.Task StreamOneResultSetAsync(SqlDataReader reader, Action<string> emit)
-        {
-            int colCount = reader.FieldCount;
-            var schema = reader.GetSchemaTable();
-            var widths = new int[colCount];
-            var names = new string[colCount];
-            var isNumeric = new bool[colCount];
-
-            for (int i = 0; i < colCount; i++)
-            {
-                names[i] = reader.GetName(i);
-                var t = reader.GetFieldType(i);
-                isNumeric[i] = t == typeof(int) || t == typeof(long) || t == typeof(short) ||
-                               t == typeof(decimal) || t == typeof(double) || t == typeof(float) ||
-                               t == typeof(byte);
-
-                int colSize = 30; // sane default if schema lookup fails
-                if (schema != null && i < schema.Rows.Count)
-                {
-                    var raw = schema.Rows[i]["ColumnSize"];
-                    if (raw != DBNull.Value)
-                    {
-                        try
-                        {
-                            int cs = Convert.ToInt32(raw);
-                            if (cs > 0) colSize = Math.Min(cs, MaxColumnWidth);
-                        }
-                        catch { }
-                    }
-                }
-                // ColumnSize reports BYTE size for fixed-length types (datetime=8, int=4)
-                // — too small for the printed form. Use the type's render width when larger.
-                widths[i] = Math.Max(Math.Max(Math.Max(colSize, names[i].Length), 10), MinDisplayWidthForType(t));
-            }
-
-            var line = new StringBuilder();
-
-            // Header
-            for (int i = 0; i < colCount; i++)
-            {
-                if (i > 0) line.Append(' ');
-                line.Append(isNumeric[i] ? names[i].PadLeft(widths[i]) : names[i].PadRight(widths[i]));
-            }
-            emit(line.ToString());
-
-            // Separator
-            line.Clear();
-            for (int i = 0; i < colCount; i++)
-            {
-                if (i > 0) line.Append(' ');
-                line.Append(new string('-', widths[i]));
-            }
-            emit(line.ToString());
-
-            // Stream rows as the server delivers them
-            int rowCount = 0;
-            while (await reader.ReadAsync())
-            {
-                line.Clear();
-                for (int i = 0; i < colCount; i++)
-                {
-                    string val = reader.IsDBNull(i) ? "NULL" : (reader[i].ToString() ?? "").TrimEnd();
-                    if (val.Length > widths[i]) val = val.Substring(0, widths[i]);
-                    if (i > 0) line.Append(' ');
-                    line.Append(isNumeric[i] ? val.PadLeft(widths[i]) : val.PadRight(widths[i]));
-                }
-                emit(line.ToString());
-                rowCount++;
-            }
-
-            var rowWord = rowCount == 1 ? "row" : "rows";
-            emit($"({rowCount} {rowWord} affected)");
-            emit("");
         }
 
         public void Dispose()

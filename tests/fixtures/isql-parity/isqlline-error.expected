@@ -1,0 +1,4 @@
+Msg 208, Level 16, State 1:
+Server 'DEVSYS', Line 2:
+no_such_table not found. Specify owner.objectname or use sp_help to check
+whether the object exists (sp_help may produce lots of output).
