@@ -2,7 +2,7 @@ using ibsCompiler;
 using ibsCompiler.Configuration;
 using ibsCompiler.Database;
 
-const string Usage = "Usage: runcreate <script> <server/profile> [-U user] [-P pass] [-e] [-O outfile | outfile] [-bg]";
+const string Usage = "Usage: runcreate [-o] <script> <server/profile> [-U user] [-P pass] [-e] [-O outfile | outfile] [-bg]";
 if (!VersionCheck.CheckForUpdates("runcreate", args, Usage)) return 0;
 
 // --bg / -bg: re-launch self as independent background process and return immediately
@@ -47,8 +47,6 @@ if (string.IsNullOrEmpty(cmdvars.Server))
 
 if (!string.IsNullOrEmpty(cmdvars.OutFile))
     ibs_compiler_common.DefaultOutFile = cmdvars.OutFile;
-if (!string.IsNullOrEmpty(cmdvars.ErrFile))
-    ibs_compiler_common.DefaultErrFile = cmdvars.ErrFile;
 
 if (!profileMgr.ValidateProfile(cmdvars.Server)) return 1;
 var profile = profileMgr.Resolve(cmdvars);

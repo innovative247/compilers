@@ -171,7 +171,7 @@ namespace ibsCompiler
                     if (f.ReadOnly)
                     {
                         var p = Console.ForegroundColor;
-                        Console.ForegroundColor = ConsoleColor.DarkGray;
+                        Console.ForegroundColor = ConsoleColor.Gray;
                         Console.Write(line);
                         Console.ForegroundColor = p;
                     }
@@ -198,6 +198,7 @@ namespace ibsCompiler
 
             void Render()
             {
+                ConsoleMenu.HideCaret();
                 for (int i = 0; i < fields.Count; i++) DrawField(i, i == cursor);
                 RenderMenu();
                 ConsoleMenu.MoveTo(0, startRow + offsets[cursor]);
@@ -205,6 +206,7 @@ namespace ibsCompiler
 
             void Message(string text, ConsoleColor color)
             {
+                ConsoleMenu.HideCaret();   // may be called mid-edit, away from the edit caret
                 ConsoleMenu.MoveTo(0, promptRow);
                 var p = Console.ForegroundColor;
                 Console.ForegroundColor = color;
@@ -215,8 +217,8 @@ namespace ibsCompiler
             // Idle state of the prompt line is the bare `Choice: ` label, as everywhere else.
             void ClearMessage()
             {
-                ConsoleMenu.DrawChoiceBuffer(promptRow, "Choice", "");
-                Console.CursorVisible = false; // the caret belongs on the focused field row
+                // The caret belongs on the focused field row, so it stays hidden here.
+                ConsoleMenu.DrawChoiceBuffer(promptRow, "Choice", "", showCaret: false);
             }
 
             void ShowMenuBuffer(string buf) => ConsoleMenu.DrawChoiceBuffer(promptRow, "Choice", buf);
@@ -232,13 +234,13 @@ namespace ibsCompiler
 
                 void Draw()
                 {
+                    ConsoleMenu.HideCaret();   // a wrapped field repaints several rows
                     DrawField(fieldIdx, isCursor: true, overrideValue: buf.ToString());
-                    ConsoleMenu.MoveTo(
+                    ConsoleMenu.ShowCaretAt(
                         Math.Min(ValueCol + caret % room, Console.WindowWidth - 1),
                         startRow + offsets[fieldIdx] + Math.Min(caret / room, heights[fieldIdx] - 1));
                 }
 
-                Console.CursorVisible = true;
                 Draw();
                 while (true)
                 {
@@ -252,7 +254,6 @@ namespace ibsCompiler
                         RescaffoldIfResized();
                         if (fellBack) { Console.CursorVisible = false; return buf.ToString(); }
                         caret = Math.Clamp(caret, 0, buf.Length);
-                        Console.CursorVisible = true;
                         Draw();
                     }
                     switch (key.Key)
@@ -313,8 +314,7 @@ namespace ibsCompiler
                 if (!fields.Any(f => !f.ReadOnly && f.Value != f.Original)) return true;
                 const string q = "Discard changes? (y/N) ";
                 Message(q, ConsoleColor.Yellow);
-                ConsoleMenu.MoveTo(Math.Min(2 + q.Length, Console.WindowWidth - 1), promptRow);
-                Console.CursorVisible = true;
+                ConsoleMenu.ShowCaretAt(Math.Min(2 + q.Length, Console.WindowWidth - 1), promptRow);
                 var ans = Console.ReadKey(intercept: true);
                 Console.CursorVisible = false;
                 if (ans.Key == ConsoleKey.Y) return true;
@@ -433,7 +433,7 @@ namespace ibsCompiler
                                 var f = fields[cursor];
                                 if (f.ReadOnly)
                                 {
-                                    Message(f.Note != null ? $"{f.Label} is read-only {f.Note}" : $"{f.Label} is read-only", ConsoleColor.DarkGray);
+                                    Message(f.Note != null ? $"{f.Label} is read-only {f.Note}" : $"{f.Label} is read-only", ConsoleColor.Gray);
                                     break;
                                 }
                                 while (true)

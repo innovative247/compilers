@@ -18,6 +18,26 @@ namespace ibsCompiler.Database
         // messages stream as the server emits them.
         private Action<string>? _emit;
 
+        // isql measures, pads and cuts in bytes of the session charset and writes the server's
+        // bytes as they are. So the formatter is fed every server string as "byte text" - one
+        // character per byte of its session-charset encoding (Latin-1 maps bytes to characters
+        // one to one) - and the lines it emits go out as those bytes (OutputSink.EmitRaw).
+        // _sessionEnc is the current call's session charset; null until the connection is open.
+        private static readonly Encoding ByteText = Encoding.Latin1;
+        private Encoding? _sessionEnc;
+
+        private string? B(string? s) =>
+            s == null || _sessionEnc == null ? s : ByteText.GetString(_sessionEnc.GetBytes(s));
+
+        // Wires the sink to the session's charset and returns the formatter's line emitter.
+        private Action<string> UseSessionCharset(OutputSink sink, Encoding? enc)
+        {
+            _sessionEnc = enc;
+            sink.Encoding = enc;
+            _emit = enc == null ? sink.Emit : line => sink.EmitRaw(ByteText.GetBytes(line));
+            return _emit;
+        }
+
         // Severe errors already written for the batch currently executing, and whether any
         // were seen at all. Reset per batch by BeginBatch.
         private readonly HashSet<string> _batchErrorKeys = new();
@@ -29,43 +49,12 @@ namespace ibsCompiler.Database
             _batchHadError = false;
         }
 
-        // True once the session has a diagnostic mode active (set showplan/statistics/
-        // noexec ON). ASE keeps these for the life of the connection; tracked across
-        // batches by UpdateDiagnostics.
-        private bool _diagnosticsActive;
-
-        // Whether to skip GetSchemaTable() for the batch currently streaming. GetSchemaTable
-        // forces AseClient to flush the server's plan tokens for an internal metadata pass —
-        // with showplan on that dumps ~25 plan blocks the user never ran. We skip it only
-        // when diagnostics were ALREADY active before this batch: then the batch's own
-        // statement plan flushes naturally during execution and the metadata noise is gone.
-        // When the SAME batch both enables showplan and runs the query, skipping would lose
-        // the user's plan too (it only surfaces via the flush), so that case is left as-is.
-        private bool _skipSchemaForCurrentBatch;
-
         // Persistent connection for batch-at-a-time execution (OpenConnection/ExecuteBatch/CloseConnection)
         private AseConnection? _persistentConn;
 
-        // Width cap for streamed result-set columns (mirrors isql -w300).
-        private const int MaxColumnWidth = 256;
-
-        // Minimum display width per .NET type. The schema's ColumnSize reports byte
-        // size for fixed-length types (datetime=8, int=4, etc.), which is too small
-        // for the rendered string. Returns 0 for variable-length types (string, byte[])
-        // — they rely on ColumnSize directly.
-        private static int MinDisplayWidthForType(Type t)
-        {
-            if (t == typeof(DateTime) || t == typeof(DateTimeOffset)) return 26;
-            if (t == typeof(Guid)) return 36;
-            if (t == typeof(bool)) return 5;
-            if (t == typeof(long) || t == typeof(decimal) || t == typeof(double)) return 24;
-            if (t == typeof(int)) return 11;
-            if (t == typeof(short)) return 6;
-            if (t == typeof(byte)) return 3;
-            if (t == typeof(float)) return 14;
-            if (t == typeof(TimeSpan)) return 16;
-            return 0;
-        }
+        // isql-style renderer for the batch currently executing. Server messages (InfoMessage)
+        // go through it too, so they wrap and interleave with result sets exactly as isql's do.
+        private IsqlFormatter? _fmt;
 
         public SybaseExecutor(ResolvedProfile profile)
         {
@@ -161,7 +150,10 @@ namespace ibsCompiler.Database
         // cp850) because the server rejects the mismatch outright. Letting the server decide
         // is the only universal approach — it works for utf8, cp850, iso_1, and any other
         // charset the server is configured with.
-        private string BuildConnectionString(string database)
+        // streaming: the driver hands each row over as it arrives instead of holding a result set
+        // until it is complete (fork option, MOD 08.96.12856) - for SQL whose output is watched live.
+        // charset: the client charset to ask for; empty lets the server use its own.
+        private string BuildConnectionString(string database, bool streaming = false, string charset = "")
         {
             var sb = new StringBuilder();
             sb.Append($"Data Source={_profile.Host}");
@@ -171,6 +163,8 @@ namespace ibsCompiler.Database
             if (!string.IsNullOrEmpty(database))
                 sb.Append($";Database={database}");
             sb.Append(";Pooling=false");
+            if (streaming) sb.Append(";StreamingResults=true");
+            if (!string.IsNullOrEmpty(charset)) sb.Append($";Charset={charset}");
             return sb.ToString();
         }
 
@@ -183,37 +177,19 @@ namespace ibsCompiler.Database
 
             try
             {
-                using var connection = new AseConnection(BuildConnectionString(database));
+                using var connection = new AseConnection(BuildConnectionString(database, streaming: true));
                 connection.InfoMessage += OnInfoMessage;
                 connection.Open();
-                _diagnosticsActive = false; // fresh session starts with diagnostics off
+                var emit = UseSessionCharset(sink, connection.CharsetEncoding);
+                FlushMessages(connection);
 
+                int width = IsqlFormatter.ResolveWidth(captureOutput, outputFile);
                 var batches = SplitBatches(sqlText);
                 foreach (var batch in batches)
                 {
                     if (string.IsNullOrWhiteSpace(batch)) continue;
                     if (ExitRegex.IsMatch(batch.Trim())) break;
-                    _skipSchemaForCurrentBatch = _diagnosticsActive; // state BEFORE this batch
-                    UpdateDiagnostics(batch);
-                    BeginBatch();
-                    try
-                    {
-                        using var cmd = new AseCommand(batch, connection);
-                        cmd.CommandTimeout = 0;
-
-                        // Use the SBNAlgen streaming pattern verbatim: ExecuteReaderAsync
-                        // returning a DbDataReader, then ReadAsync/NextResultAsync on the
-                        // base type so the provider can surface server tokens incrementally.
-                        StreamCommandAsync(cmd, sink.Emit).GetAwaiter().GetResult();
-                    }
-                    catch (AseException ex)
-                    {
-                        EmitAseException(ex, sink.Emit);
-                        result.Returncode = false;
-                    }
-
-                    // Streaming-mode errors never throw — they only arrive via InfoMessage.
-                    if (_batchHadError) result.Returncode = false;
+                    if (!RunBatch(connection, batch, emit, width, utf8: false)) result.Returncode = false;
                 }
             }
             catch (Exception ex)
@@ -224,6 +200,7 @@ namespace ibsCompiler.Database
             finally
             {
                 _emit = null;
+                _sessionEnc = null;
                 sink.Dispose();
             }
 
@@ -231,12 +208,57 @@ namespace ibsCompiler.Database
             return result;
         }
 
+        // The persistent (runsql) session is utf8 - see OpenConnection.
+        private bool _persistentUtf8;
+
         public void OpenConnection(string database)
         {
-            _persistentConn = new AseConnection(BuildConnectionString(database));
-            _persistentConn.InfoMessage += OnInfoMessage;
-            _persistentConn.Open();
-            _diagnosticsActive = false; // fresh session starts with diagnostics off
+            // Legacy runsql ran isql without -J, so its session used the client's utf8 charset:
+            // the server converts char data to UTF-8 and sizes char columns for it (3 bytes a
+            // character), which is what runsql output shows. (Legacy isqlline passed -J and so
+            // used the server's own charset, as ExecuteSql does.) A server that refuses utf8
+            // gets its own charset instead.
+            try
+            {
+                _persistentConn = OpenPersistent(database, "utf8");
+                _persistentUtf8 = true;
+            }
+            catch (AseException ex) when (!ex.Message.Contains("Login failed", StringComparison.OrdinalIgnoreCase))
+            {
+                // Only a charset refusal retries: a bad login or a timeout would just fail twice.
+                _persistentConn = OpenPersistent(database, "");
+                _persistentUtf8 = false;
+            }
+            FlushMessages(_persistentConn);
+        }
+
+        private AseConnection OpenPersistent(string database, string charset)
+        {
+            var conn = new AseConnection(BuildConnectionString(database, streaming: true, charset: charset));
+            conn.InfoMessage += OnInfoMessage;
+            try
+            {
+                conn.Open();
+            }
+            catch
+            {
+                conn.Dispose();
+                throw;
+            }
+            return conn;
+        }
+
+        // ASE holds print/raiserror output in the session's network buffer until it fills or
+        // the batch ends, so a long-running proc's progress arrives in bursts. flushmessage
+        // makes the server send each message as it is raised - output stays real time.
+        private static void FlushMessages(AseConnection connection)
+        {
+            try
+            {
+                using var cmd = new AseCommand("set flushmessage on", connection);
+                cmd.ExecuteNonQuery();
+            }
+            catch (AseException) { } // a server without the option still runs, just buffered
         }
 
         public ExecReturn ExecuteBatch(string batch, bool captureOutput = false, string outputFile = "")
@@ -246,29 +268,17 @@ namespace ibsCompiler.Database
             var sink = OutputSink.Build(output, captureOutput, outputFile);
             _emit = sink.Emit;
 
+            var emit = _persistentConn != null ? UseSessionCharset(sink, _persistentConn.CharsetEncoding) : sink.Emit;
             try
             {
-                if (!string.IsNullOrWhiteSpace(batch))
-                {
-                    _skipSchemaForCurrentBatch = _diagnosticsActive; // state BEFORE this batch
-                    UpdateDiagnostics(batch);
-                    BeginBatch();
-                    using var cmd = new AseCommand(batch, _persistentConn);
-                    cmd.CommandTimeout = 0;
-
-                    StreamCommandAsync(cmd, sink.Emit).GetAwaiter().GetResult();
-                }
-            }
-            catch (AseException ex)
-            {
-                EmitAseException(ex, sink.Emit);
-                result.Returncode = false;
+                if (!string.IsNullOrWhiteSpace(batch) && _persistentConn != null)
+                    result.Returncode = RunBatch(_persistentConn, batch, emit,
+                        IsqlFormatter.ResolveWidth(captureOutput, outputFile), _persistentUtf8);
             }
             finally
             {
-                // Streaming-mode errors never throw — they only arrive via InfoMessage.
-                if (_batchHadError) result.Returncode = false;
                 _emit = null;
+                _sessionEnc = null;
                 sink.Dispose();
             }
 
@@ -282,89 +292,208 @@ namespace ibsCompiler.Database
             _persistentConn = null;
         }
 
-        // Track whether the session has a plan/diagnostic mode turned on, by scanning the
-        // SQL we're about to run. ASE keeps these settings for the life of the connection,
-        // so the flag persists across batches until explicitly turned off. Last directive
-        // in the text wins (handles "set showplan on ... set showplan off" in one batch).
-        private static readonly Regex DiagOnRegex = new(
-            @"\bset\s+(showplan|noexec|statistics\s+\w+)\s+on\b", RegexOptions.IgnoreCase);
-        private static readonly Regex DiagOffRegex = new(
-            @"\bset\s+(showplan|noexec|statistics\s+\w+)\s+off\b", RegexOptions.IgnoreCase);
-
-        private void UpdateDiagnostics(string sql)
+        // Runs one batch the way isql does: every result token goes to the isql formatter in
+        // server order as it arrives (row formats, rows, done counts, return statuses), and the
+        // InfoMessage handler feeds it the batch's messages and errors on the same thread, so
+        // the two interleave exactly as the server sent them. Returns false when the batch
+        // raised a server error.
+        // utf8: the session's client charset is utf8 (changes how unichar data displays).
+        private bool RunBatch(AseConnection connection, string batch, Action<string> emit, int width, bool utf8)
         {
-            if (string.IsNullOrEmpty(sql)) return;
-            int lastOn = -1, lastOff = -1;
-            var mOn = DiagOnRegex.Matches(sql);
-            if (mOn.Count > 0) lastOn = mOn[mOn.Count - 1].Index;
-            var mOff = DiagOffRegex.Matches(sql);
-            if (mOff.Count > 0) lastOff = mOff[mOff.Count - 1].Index;
-            if (lastOn >= 0 && lastOn > lastOff) _diagnosticsActive = true;
-            else if (lastOff >= 0 && lastOff > lastOn) _diagnosticsActive = false;
+            BeginBatch();
+            var fmt = new IsqlFormatter(emit, width) { Utf8ByteText = _sessionEnc?.CodePage == 65001 };
+            _fmt = fmt;
+            try
+            {
+                using var cmd = new AseCommand(batch, connection);
+                cmd.CommandTimeout = 0;
+                AseResultColumn[] meta = Array.Empty<AseResultColumn>();
+                // A throw inside the observer would leave the connection mid-command (broken for
+                // the rest of the script), so the first one is kept and reported after the batch.
+                Exception? observerFault = null;
+                cmd.ResultObserver = ev =>
+                {
+                    if (observerFault != null) return;
+                    try { Observe(ev); }
+                    catch (Exception ex) { observerFault = ex; }
+                };
+                void Observe(AseResultEvent ev)
+                {
+                    switch (ev.Kind)
+                    {
+                        case AseResultEventKind.RowFormat:
+                            meta = ev.Columns;
+                            fmt.BeginResultSet(meta.Select(c => ToIsqlColumn(c, utf8)).ToArray());
+                            break;
+                        case AseResultEventKind.Row:
+                            var values = new string?[meta.Length];
+                            for (int i = 0; i < meta.Length && i < ev.Values.Length; i++)
+                                values[i] = B(FormatValue(meta[i], ev.Values[i], utf8));
+                            fmt.Row(values);
+                            break;
+                        case AseResultEventKind.Done:
+                            fmt.Done(ev.HasCount, ev.Count, ev.IsError, ev.InProc, ev.IsProc);
+                            break;
+                        case AseResultEventKind.ReturnStatus:
+                            fmt.ReturnStatus(ev.ReturnStatus);
+                            break;
+                        case AseResultEventKind.ComputeRow:
+                            var cvalues = new string?[ev.Columns.Length];
+                            for (int i = 0; i < ev.Columns.Length && i < ev.Values.Length; i++)
+                                cvalues[i] = B(FormatValue(ev.Columns[i], ev.Values[i], utf8));
+                            fmt.ComputeRow(ev.Columns.Select(c => ToIsqlColumn(c, utf8)).ToArray(), cvalues);
+                            break;
+                    }
+                }
+                cmd.ExecuteNonQuery();
+                if (observerFault != null)
+                {
+                    emit($"ERROR! {observerFault.Message}");
+                    return false;
+                }
+                return !_batchHadError;
+            }
+            catch (AseException ex)
+            {
+                EmitAseException(ex, fmt);
+                return false;
+            }
+            finally
+            {
+                _fmt = null;
+            }
         }
+
+        // isql display width and alignment per server type (docs/architecture.md, "isql output format").
+        private IsqlColumn ToIsqlColumn(AseResultColumn c, bool utf8)
+        {
+            int len = c.Length;
+            int width;
+            bool right = true, noChunk = false;
+            switch (c.DataTypeName)
+            {
+                case "tinyint": width = 3; break;
+                case "smallint": width = 6; break;
+                case "int": width = 11; break;
+                case "bigint": width = 20; break;
+                case "unsigned smallint": width = 5; break;
+                case "unsigned int": width = 10; break;
+                case "unsigned bigint": width = 20; break;
+                case "bit": width = 1; break;
+                case "real":
+                case "float": width = 27; break;
+                case "money":
+                case "smallmoney": width = 24; break;
+                case "numeric":
+                case "decimal": width = (c.Precision > 0 ? c.Precision : 38) + 3; break;
+                case "datetime":
+                case "smalldatetime": width = 31; break;
+                case "date": width = 16; break;
+                case "time": width = 15; break;
+                case "unichar":
+                case "univarchar":
+                    // UTF-16 data: as UTF-8 text in a utf8 session (3 bytes a character), else
+                    // isql shows its bytes in hex.
+                    width = utf8 ? Math.Max(len, 0) / 2 * 3 : 2 + 2 * Math.Max(len, 0);
+                    right = false;
+                    break;
+                case "binary":
+                case "varbinary": width = 2 + 2 * Math.Max(len, 0); right = false; break;
+                case "image":
+                case "text":
+                case "unitext": width = IsqlFormatter.MaxColumnWidth; right = false; noChunk = true; break;
+                default: width = len >= 0 ? len : IsqlFormatter.MaxColumnWidth; right = false; break;
+            }
+            // isql heads a column with its label whenever the server sent one, even a blank one.
+            var name = !string.IsNullOrEmpty(c.Label) ? c.Label : c.ColumnName ?? "";
+            return IsqlFormatter.Column(B(name) ?? "", width, right, noChunk);
+        }
+
+        // A value as isql prints it; null for NULL.
+        private string? FormatValue(AseResultColumn c, object? v, bool utf8)
+        {
+            if (v == null || v is DBNull) return null;
+            var inv = System.Globalization.CultureInfo.InvariantCulture;
+            switch (c.DataTypeName)
+            {
+                case "money":
+                case "smallmoney":
+                    return IsqlFormatter.Money(Convert.ToDecimal(v, inv));
+                case "numeric":
+                case "decimal":
+                    return v is decimal d && c.Scale >= 0 ? IsqlFormatter.Numeric(d, c.Scale) : Convert.ToString(v, inv);
+                case "real":
+                case "float":
+                    return IsqlFormatter.Float(v is float f ? f : Convert.ToDouble(v, inv));
+                case "bit":
+                    return v is bool b ? IsqlFormatter.Bit(b) : Convert.ToString(v, inv);
+                case "date":
+                    if (v is DateTime dd) return IsqlFormatter.DateValue(dd);
+                    break;
+                case "time":
+                    if (v is TimeSpan ts) return IsqlFormatter.TimeValue(ts.Hours, ts.Minutes);
+                    if (v is DateTime tt) return IsqlFormatter.TimeValue(tt.Hour, tt.Minute);
+                    break;
+                case "unichar":
+                case "univarchar":
+                    // isql shows UTF-16 data as its bytes when the client charset cannot hold it.
+                    if (v is string u && !utf8) return IsqlFormatter.Hex(Encoding.Unicode.GetBytes(u));
+                    break;
+            }
+            return v switch
+            {
+                byte[] bytes => IsqlFormatter.Hex(bytes),
+                DateTime dt => IsqlFormatter.DateTimeValue(dt),
+                _ => Convert.ToString(v, inv)
+            };
+        }
+
+        // Messages isql does not print: database, language and character set changes.
+        private static bool IsSuppressed(AseError err) =>
+            err.MessageNumber == 5701 || err.MessageNumber == 5703 || err.MessageNumber == 5704 ||
+            err.Message.StartsWith("Changed client character set") ||
+            err.Message.StartsWith("Changed database context") ||
+            err.Message.StartsWith("Changed language setting");
 
         private void OnInfoMessage(object sender, AseInfoMessageEventArgs e)
         {
             var emit = _emit;
             if (emit == null) return;
+            var fmt = _fmt ?? new IsqlFormatter(emit, IsqlFormatter.DefaultWidth);
             foreach (AseError err in e.Errors)
             {
-                // Severe (>10) errors arrive here too — and in streaming mode they arrive
-                // ONLY here. AseClient's StreamingDataReaderTokenHandler raises its
-                // AseException on the background pump thread AFTER the reader has been
-                // handed back, so anything the server reports once a result set has begun
-                // (arithmetic overflow 3606, divide by zero 3607, conversion 249, a
-                // raiserror inside a proc that already returned rows) never reaches the
-                // caller's catch. Emit it here and record it, so the run fails; errors
-                // that DO also surface as an AseException are de-duped by ErrorKey.
+                // Severe (>10) errors arrive here as well as in the AseException that
+                // ExecuteNonQuery throws at the end of the batch. Emit them here, in server order,
+                // and record them so the exception's copy is not printed twice.
                 if (err.Severity >= 11)
                 {
                     _batchErrorKeys.Add(ErrorKey(err));
                     _batchHadError = true;
-                    EmitAseError(err, emit);
+                    EmitAseError(err, fmt);
                     continue;
                 }
-                var msg = err.Message;
-                if (msg.StartsWith("Changed client character set") ||
-                    msg.StartsWith("Changed database context") ||
-                    msg.StartsWith("Changed language setting"))
-                    continue;
-                emit(msg);
+                if (IsSuppressed(err)) continue;
+                fmt.Message(B(err.Message) ?? "");
             }
         }
 
         // Identity of a server error, used to suppress the duplicate when the same error is
-        // reported both via InfoMessage and via the AseException thrown from ExecuteReader.
+        // reported both via InfoMessage and via the AseException thrown at the end of the batch.
         private static string ErrorKey(AseError err) =>
             $"{err.MessageNumber}|{err.State}|{err.LineNum}|{err.Message}";
 
-        private void EmitAseException(AseException ex, Action<string> emit)
+        private void EmitAseException(AseException ex, IsqlFormatter fmt)
         {
             foreach (AseError err in ex.Errors)
             {
-                if (!_batchErrorKeys.Add(ErrorKey(err))) continue; // already emitted via InfoMessage
-                EmitAseError(err, emit);
+                // Informational messages and errors already emitted via InfoMessage are not repeated.
+                if (err.Severity < 11 || !_batchErrorKeys.Add(ErrorKey(err))) continue;
+                EmitAseError(err, fmt);
             }
         }
 
-        private static void EmitAseError(AseError err, Action<string> emit)
-        {
-            emit($"Msg {err.MessageNumber}, Level {err.Severity}, State {err.State}:");
-
-            var hasServer = !string.IsNullOrEmpty(err.ServerName);
-            var hasProc = !string.IsNullOrEmpty(err.ProcName);
-            var hasLine = err.LineNum > 0;
-            if (hasServer || hasProc || hasLine)
-            {
-                var parts = new List<string>();
-                if (hasServer) parts.Add($"Server '{err.ServerName}'");
-                if (hasProc) parts.Add($"Procedure '{err.ProcName}'");
-                if (hasLine) parts.Add($"Line {err.LineNum}");
-                emit(string.Join(", ", parts) + ":");
-            }
-
-            emit(err.Message);
-        }
+        private void EmitAseError(AseError err, IsqlFormatter fmt) =>
+            fmt.Error(err.MessageNumber, err.Severity, err.State, B(err.ServerName), B(err.ProcName), err.LineNum, B(err.Message) ?? "");
 
         public ExecReturn BulkCopy(string table, BcpDirection direction, string dataFile, string formatFile = "", string fieldTerminator = "\t", int batchSize = 0)
         {
@@ -526,161 +655,6 @@ namespace ibsCompiler.Database
             return GoRegex.Split(sqlText)
                 .Where(b => !string.IsNullOrWhiteSpace(b))
                 .ToArray();
-        }
-
-        private async System.Threading.Tasks.Task StreamCommandAsync(AseCommand cmd, Action<string> emit)
-        {
-            // SequentialAccess is required for streaming. Without it, the AseClient
-            // runs the entire token loop synchronously and only returns the reader
-            // after the whole batch is buffered. With it, the client spawns a background
-            // pump (InternalConnection.cs:487) and StreamingDataReaderTokenHandler
-            // surfaces each result-set as soon as DoneInProc arrives.
-            //
-            // Note on streaming granularity: Sybase ASE coalesces small (<TDS packet)
-            // result-sets into one TCP packet, so a proc emitting tiny rows in a loop
-            // will not stream per-row — the server flushes when the packet fills or
-            // the proc completes. Real workloads (ma_algen-style queue rows) typically
-            // exceed the packet threshold and stream as expected.
-            using var raw = await cmd.ExecuteReaderAsync(System.Data.CommandBehavior.SequentialAccess);
-            using var reader = (System.Data.Common.DbDataReader)raw;
-            do
-            {
-                if (reader.FieldCount > 0)
-                    await StreamOneResultSetAsync(reader, emit);
-            } while (await reader.NextResultAsync());
-        }
-
-        // Declared scale of a decimal column, or -1 when it can't be established (leave the
-        // value formatted as the driver handed it over).
-        //
-        // ASE reports money/smallmoney with NumericScale = -1 in the schema table even though
-        // both are fixed at 4 decimal places, so those are resolved from the type name. Plain
-        // numeric/decimal columns carry a usable NumericScale. When diagnostics are active the
-        // schema table is deliberately not fetched (it would dump the server's plan tokens),
-        // so only the type-name cases can be resolved — acceptable, since a query plan is not
-        // a result grid anyone reads values off.
-        private static int DeclaredScale(System.Data.Common.DbDataReader reader, System.Data.DataTable? schema, int i)
-        {
-            try
-            {
-                var typeName = (reader.GetDataTypeName(i) ?? "").Trim().ToLowerInvariant();
-                if (typeName == "money" || typeName == "smallmoney") return 4;
-            }
-            catch { }
-
-            if (schema == null || i >= schema.Rows.Count) return -1;
-            try
-            {
-                var raw = schema.Rows[i]["NumericScale"];
-                if (raw == DBNull.Value) return -1;
-                int scale = Convert.ToInt32(raw);
-                // 0..38 is the only meaningful range; ASE uses -1/255 as "not applicable".
-                return (scale >= 0 && scale <= 38) ? scale : -1;
-            }
-            catch { return -1; }
-        }
-
-        private async System.Threading.Tasks.Task StreamOneResultSetAsync(System.Data.Common.DbDataReader reader, Action<string> emit)
-        {
-            int colCount = reader.FieldCount;
-            // GetSchemaTable() forces AseClient to flush the server's plan tokens for an
-            // internal metadata pass. With `set showplan on` (or statistics/noexec) active
-            // that dumps ~25 plan blocks the user never ran, burying their own statement's
-            // plan. While diagnostics are active we skip it and fall back to type-based
-            // column widths (no data truncation — strings still cap at MaxColumnWidth);
-            // exact declared widths are only needed for ordinary result grids, not when
-            // the user is reading a query plan.
-            System.Data.DataTable? schema = _skipSchemaForCurrentBatch ? null : reader.GetSchemaTable();
-            var widths = new int[colCount];
-            var names = new string[colCount];
-            var isNumeric = new bool[colCount];
-            var scales = new int[colCount];
-
-            for (int i = 0; i < colCount; i++)
-            {
-                names[i] = reader.GetName(i);
-                var t = reader.GetFieldType(i);
-                isNumeric[i] = t == typeof(int) || t == typeof(long) || t == typeof(short) ||
-                               t == typeof(decimal) || t == typeof(double) || t == typeof(float) ||
-                               t == typeof(byte);
-                scales[i] = t == typeof(decimal) ? DeclaredScale(reader, schema, i) : -1;
-
-                // Default when no schema (diagnostics mode / lookup failure): use the
-                // type's known render width for fixed types, else the variable-width cap
-                // so long strings (e.g. sysname) are never truncated.
-                int colSize = schema == null
-                    ? (MinDisplayWidthForType(t) > 0 ? MinDisplayWidthForType(t) : MaxColumnWidth)
-                    : 30;
-                if (schema != null && i < schema.Rows.Count)
-                {
-                    var raw = schema.Rows[i]["ColumnSize"];
-                    if (raw != DBNull.Value)
-                    {
-                        try
-                        {
-                            int cs = Convert.ToInt32(raw);
-                            if (cs > 0) colSize = Math.Min(cs, MaxColumnWidth);
-                        }
-                        catch { }
-                    }
-                }
-                // ColumnSize reports BYTE size for fixed-length types (datetime=8, int=4)
-                // — too small for the printed form. Use the type's render width when larger.
-                widths[i] = Math.Max(Math.Max(Math.Max(colSize, names[i].Length), 10), MinDisplayWidthForType(t));
-            }
-
-            var line = new StringBuilder();
-
-            // Header
-            for (int i = 0; i < colCount; i++)
-            {
-                if (i > 0) line.Append(' ');
-                line.Append(isNumeric[i] ? names[i].PadLeft(widths[i]) : names[i].PadRight(widths[i]));
-            }
-            emit(line.ToString());
-
-            // Separator
-            line.Clear();
-            for (int i = 0; i < colCount; i++)
-            {
-                if (i > 0) line.Append(' ');
-                line.Append(new string('-', widths[i]));
-            }
-            emit(line.ToString());
-
-            // Stream rows as the server delivers them.
-            int rowCount = 0;
-            while (await reader.ReadAsync())
-            {
-                line.Clear();
-                for (int i = 0; i < colCount; i++)
-                {
-                    string val;
-                if (reader.IsDBNull(i))
-                {
-                    val = "NULL";
-                }
-                else
-                {
-                    var v = reader[i];
-                    // AseClient hands back numeric/money values as a Decimal whose scale has
-                    // already been stripped, so 1.00 arrives as 1 and plain ToString() prints
-                    // "1" where isql prints "1.00". Re-apply the column's declared scale.
-                    val = (scales[i] >= 0 && v is decimal d)
-                        ? d.ToString("F" + scales[i], System.Globalization.CultureInfo.InvariantCulture)
-                        : (v.ToString() ?? "").TrimEnd();
-                }
-                    if (val.Length > widths[i]) val = val.Substring(0, widths[i]);
-                    if (i > 0) line.Append(' ');
-                    line.Append(isNumeric[i] ? val.PadLeft(widths[i]) : val.PadRight(widths[i]));
-                }
-                emit(line.ToString());
-                rowCount++;
-            }
-
-            var rowWord = rowCount == 1 ? "row" : "rows";
-            emit($"({rowCount} {rowWord} affected)");
-            emit("");
         }
 
         public void Dispose()

@@ -37,7 +37,7 @@ namespace ibsCompiler
             var hint = defaultYes ? "Y/n" : "y/N";
             while (true)
             {
-                Console.Write($"{prompt} ({hint}): ");
+                ConsoleMenu.WritePrompt($"{prompt} ({hint}): ");
                 var response = Console.ReadLine()?.Trim().ToLower() ?? "";
                 if (response == "")
                     return defaultYes;
@@ -431,25 +431,35 @@ namespace ibsCompiler
                 // Mode selection
                 Console.WriteLine();
                 Console.WriteLine("What do you want to do?");
-                Console.WriteLine("  1. Add new options (create in options.def)");
-                Console.WriteLine("  2. Edit existing options");
-                Console.WriteLine("  3. Import");
+                Console.WriteLine("1. Add new options (create in options.def)");
+                Console.WriteLine("2. Edit existing options");
+                Console.WriteLine("3. Import");
 
                 // Dynamic file-edit menu items starting at 4
                 foreach (var item in editFileMenuItems)
-                    Console.WriteLine($"  {item.Key}. Edit {item.Value.Name}");
+                    Console.WriteLine($"{item.Key}. Edit {item.Value.Name}");
 
                 // Dynamic copy menu items
                 foreach (var item in copyMenuItems)
-                    Console.WriteLine($"  {item.Key}. Copy {item.Value.Name}");
+                    Console.WriteLine($"{item.Key}. Copy {item.Value.Name}");
 
-                Console.WriteLine("  99. Exit");
+                Console.WriteLine("99. Exit");
 
                 var maxChoice = copyMenuItems.Count > 0 ? copyMenuItems.Keys.Max()
                               : editFileMenuItems.Count > 0 ? editFileMenuItems.Keys.Max()
                               : 3;
-                Console.Write($"\nChoose [1-{maxChoice}, 99]: ");
-                var choice = Console.ReadLine()?.Trim() ?? "";
+                string choice;
+                if (Console.IsInputRedirected || Console.IsOutputRedirected)
+                {
+                    ConsoleMenu.WritePrompt($"\nChoose [1-{maxChoice}, 99]: ");
+                    choice = Console.ReadLine()?.Trim() ?? "";
+                }
+                else
+                {
+                    Console.WriteLine();
+                    // No Back here, so Esc means Exit (99).
+                    choice = ConsoleMenu.ReadDeferredChoice() ?? "99";
+                }
 
                 if (choice == "99")
                 {
@@ -656,7 +666,7 @@ namespace ibsCompiler
         private static void RunCopyOptionsFile((string Name, string FullPath) source, string setupDir)
         {
             Console.WriteLine($"\nCopying: {source.Name}");
-            Console.Write("Enter new file name (e.g. options.202.NEWSERVER): ");
+            ConsoleMenu.WritePrompt("Enter new file name (e.g. options.202.NEWSERVER): ");
             var newName = Console.ReadLine()?.Trim() ?? "";
 
             if (string.IsNullOrEmpty(newName))
@@ -1120,11 +1130,11 @@ namespace ibsCompiler
                 // Step 1: Option type
                 Console.WriteLine("\n--- New Option ---");
                 Console.WriteLine("What type of option?");
-                Console.WriteLine("  1. Value option (stores a value like <<sbnmaster>>)");
-                Console.WriteLine("  2. On/Off option (condition flag +/-)");
-                Console.WriteLine("  3. Cancel");
+                Console.WriteLine("1. Value option (stores a value like <<sbnmaster>>)");
+                Console.WriteLine("2. On/Off option (condition flag +/-)");
+                Console.WriteLine("3. Cancel");
 
-                Console.Write("\nChoose [1-3]: ");
+                ConsoleMenu.WritePrompt("\nChoose [1-3]: ");
                 var typeChoice = Console.ReadLine()?.Trim() ?? "";
                 if (typeChoice == "3") return null;
                 if (typeChoice != "1" && typeChoice != "2") { Console.WriteLine("Invalid choice."); continue; }
@@ -1132,11 +1142,11 @@ namespace ibsCompiler
 
                 // Step 2: Static or dynamic
                 Console.WriteLine("\nIs this option static or dynamic?");
-                Console.WriteLine("  1. Static (lowercase v:/c: - cannot be changed at runtime)");
-                Console.WriteLine("  2. Dynamic (uppercase V:/C: - can be changed by users)");
-                Console.WriteLine("  3. Go back");
+                Console.WriteLine("1. Static (lowercase v:/c: - cannot be changed at runtime)");
+                Console.WriteLine("2. Dynamic (uppercase V:/C: - can be changed by users)");
+                Console.WriteLine("3. Go back");
 
-                Console.Write("\nChoose [1-3]: ");
+                ConsoleMenu.WritePrompt("\nChoose [1-3]: ");
                 var dynChoice = Console.ReadLine()?.Trim() ?? "";
                 if (dynChoice == "3") continue;
                 if (dynChoice != "1" && dynChoice != "2") { Console.WriteLine("Invalid choice."); continue; }
@@ -1168,9 +1178,9 @@ namespace ibsCompiler
                 else
                 {
                     Console.WriteLine("\nDefault state:");
-                    Console.WriteLine("  1. Off (-)");
-                    Console.WriteLine("  2. On (+)");
-                    Console.Write("\nChoose [1-2]: ");
+                    Console.WriteLine("1. Off (-)");
+                    Console.WriteLine("2. On (+)");
+                    ConsoleMenu.WritePrompt("\nChoose [1-2]: ");
                     var stateChoice = Console.ReadLine()?.Trim() ?? "";
                     if (stateChoice == "1") defaultValue = "-";
                     else if (stateChoice == "2") defaultValue = "+";
@@ -1199,14 +1209,14 @@ namespace ibsCompiler
                 // Step 6: Confirmation
                 Console.WriteLine("\n--- Review ---");
                 Console.WriteLine($"Option line: {optionLine}");
-                Console.WriteLine($"  Type: {(isValueOption ? "Value" : "On/Off")}");
-                Console.WriteLine($"  Dynamic: {(isDynamic ? "Yes" : "No")}");
-                Console.WriteLine($"  Name: {optName}");
+                Console.WriteLine($"Type: {(isValueOption ? "Value" : "On/Off")}");
+                Console.WriteLine($"Dynamic: {(isDynamic ? "Yes" : "No")}");
+                Console.WriteLine($"Name: {optName}");
                 if (isValueOption)
-                    Console.WriteLine($"  Default value: <<{defaultValue}>>");
+                    Console.WriteLine($"Default value: <<{defaultValue}>>");
                 else
-                    Console.WriteLine($"  Default state: {(defaultValue == "+" ? "On (+)" : "Off (-)")}");
-                Console.WriteLine($"  Description: {description}");
+                    Console.WriteLine($"Default state: {(defaultValue == "+" ? "On (+)" : "Off (-)")}");
+                Console.WriteLine($"Description: {description}");
 
                 if (ConsoleYesNo("\nIs this correct?"))
                     return optionLine;
@@ -1236,12 +1246,12 @@ namespace ibsCompiler
                 var currentValue = rest.Substring(startIdx + 2, endIdx - startIdx - 2);
                 var description = rest.Substring(endIdx + 2).Trim();
 
-                Console.WriteLine($"\n  Option: {optName}");
-                Console.WriteLine($"  Type: Value ({(isDynamic ? "dynamic" : "static")})");
-                Console.WriteLine($"  Description: {description}");
-                Console.WriteLine($"  Default value: <<{currentValue}>>");
+                Console.WriteLine($"\nOption: {optName}");
+                Console.WriteLine($"Type: Value ({(isDynamic ? "dynamic" : "static")})");
+                Console.WriteLine($"Description: {description}");
+                Console.WriteLine($"Default value: <<{currentValue}>>");
 
-                Console.Write($"  Enter value (or press Enter to keep <<{currentValue}>>): ");
+                ConsoleMenu.WritePrompt($"Enter value (or press Enter to keep <<{currentValue}>>): ");
                 var newValue = Console.ReadLine()?.Trim() ?? "";
                 if (newValue == "") newValue = currentValue;
                 return $"{prefix}{optName} <<{newValue}>> {description}";
@@ -1253,22 +1263,22 @@ namespace ibsCompiler
                 else if (rest.StartsWith("+")) { currentState = "+"; description = rest.Substring(1).Trim(); }
                 else { currentState = "+"; description = rest; }
 
-                Console.WriteLine($"\n  Option: {optName}");
-                Console.WriteLine($"  Type: On/Off ({(isDynamic ? "dynamic" : "static")})");
-                Console.WriteLine($"  Description: {description}");
-                Console.WriteLine($"  Default state: {(currentState == "+" ? "On (+)" : "Off (-)")}");
-                Console.WriteLine("  1. Off (-)");
-                Console.WriteLine("  2. On (+)");
-                Console.WriteLine("  3. Keep current");
+                Console.WriteLine($"\nOption: {optName}");
+                Console.WriteLine($"Type: On/Off ({(isDynamic ? "dynamic" : "static")})");
+                Console.WriteLine($"Description: {description}");
+                Console.WriteLine($"Default state: {(currentState == "+" ? "On (+)" : "Off (-)")}");
+                Console.WriteLine("1. Off (-)");
+                Console.WriteLine("2. On (+)");
+                Console.WriteLine("3. Keep current");
 
                 while (true)
                 {
-                    Console.Write("  Choose [1-3]: ");
+                    ConsoleMenu.WritePrompt("Choose [1-3]: ");
                     var c = Console.ReadLine()?.Trim() ?? "";
                     if (c == "1") return $"{prefix}{optName} - {description}";
                     if (c == "2") return $"{prefix}{optName} + {description}";
                     if (c == "3" || c == "") return $"{prefix}{optName} {currentState} {description}";
-                    Console.WriteLine("  Please enter 1, 2, or 3");
+                    Console.WriteLine("Please enter 1, 2, or 3");
                 }
             }
         }
@@ -1306,10 +1316,10 @@ namespace ibsCompiler
                 else continue;
 
                 Console.WriteLine($"\n--- Option {i + 1} of {optionsToAdd.Count} ---");
-                Console.WriteLine($"  Name: {optName}");
-                Console.WriteLine($"  Type: {typeStr} ({(isDynamic ? "dynamic" : "static")})");
-                Console.WriteLine($"  Default: {valueStr}");
-                Console.WriteLine($"  Description: {description}");
+                Console.WriteLine($"Name: {optName}");
+                Console.WriteLine($"Type: {typeStr} ({(isDynamic ? "dynamic" : "static")})");
+                Console.WriteLine($"Default: {valueStr}");
+                Console.WriteLine($"Description: {description}");
 
                 if (ConsoleYesNo("Add this option?"))
                 {
@@ -1318,7 +1328,7 @@ namespace ibsCompiler
                 }
                 else
                 {
-                    Console.WriteLine("  Skipped.");
+                    Console.WriteLine("Skipped.");
                 }
             }
             return customized;
@@ -1922,16 +1932,16 @@ namespace ibsCompiler
             // Non-GONZO: standard import/export menu
             Console.WriteLine();
             Console.WriteLine("Select operation:");
-            Console.WriteLine("  1) Import messages from the files into the database");
-            Console.WriteLine("  2) Export messages from the database into the files");
-            Console.WriteLine("  3) Add a message to the files");
-            Console.WriteLine("  99) Cancel");
+            Console.WriteLine("1) Import messages from the files into the database");
+            Console.WriteLine("2) Export messages from the database into the files");
+            Console.WriteLine("3) Add a message to the files");
+            Console.WriteLine("99) Cancel");
             Console.WriteLine();
 
             string mode;
             while (true)
             {
-                Console.Write("Enter choice (1, 2, 3, or 99): ");
+                ConsoleMenu.WritePrompt("Enter choice (1, 2, 3, or 99): ");
                 var choice = Console.ReadLine()?.Trim() ?? "";
                 if (choice == "1") { mode = "import"; break; }
                 if (choice == "2") { mode = "export"; break; }
@@ -2471,11 +2481,11 @@ namespace ibsCompiler
         private static int RunAddMessageInteractive(ResolvedProfile profile)
         {
             Console.WriteLine();
-            Console.Write("Message type (ibs|gui|sql|sqr|jam): ");
+            ConsoleMenu.WritePrompt("Message type (ibs|gui|sql|sqr|jam): ");
             var type = (Console.ReadLine() ?? "").Trim();
-            Console.Write("Group: ");
+            ConsoleMenu.WritePrompt("Group: ");
             var group = (Console.ReadLine() ?? "").Trim();
-            Console.Write("Message text: ");
+            ConsoleMenu.WritePrompt("Message text: ");
             var text = Console.ReadLine() ?? "";
 
             // Preview (dry-run) first so the user sees the computed number and row.

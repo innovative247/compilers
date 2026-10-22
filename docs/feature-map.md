@@ -102,7 +102,7 @@ they still work end-to-end.
 | Sequence loop | `-F <first> -L <last>` | `runsql.seq` | COVERED |
 | Preview compiled SQL (no execute) | `--preview` | `runsql.preview` | COVERED |
 | Skip changelog | `--changelog:n` | `runsql.no_changelog` | COVERED |
-| Outfile + errfile split | `-O <file>` (auto-creates `.out` + `.err`) | `runsql.outfile` | COVERED |
+| Outfile + errfile split | `-O <file>` (runcreate: output to `.out`, an empty `.err` beside it, as legacy) | `runsql.outfile` | COVERED |
 
 ### `runcreate` — multi-step build orchestrator
 
@@ -121,8 +121,10 @@ they still work end-to-end.
 | Run upgrade (3-arg) — `<server> <upgrade_no> <script>` | `i_run_upgrade <profile> <upgrade-no> <script>` | `iupgrade.smoke` | COVERED |
 | Run upgrade (4-arg) — prepend explicit database | `i_run_upgrade <db> <profile> <upgrade-no> <script>` | `iupgrade.smoke` (verified by Common.cs `i_run_upgrade_variables`) | COVERED |
 | Outfile / echo | `-O <file>` / `-e` | `iupgrade.outfile` | COVERED |
-| Bails when already-run (`ba_upgrades_check` = 2) | (verified by re-running same upgrade) | `iupgrade.already_run` | COVERED |
-| Bails when control table missing (`ba_upgrades_check` = 1) | (verified by point at a profile with no `ba_upgrades`) | `iupgrade.no_control` | COVERED |
+| Legacy flow — insert, whole script through runsql (`-r` refno), end_tm update, each printing its count | `i_run_upgrade [-r refno] <db> <profile> <upgrade-no> <script>` | `iupgrade.legacy_flow` | COVERED (live Sybase) |
+| Real upgrade-script shape: `sp_renametoold`, `!!runsql tbl_x.sql &db& &sv&` (nested runsql, its changelog, isql's `[sh:]` line), old rows copied back; mock table in sbntest, everything removed and checked | (script content) | `iupgrade.bang_runsql_mock` | COVERED (live Sybase) |
+| Bails when already run (upgrade row in `&upgrades&`) | (re-run the same upgrade) | `iupgrade.legacy_flow` | COVERED (live Sybase) |
+| Bails when the `CONTROL` row is missing | (profile without `&upgrades&`) | (none) | GAP |
 
 ---
 
@@ -317,11 +319,15 @@ Interactive main menu:
 | `2` → Test → all | Run all six in order | `--test NAME --what all` | `set_profile.test_all` | COVERED |
 | `3` Add to IDE | Write VSCode `tasks.json` | (TTY-only — explicit project decision) | — | SKIP |
 | `4` Open settings.json | Launch editor on `settings.json` | (TTY-only — same reason) | — | SKIP |
-| `5` Shared profiles → List | Show what other developers have published (never merged into `settings.json`, never in alias resolution) | `--shared [--refresh]` | `set_profile.shared_list` | COVERED |
-| `5` → Share one of mine | Publish the password-free record to the private `innovative247/compiler-profiles` repo; GitHub push access is the gate | `--share NAME [--note "..."] [--dry-run]` | `set_profile.share_payload_has_no_secrets` / `.share_dry_run_publishes_nothing` / `.share_unknown_profile` | COVERED |
-| `5` → Withdraw | Remove a published record (warns when it is not yours) | `--unshare NAME [--yes]` | (manual - a suite run must not mutate the shared store) | SKIP |
-| `5` → Fetch (new name) | Copy a shared record into `settings.json`; password and SQL source are resolved on arrival, never fetched | `--fetch NAME [--as LOCAL] [--sql-source PATH] [--password PW \| --no-password]` | `set_profile.fetch_new` | COVERED |
-| `5` → Fetch (existing profile) | Per-field merge. TTY prompts per differing field with keep-local as the default; headless demands an explicit choice and never blind-overwrites | `--fetch NAME --as EXISTING (--accept-all \| --accept-none \| --accept FIELD[,FIELD...])` | `set_profile.fetch_existing_needs_choice` | COVERED |
+| `5` Shared profiles → list | One full-screen list (refreshed on entry) of every local profile and every shared record. Colour is the state: Cyan = local (incl. a linked copy, shown once), White = shared record with no linked local copy, Yellow = linked and out of sync (repo newer, or your own with unpushed edits); a one-line legend sits above the menu. A short status column (Local / Mine / Linked / Repo newer / Changed here / Shared). An unlinked same-name pair shows twice (cyan + white). Right/Left details: every shared field; on a yellow row each differing field is yellow as `local -> repo: value` (never a password). Up/Down move, Space mark, letters filter (digits go to `Choice:`). Menu: `1` Sync, `2` Unlink, `3` Remove, `4` Change GitHub account, `98` Back (Esc clears the filter, else Back). Each action works on the marked rows, or the highlighted row when none are marked; the list is re-read after it with the filter kept. Redirected or too-small console: numbered coloured list + legend + the same menu, then `Which [1-N ...]` | `--shared [--refresh]` (prints Status per record) | `set_profile.shared_list` | COVERED (picker: TTY-only) |
+| `5` → `1` Sync | Does what each row implies, one result line per profile: unlinked local → share it (a same-name record of someone else's is never overwritten; your own asks `Replace your shared NAME with this one and link? [y/N]`); your own linked → push your edits; linked with a newer repo copy → pull (shared fields only; local password and SQL source kept; restamped); white row → download (new: SQL source and password asked; a same-name local asks `Replace your NAME with the shared NAME and link? [y/N]`, N skips) | `--share`, `--fetch` (below) | (manual - TTY) | SKIP |
+| `5` → `2` Unlink | Linked copy of someone else's record → plain local profile (it then shows twice). White row → downloaded as a local copy that never syncs (SQL source and password asked; name taken → asks for a new local name, Enter skips). Your own record: refused with a pointer to Remove | — | (manual - TTY) | SKIP |
+| `2` → Edit a synced profile | Someone else's shared profile warns before the editor opens; saving a change to a shared field unlinks it (plain local profile, stops syncing). Your own record: no warning. Copy never carries the link | — | (manual - TTY) | SKIP |
+| `5` → `3` Remove | Your own record only: `Remove NAME from shared profiles? [y/N]`, withdraw it from the private `innovative247/compilers-profiles` repo; every linked local copy stays, unlinked (cyan). Anyone else's record: refused in one line (the flag warns and asks) | `--unshare NAME [--yes]` | (manual - a suite run must not mutate the shared store) | SKIP |
+| Headless share | Publish the password-free record; GitHub push access is the gate | `--share NAME [--note "..."] [--dry-run]` | `set_profile.share_payload_has_no_secrets` / `.share_dry_run_publishes_nothing` / `.share_unknown_profile` | COVERED |
+| `5` → `4` Change GitHub account | Status (git, publishing email and source, GitHub account, live access check, local copy); switch account, change email/name, disconnect. Account and email are saved in `settings.json` `SharedProfiles` only - git config and GitHub sign-in are never changed | `--shared-status` (exit 0 when access OK) | `set_profile.shared_status_reports_email_source`, `set_profile.shared_settings_email_satisfies_identity` | COVERED (menu actions: TTY-only) |
+| Headless download (new name) | Copy a shared record into `settings.json`; password and SQL source are resolved on arrival, never downloaded | `--fetch NAME [--as LOCAL] [--sql-source PATH] [--password PW \| --no-password]` | `set_profile.fetch_new` | COVERED |
+| Headless download (existing profile) | Per-field merge. TTY prompts per differing field with keep-local as the default; headless demands an explicit choice and never blind-overwrites | `--fetch NAME --as EXISTING (--accept-all \| --accept-none \| --accept FIELD[,FIELD...])` | `set_profile.fetch_existing_needs_choice` | COVERED |
 | `99` Exit | exit 0 | (default with no flags + no positional) | — | COVERED |
 
 **Validation surfaces (still enforced in headless):**
@@ -337,13 +343,15 @@ Interactive main menu:
   every publish, which FAILS rather than scrubbing them. `--accept` only recognizes
   shareable fields. A fetched raw target skips the SQL-source step — it has no
   source tree to point at.
-- `--share`, `--unshare`, `--shared` and `--fetch` are mutually exclusive with each
+- `--share`, `--unshare`, `--shared`, `--shared-status` and `--fetch` are mutually exclusive with each
   other and with `--create`/`--edit`/`--view`/`--copy`/`--delete`/`--test`.
 - No git, no network, or no access to the private store: the shared actions report
   one line and do nothing. Every local profile operation still works.
-- **No git identity (`user.email` unset): every shared action is denied**, list and
-  fetch included, naming the `git config` commands that fix it (`set_profile.denied_without_git_identity`).
-  Nothing is ever published under an invented identity.
+- **No identity (no `SharedProfiles` email or GitHub username in settings, no git `user.email`):
+  every shared action is denied**, list and fetch included (`set_profile.denied_without_git_identity`).
+  The TTY setup asks once for "GitHub username or email address", defaulting to the account
+  this machine already knows (pinned account, Git Credential Manager / gh login, git config).
+  A username also pins the GitHub account. Nothing is ever published under an invented identity.
 
 ---
 

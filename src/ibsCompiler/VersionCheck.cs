@@ -267,15 +267,46 @@ namespace ibsCompiler
                 return;
             }
 
-            // Download
+            // Download (own client: the API client's 5 s timeout would kill a 37 MB body)
             Console.WriteLine($"Downloading {assetName}...");
             var tempFile = Path.GetTempFileName();
             try
             {
-                using var downloadStream = await http.GetStreamAsync(downloadUrl);
-                using var fileStream = File.Create(tempFile);
-                await downloadStream.CopyToAsync(fileStream);
-                fileStream.Close();
+                using var dlHttp = CreateHttpClient(timeout: 1);
+                // Finite wait for the response headers; the body gets a per-read stall timeout below.
+                dlHttp.Timeout = TimeSpan.FromSeconds(100);
+                using var dlResponse = await dlHttp.GetAsync(downloadUrl, HttpCompletionOption.ResponseHeadersRead);
+                dlResponse.EnsureSuccessStatusCode();
+                var total = dlResponse.Content.Headers.ContentLength;
+                using (var downloadStream = await dlResponse.Content.ReadAsStreamAsync())
+                using (var fileStream = File.Create(tempFile))
+                {
+                    var buffer = new byte[81920];
+                    long done = 0, lastReported = 0;
+                    var redirected = Console.IsOutputRedirected;
+                    int read;
+                    while (true)
+                    {
+                        // A fresh 60 s allowance before every read: a stalled connection
+                        // fails clearly instead of hanging the update forever.
+                        using (var stall = new CancellationTokenSource(TimeSpan.FromSeconds(60)))
+                            read = await downloadStream.ReadAsync(buffer.AsMemory(), stall.Token);
+                        if (read <= 0) break;
+                        await fileStream.WriteAsync(buffer, 0, read);
+                        done += read;
+                        // Redirected: a plain line every 10 MB; console: redraw in place every 256 KB
+                        var step = redirected ? 10L * 1024 * 1024 : 256L * 1024;
+                        if (done - lastReported < step) continue;
+                        lastReported = done;
+                        var msg = total.HasValue
+                            ? $"  {done / 1048576.0:F1} / {total.Value / 1048576.0:F1} MB ({done * 100 / total.Value}%)"
+                            : $"  {done / 1048576.0:F1} MB";
+                        if (redirected) Console.WriteLine(msg);
+                        else Console.Write("\r" + msg + "   ");
+                    }
+                    if (!redirected) Console.Write("\r" + new string(' ', 60) + "\r");
+                    Console.WriteLine($"  Downloaded {done / 1048576.0:F1} MB.");
+                }
 
                 // Install to the directory containing the actual exe
                 var installDir = GetExeDir();
@@ -286,7 +317,7 @@ namespace ibsCompiler
                     ExtractZip(tempFile, installDir);
                 else
                 {
-                    ExtractTarGz(tempFile, installDir);
+                    if (!ExtractTarGz(tempFile, installDir)) return;
                     SetExecutable(installDir);
                 }
 
@@ -294,6 +325,12 @@ namespace ibsCompiler
                 Console.ForegroundColor = ConsoleColor.Green;
                 Console.WriteLine($"✓ Updated to v{latestVersion}.");
                 Console.ForegroundColor = prev;
+            }
+            catch (OperationCanceledException)
+            {
+                Console.Error.WriteLine();
+                Console.Error.WriteLine("Download failed: no response within 100 s, or no data received for 60 s. " +
+                                        "Check your connection and run the update again.");
             }
             finally
             {
@@ -315,8 +352,14 @@ namespace ibsCompiler
         private static void ExtractZip(string zipPath, string destDir)
         {
             using var archive = ZipFile.OpenRead(zipPath);
+            var count = archive.Entries.Count;
+            var index = 0;
+            var redirected = Console.IsOutputRedirected;
             foreach (var entry in archive.Entries)
             {
+                index++;
+                if (redirected) { if (index % 25 == 0) Console.WriteLine($"  {index} / {count} entries"); }
+                else Console.Write($"\r  {index} / {count} entries ({index * 100 / count}%)   ");
                 if (string.IsNullOrEmpty(entry.Name)) continue;
                 if (entry.Name == "settings.json") continue; // Never overwrite user credentials
 
@@ -332,9 +375,11 @@ namespace ibsCompiler
 
                 entry.ExtractToFile(destPath, overwrite: true);
             }
+            if (!redirected) Console.Write("\r" + new string(' ', 60) + "\r");
+            Console.WriteLine($"  Extracted {count} entries.");
         }
 
-        private static void ExtractTarGz(string tarGzPath, string destDir)
+        private static bool ExtractTarGz(string tarGzPath, string destDir)
         {
             var psi = new System.Diagnostics.ProcessStartInfo
             {
@@ -345,7 +390,21 @@ namespace ibsCompiler
                 RedirectStandardError = true
             };
             using var proc = System.Diagnostics.Process.Start(psi);
-            proc?.WaitForExit();
+            if (proc == null)
+            {
+                Console.Error.WriteLine("Extract failed: could not start tar.");
+                return false;
+            }
+            var stdout = proc.StandardOutput.ReadToEndAsync();
+            var stderr = proc.StandardError.ReadToEndAsync();
+            proc.WaitForExit();
+            if (proc.ExitCode != 0)
+            {
+                Console.Error.WriteLine($"Extract failed (tar exit {proc.ExitCode}): {stderr.Result.Trim()}");
+                return false;
+            }
+            Console.WriteLine("  Extracted.");
+            return true;
         }
 
         private static void SetExecutable(string dir)

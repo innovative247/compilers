@@ -66,8 +66,12 @@ namespace ibsCompiler
             }
         }
         public string Upgrade_no;
+        /// <summary>runsql / i_run_upgrade -r: the reference number legacy runsql wrote to its changelog record.</summary>
+        public string RefNo;
         public string OutFile;
         public string ErrFile;
+        /// <summary>runcreate: the outfile argument as given (OutFile is it + .out; it + .err is left empty), for its banners.</summary>
+        public string OutFileArg;
         public bool EchoInput;
         public int SeqFirst;
         public int SeqLast;

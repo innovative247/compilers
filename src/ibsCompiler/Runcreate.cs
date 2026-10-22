@@ -22,35 +22,22 @@ namespace ibsCompiler
             {
                 myOptions = new Options(cmdvars, profile);
                 if (!myOptions.GenerateOptionFiles()) return false;
-
-                // Execute changelog once at top level
-                if (cmdvars.ChangeLog)
-                {
-                    var chgDb = cmdvars.Database;
-                    if (string.IsNullOrEmpty(chgDb))
-                        chgDb = myOptions.ReplaceOptions("&dbpro&");
-
-                    if (!string.IsNullOrEmpty(chgDb))
-                    {
-                        var chgLines = new List<string>();
-                        foreach (var l in change_log.lines(cmdvars, profile))
-                            chgLines.Add(myOptions.ReplaceOptions(l, cmdvars.SeqFirst));
-                        chgLines.Add("go");
-                        var chgSql = string.Join(Environment.NewLine, chgLines);
-                        executor.ExecuteSql(chgSql, chgDb, false, cmdvars.OutFile);
-                    }
-                }
+                // No changelog of its own: as on legacy, each runsql it dispatches logs its script.
             }
 
             // Check for existence of files
+            var scriptName = cmdvars.Command;
             if (!ibs_compiler_common.FindFile(ref cmdvars.Command))
             {
-                ibs_compiler_common.WriteLine(cmdvars.Command + " not found.", cmdvars.OutFile);
+                ibs_compiler_common.WriteLine("Can't find create script: " + scriptName, cmdvars.OutFile);
                 return false;
             }
 
-            var scriptName = cmdvars.Command;
-            ibs_compiler_common.WriteLine(scriptName + " started", cmdvars.OutFile);
+            // Legacy runcreate's banner: the script and server as given, the outfile pair (empty
+            // when output goes to the console), and the date as Unix date prints it.
+            var (ou1, ou2) = string.IsNullOrEmpty(cmdvars.OutFileArg) ? ("", "") : (cmdvars.OutFileArg + ".out", cmdvars.OutFileArg + ".err");
+            var target = $"{scriptName}  {cmdvars.ServerNameOnly}  >{ou1} {ou2}";
+            WriteBanner($">>>>>>> RUNCREATE  {target}", cmdvars.OutFile);
 
             // Verify connection before processing - fail fast instead of logging errors for every line
             try
@@ -67,7 +54,6 @@ namespace ibsCompiler
                 ibs_compiler_common.WriteLine("ERROR: Connection failed. " + ex.Message, cmdvars.OutFile);
                 return false;
             }
-            var startTime = DateTime.Now;
 
             using var sourceFile = new StreamReader(cmdvars.Command);
             string? line;
@@ -140,8 +126,8 @@ namespace ibsCompiler
                 // Remove server references
                 line = line.Replace("-S&sv&", "").Replace("-S &sv&", "").Replace("&sv&", "").Trim();
 
-                // Dispatch based on line type
-                // Changelog and options already handled at top level — skip in child calls
+                // Dispatch based on line type. Options are built once at the top level; each
+                // runsql logs its own script, as the legacy runsql calls did.
                 if (strType == "runsql")
                 {
                     var databases = line.Replace("-d", "-D").Replace("-D", "|").Replace(" ", "").Trim().Split('|');
@@ -153,7 +139,7 @@ namespace ibsCompiler
                         {
                             uniqDb.Add(resolvedDb);
                             newVars.Database = resolvedDb;
-                            newVars.ChangeLog = false;
+                            newVars.CommandName = "runsql";
                             var runsql = new runsql_main();
                             runsql.Run(newVars, profile, executor, true, myOptions);
                         }
@@ -166,11 +152,14 @@ namespace ibsCompiler
                 }
                 else if (strType == "i_run_upgrade")
                 {
-                    var sctIdx = line.IndexOf("sct_");
-                    if (sctIdx >= 0)
+                    // `i_run_upgrade <database> &sv& <upgrade_no> <script>` (&sv& already removed)
+                    var parts = line.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+                    if (parts.Length >= 3)
                     {
-                        newVars.Command = line.Substring(sctIdx).Trim();
-                        newVars.Upgrade_no = line.Replace(newVars.Command, "").Replace("&dbsta&", "").Trim();
+                        newVars.Database = myOptions != null ? myOptions.ReplaceOptions(parts[0]).Trim() : parts[0];
+                        newVars.Upgrade_no = parts[^2];
+                        newVars.Command = parts[^1];
+                        newVars.CommandName = "i_run_upgrade";
                         var iupgrade = new i_run_upgrade_main();
                         iupgrade.Run(newVars, profile, executor, myOptions);
                     }
@@ -197,9 +186,42 @@ namespace ibsCompiler
                 }
             }
 
-            var elapsed = DateTime.Now - startTime;
-            ibs_compiler_common.WriteLine($"{scriptName} total time {elapsed:hh\\:mm\\:ss}", cmdvars.OutFile);
+            WriteBanner($"<<<<<<< END RUNCREATE  {target}", cmdvars.OutFile);
+            // Legacy runcreate always left an empty .err beside the .out (see runcreate_variables).
+            if (!string.IsNullOrEmpty(cmdvars.OutFileArg))
+            {
+                var errFile = Path.ChangeExtension(cmdvars.OutFile, ".err");
+                if (!File.Exists(errFile))
+                    try { File.WriteAllText(errFile, ""); } catch { }
+            }
             return true;
+        }
+
+        private static void WriteBanner(string line, string outFile)
+        {
+            ibs_compiler_common.WriteLine(" ", outFile);
+            ibs_compiler_common.WriteLine(line, outFile);
+            ibs_compiler_common.WriteLine(UnixDate(DateTime.Now), outFile);
+            ibs_compiler_common.WriteLine(" ", outFile);
+        }
+
+        /// <summary>The time as Unix <c>date</c> prints it: <c>Wed Oct 21 15:28:41 CDT 2026</c>.</summary>
+        internal static string UnixDate(DateTime now)
+        {
+            var inv = System.Globalization.CultureInfo.InvariantCulture;
+            return $"{now.ToString("ddd MMM", inv)} {now.Day,2} {now.ToString("HH:mm:ss", inv)} {ZoneAbbreviation(now)} {now.ToString("yyyy", inv)}";
+        }
+
+        // "Central Daylight Time" -> "CDT"; a name that is already an abbreviation stays as it is.
+        private static string ZoneAbbreviation(DateTime now)
+        {
+            var tz = TimeZoneInfo.Local;
+            if (tz.BaseUtcOffset == TimeSpan.Zero && !tz.SupportsDaylightSavingTime) return "UTC";
+            var name = tz.IsDaylightSavingTime(now) ? tz.DaylightName : tz.StandardName;
+            if (string.IsNullOrWhiteSpace(name)) return "UTC";
+            var words = name.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (words.Length < 2 || name.Any(char.IsDigit)) return name;
+            return string.Concat(words.Select(w => char.ToUpperInvariant(w[0])));
         }
     }
 }

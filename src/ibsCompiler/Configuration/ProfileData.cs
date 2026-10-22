@@ -88,5 +88,38 @@ namespace ibsCompiler.Configuration
     {
         [JsonPropertyName("Profiles")]
         public Dictionary<string, ProfileData> Profiles { get; set; } = new();
+
+        /// <summary>
+        /// The developer's GitHub association for shared profiles. Scoped to Compilers:
+        /// nothing here is ever written to git config or any other machine-wide state.
+        /// Null (and so omitted from the file) when nothing is set.
+        /// </summary>
+        [JsonPropertyName("SharedProfiles")]
+        [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+        public SharedProfilesSettings? SharedProfiles { get; set; }
+
+        /// <summary>
+        /// Top-level sections this class does not model (e.g. <c>data_transfer</c>), kept
+        /// verbatim so a set_profile save never drops another tool's settings.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public Dictionary<string, System.Text.Json.JsonElement>? Extra { get; set; }
+    }
+
+    public class SharedProfilesSettings
+    {
+        /// <summary>Publishing email. Empty means fall back to git's user.email.</summary>
+        [JsonPropertyName("Email")]
+        public string Email { get; set; } = "";
+
+        [JsonPropertyName("Name")]
+        public string Name { get; set; } = "";
+
+        /// <summary>GitHub account every clone/fetch/push to the store uses. Empty means whatever git has.</summary>
+        [JsonPropertyName("GitHubAccount")]
+        public string GitHubAccount { get; set; } = "";
+
+        [JsonIgnore]
+        public bool IsEmpty => string.IsNullOrWhiteSpace(Email) && string.IsNullOrWhiteSpace(Name) && string.IsNullOrWhiteSpace(GitHubAccount);
     }
 }

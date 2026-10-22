@@ -50,7 +50,7 @@ jobs:
 
           if [ "$word" = "approve" ]; then
             GH_TOKEN="$ADMIN_TOKEN" gh api -X PUT "repos/innovative247/compilers-profiles/collaborators/$REQUESTER" -f permission=push >/dev/null
-            gh issue comment "$ISSUE" -R "$GITHUB_REPOSITORY" --body "Access granted by @$COMMENTER. @$REQUESTER - GitHub has emailed you an invitation to innovative247/compilers-profiles; accept it, then open set_profile > Shared profiles again."
+            gh issue comment "$ISSUE" -R "$GITHUB_REPOSITORY" --body "Access granted by @$COMMENTER. @$REQUESTER - open set_profile > Shared profiles again to start using shared profiles."
           else
             gh issue comment "$ISSUE" -R "$GITHUB_REPOSITORY" --body "Request declined by @$COMMENTER."
           fi

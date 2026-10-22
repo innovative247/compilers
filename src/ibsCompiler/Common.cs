@@ -13,7 +13,6 @@ namespace ibsCompiler
     {
         public static bool OutputToStdErr { get; set; } = false;
         public static string DefaultOutFile { get; set; } = "";
-        public static string DefaultErrFile { get; set; } = "";
 
         #region Platform parsing
         /// <summary>
@@ -960,9 +959,11 @@ namespace ibsCompiler
         /// <summary>
         /// Used by isqlline, runsql where database and command are necessary.
         /// </summary>
-        public static CommandVariables isql_variables(List<string> arguments, ProfileManager profileMgr)
+        public static CommandVariables isql_variables(List<string> arguments, ProfileManager profileMgr, bool refNo = false)
         {
             var myargs = DefaultCommandVariables(ref arguments);
+            // runsql only: -r refno (isqlline had no such flag)
+            if (refNo) myargs.RefNo = FindAndRemove("-r", ref arguments);
             if (arguments.Count >= 3)
             {
                 foreach (var arg in arguments)
@@ -1008,6 +1009,9 @@ namespace ibsCompiler
         /// </summary>
         public static CommandVariables runcreate_variables(List<string> arguments, ProfileManager profileMgr)
         {
+            // Legacy `runcreate -o`: output to the console, any third parameter ignored. Lowercase
+            // and alone only - the flag parser below is case-insensitive and would read it as -O.
+            var toConsole = arguments.RemoveAll(a => a == "-o") > 0;
             var myargs = DefaultCommandVariables(ref arguments);
             if (arguments.Count >= 2)
             {
@@ -1016,18 +1020,20 @@ namespace ibsCompiler
                 myargs.Server = arguments[1];
 
                 // Third positional arg is outfile (alternative to -O flag)
-                if (arguments.Count >= 3 && string.IsNullOrEmpty(myargs.OutFile))
+                if (arguments.Count >= 3 && string.IsNullOrEmpty(myargs.OutFile) && !toConsole)
                     myargs.OutFile = arguments[2];
 
-                // Resolve outfile to full path; split into .out and .err
+                // Resolve outfile to full path; output goes to <outfile>.out. Legacy runcreate's
+                // <outfile>.err was a diff of the output against itself - always empty - so
+                // runcreate only creates it (ErrFile stays unset: nothing is written there).
                 if (!string.IsNullOrEmpty(myargs.OutFile))
                 {
+                    myargs.OutFileArg = myargs.OutFile;
                     if (!Path.IsPathRooted(myargs.OutFile))
                         myargs.OutFile = Path.Combine(Environment.CurrentDirectory, myargs.OutFile);
-                    myargs.ErrFile = myargs.OutFile + ".err";
+                    try { File.Delete(myargs.OutFile + ".err"); } catch { }
                     myargs.OutFile = myargs.OutFile + ".out";
                     try { File.Delete(myargs.OutFile); } catch { }
-                    try { File.Delete(myargs.ErrFile); } catch { }
                 }
             }
             return myargs;
@@ -1039,6 +1045,7 @@ namespace ibsCompiler
         public static CommandVariables i_run_upgrade_variables(List<string> arguments, ProfileManager profileMgr)
         {
             var myargs = DefaultCommandVariables(ref arguments);
+            myargs.RefNo = FindAndRemove("-r", ref arguments);
             int count = arguments.Count;
             if (count >= 3)
             {
@@ -1152,6 +1159,7 @@ namespace ibsCompiler
             args.Database = "";
             args.Server = "";
             args.Upgrade_no = "";
+            args.RefNo = "";
             // Leave User/Pass empty when -U/-P not passed. ProfileManager.Resolve treats
             // empty as "use profile creds"; a non-empty value is an explicit override —
             // including literal "sbn0"/"ibsibs". Legacy defaults are applied only in the

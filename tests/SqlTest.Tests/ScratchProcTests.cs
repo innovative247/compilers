@@ -440,6 +440,13 @@ public class ScratchProcTests
         Assert.Equal("Msg 102, syntax error", RunsqlScratchCompiler.StripFraming(raw));
     }
 
+    [Fact]
+    public void Runsql_sybase_running_line_is_stripped_from_the_error_text()
+    {
+        var raw = "Running /tmp/sql-test-variant-1-x__t.sql on GONZO in sbntest \nMsg 102, Level 15, State 181:\nElapsed: 00:00:01\n";
+        Assert.Equal("Msg 102, Level 15, State 181:", RunsqlScratchCompiler.StripFraming(raw));
+    }
+
     // ---- shared journal row ----
 
     [Fact]

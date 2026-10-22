@@ -2,7 +2,7 @@ using ibsCompiler;
 using ibsCompiler.Configuration;
 using ibsCompiler.Database;
 
-const string Usage = "Usage: i_run_upgrade <server/profile> <upgrade_no> <script> [-D database] [-U user] [-P pass] [-O outfile] [-MSSQL|-SYBASE]";
+const string Usage = "Usage: i_run_upgrade [-r refno] <database> <server/profile> <upgrade_no> <script> [-U user] [-P pass] [-O outfile] [-MSSQL|-SYBASE]";
 if (!VersionCheck.CheckForUpdates("i_run_upgrade", args, Usage)) return 0;
 
 var arguments = args.ToList();

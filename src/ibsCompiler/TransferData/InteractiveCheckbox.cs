@@ -44,6 +44,7 @@ namespace ibsCompiler.TransferData
 
             void Render()
             {
+                ConsoleMenu.HideCaret();
                 ConsoleMenu.MoveTo(0, startRow);
                 for (int i = 0; i < visibleRows; i++)
                 {
@@ -214,6 +215,7 @@ namespace ibsCompiler.TransferData
 
             void Render()
             {
+                ConsoleMenu.HideCaret();
                 ConsoleMenu.MoveTo(0, startRow);
                 for (int i = 0; i < visibleRows; i++)
                 {

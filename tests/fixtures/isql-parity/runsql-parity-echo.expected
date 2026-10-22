@@ -1,0 +1,51 @@
+1> use tempdb
+1> print 'batch one'
+2> select 1, 'abc', convert(money,1234.5), convert(datetime,'2026-01-02 03:04:05'), null
+batch one
+                                                                               
+	             
+ ----------- --------- ------------------------ -------------------------------
+	 ----------- 
+           1 abc                       1,234.50             Jan  2 2026  3:04AM
+	        NULL 
+
+(1 row affected)
+1> create table #r (a int, b varchar(10))
+1> 
+2> insert #r values (1, 'x')
+3> insert #r values (2, 'y')
+4> select * from #r
+(1 row affected)
+(1 row affected)
+ a           b                              
+ ----------- ------------------------------ 
+           1 x                              
+           2 y                              
+
+(2 rows affected)
+1> selec 2
+Msg 2812, Level 16, State 5:
+Server 'DEVSYS', Line 1:
+Stored procedure 'selec' not found. Specify owner.objectname or use sp_help to
+check whether the object exists (sp_help may produce lots of output).
+1> set nocount on
+2> update #r set b = 'z'
+3> select b from #r
+ b                              
+ ------------------------------ 
+ z                              
+ z                              
+1> exec sp_help 'zz_nonexistent'
+Msg 17461, Level 16, State 1:
+Server 'DEVSYS', Procedure 'sp_help', Line 282:
+Object does not exist in this database.
+(return status = 1)
+1> select replicate('w', 100), 7, convert(float,1e20)
+                                                                                                                                                                                                                                                                                                             
+	                                         
+ ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+	 ----------- --------------------------- 
+ wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww
+	 wwwwwwwwwwwwwwwwwwwww                                                                                                                                                                                                        
+	           7          1.000000000000e+20 
+1> 
