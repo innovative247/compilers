@@ -506,6 +506,52 @@ shape and exit codes only.
 
 ---
 
+## 6c. API3 proc deploy check
+
+### `check_api_procs` — compare a recorded API3 declaration with a deployed APIEngine
+
+Runs over HTTPS (http only for localhost) against a deployed APIEngine and needs no database access. Tests are xunit cases in `tests/CheckApiProcs.Tests`; they use fixture declarations and a stubbed HTTP layer.
+
+| Outcome | Flags | Test ID | Status |
+|---|---|---|---|
+| All procs match: `OK`, exit 0 | `--declaration <path>` | `AllMatch_Ok_Exit0` | COVERED (xunit, tests/CheckApiProcs.Tests) |
+| Proc not in the engine list: `MISSING`, exit 1 | (same) | `Missing_Fails` | COVERED (xunit, tests/CheckApiProcs.Tests) |
+| Declared name over 32 characters matches by prefix; map fetched by full name | (same) | `LongName_PrefixMatch` | COVERED (xunit, tests/CheckApiProcs.Tests) |
+| Parameter renamed, retyped, reordered, default or output changed: `PARAM-DIFF`, exit 1 | (same) | `ParamChanged_Fails` | COVERED (xunit, tests/CheckApiProcs.Tests) |
+| Recorded optional parameter removed on the engine: `PARAM-DIFF`, exit 1 | (same) | `RecordedOptionalRemoved_Fails` | COVERED (xunit, tests/CheckApiProcs.Tests) |
+| Extra optional engine parameter at any position: `OK` | (same) | `ExtraOptional_Ok` | COVERED (xunit, tests/CheckApiProcs.Tests) |
+| Engine requires a parameter not declared: `PARAM-DIFF`, exit 1 | (same) | `ExtraRequired_Fails` | COVERED (xunit, tests/CheckApiProcs.Tests) |
+| Case and whitespace in types ignored: `OK` | (same) | `Normalisation_Ok` | COVERED (xunit, tests/CheckApiProcs.Tests) |
+| Result-set column difference: `RESULT-DIFF`, warning only, exit 0 | (same) | `ColumnDiff_WarnsOnly` | COVERED (xunit, tests/CheckApiProcs.Tests) |
+| Extra live result set ignored | (same) | `ResultSetDecoy_Ignored` | COVERED (xunit, tests/CheckApiProcs.Tests) |
+| Stale map: `MAP-STALE` with remap hint, warning only, exit 0 | (same) | `Stale_ReportsHint_NotFail` | COVERED (xunit, tests/CheckApiProcs.Tests) |
+| Stale map and parameter difference: `PARAM-DIFF`, exit 1 | (same) | `StaleAndDiff_Fails` | COVERED (xunit, tests/CheckApiProcs.Tests) |
+| Map request fails: `MAP-ERROR`, exit 1 | (same) | `MapError_Fails` | COVERED (xunit, tests/CheckApiProcs.Tests) |
+| Connectivity, auth or list failure exits 3 | (same) | `Connectivity_Exit3` | COVERED (xunit, tests/CheckApiProcs.Tests) |
+| Usage error exits 2 | missing URL or `--declaration`, unknown flag, `--json` with `--quiet`, non-loopback `http://`, `--names` without `--record`, `--proc` with `--record`, an extra positional argument | `Usage_Exit2` | COVERED (xunit, tests/CheckApiProcs.Tests) |
+| Unsupported `formatVersion` major exits 2 | (same) | `UnknownMajor_Exit2` | COVERED (xunit, tests/CheckApiProcs.Tests) |
+| Hand-kept names list given as `--declaration` exits 2 | `--declaration <names file>` | `NamesOnlyInCheckMode_Exit2` | COVERED (xunit, tests/CheckApiProcs.Tests) |
+| `--proc` naming an undeclared proc exits 2 | `--proc <name>` | `UndeclaredProcFilter_Exit2` | COVERED (xunit, tests/CheckApiProcs.Tests) |
+| Never calls build or execute | (check and record) | `NeverBuildsOrExecutes` | COVERED (xunit, tests/CheckApiProcs.Tests) |
+| Record writes a declaration that checks `OK` against the same engine | `--record --names --consumer --release --out` | `Record_RoundTrips` | COVERED (xunit, tests/CheckApiProcs.Tests) |
+| Record fails and writes nothing when a name is missing | `--record ...` | `Record_MissingName_Fails` | COVERED (xunit, tests/CheckApiProcs.Tests) |
+| Record fails and writes nothing when a map is stale | `--record ...` | `Record_StaleMap_Fails` | COVERED (xunit, tests/CheckApiProcs.Tests) |
+| JSON report | `--json` | `Json_Report` | COVERED (xunit, tests/CheckApiProcs.Tests) |
+| Password and token never appear in output | (env credentials) | `NoSecretsInOutput` | COVERED (xunit, tests/CheckApiProcs.Tests) |
+| Plain `http://` accepted for localhost | `http://localhost:<port>` | `HttpLoopback_Ok` | COVERED (xunit, tests/CheckApiProcs.Tests) |
+| Map never built (empty `createdOn`): not stale, check mode | (same) | `NeverMapped_NotStale_Check` | COVERED (xunit, tests/CheckApiProcs.Tests) |
+| Map never built (empty `createdOn`): not stale, record mode | `--record ...` | `NeverMapped_NotStale_Record` | COVERED (xunit, tests/CheckApiProcs.Tests) |
+| Unquoted `null` default compared case-insensitively: `OK` | (same) | `NullKeywordCase_Ok` | COVERED (xunit, tests/CheckApiProcs.Tests) |
+| Quoted default compared case-sensitively: `PARAM-DIFF`, exit 1 | (same) | `QuotedDefaultCase_Fails` | COVERED (xunit, tests/CheckApiProcs.Tests) |
+| GET retried once on 5xx | (same) | `GetRetriedOnce_On5xx` | COVERED (xunit, tests/CheckApiProcs.Tests) |
+| `POST /auth` never retried on 5xx | (same) | `AuthNotRetried_On5xx` | COVERED (xunit, tests/CheckApiProcs.Tests) |
+| Missing `SBN_USERNAME` or `SBN_PASSWORD` exits 2 | (env credentials) | `MissingCredentials_Exit2` | COVERED (xunit, tests/CheckApiProcs.Tests) |
+| `recordedAt` written with invariant culture | `--record ...` | `RecordedAt_InvariantCulture` | COVERED (xunit, tests/CheckApiProcs.Tests) |
+| Password and token absent from output on a map error | (env credentials) | `NoSecretsInOutput_MapError` | COVERED (xunit, tests/CheckApiProcs.Tests) |
+| Password and token absent from output on exit 3 | (env credentials) | `NoSecretsInOutput_Exit3` | COVERED (xunit, tests/CheckApiProcs.Tests) |
+
+---
+
 ## 7. Self-management (all CLI-only — present on every binary)
 
 | Outcome | Flags | Test ID | Status |
