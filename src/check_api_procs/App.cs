@@ -6,8 +6,10 @@ namespace CheckApiProcs;
 
 public static class App
 {
-    /// <summary>Exit codes: 0 pass, 1 failing verdict or record failure, 2 usage or bad declaration, 3 connectivity/auth/list failure.</summary>
-    public static async Task<int> RunAsync(string[] args, TextWriter o, TextWriter err, IDictionary env, HttpMessageHandler? handler)
+    /// <summary>Exit codes: 0 pass, 1 failing verdict or record failure, 2 usage, bad or unpublished declaration,
+    /// 3 connectivity/auth/list or declaration download failure.</summary>
+    public static async Task<int> RunAsync(string[] args, TextWriter o, TextWriter err, IDictionary env,
+        HttpMessageHandler? handler, IReleaseTransport? ftp)
     {
         Options opts;
         try
@@ -16,6 +18,7 @@ public static class App
             if (parsed == null) { err.WriteLine(Options.Usage); return 0; }
             opts = parsed;
             opts.ResolveCredentials(k => env[k] as string);
+            if (opts.IsDownload) opts.ResolveFtpCredentials(k => env[k] as string);
         }
         catch (ArgumentException ex)
         {
@@ -26,15 +29,27 @@ public static class App
 
         var redact = new Redactor();
         redact.Add(opts.Password);
+        redact.Add(opts.FtpPassword);
         var url = redact.Url(opts.Url);
 
-        var source = new FileDeclarationSource(opts.Record ? opts.Names! : opts.Declaration!);
+        IDeclarationSource source;
+        if (opts.IsDownload)
+        {
+            if (ftp == null) throw new ArgumentNullException(nameof(ftp));
+            source = new ReleaseDeclarationSource(ftp, opts.Consumer!, opts.Release!, opts.FtpUser, opts.FtpPassword);
+        }
+        else source = new FileDeclarationSource(opts.Record ? opts.Names! : opts.Declaration!);
         Declaration decl;
         try { decl = Declaration.Parse(await source.ReadAsync(), recorded: !opts.Record); }
         catch (Exception ex) when (ex is DeclarationException or IOException or UnauthorizedAccessException)
         {
             err.WriteLine(redact.Apply($"check_api_procs: {source.Describe}: {ex.Message}"));
             return 2;
+        }
+        catch (ReleaseDownloadException ex)
+        {
+            err.WriteLine(redact.Apply($"check_api_procs: {source.Describe}: download failed: {ex.Message}"));
+            return 3;
         }
         if (decl.Procedures.Count == 0)
         {

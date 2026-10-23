@@ -10,6 +10,7 @@ Check (default):
 
 ```
 check_api_procs <engine-url> --declaration <path> [--proc X]... [--json|--quiet] [--concurrency n] [--timeout s]
+check_api_procs <engine-url> --consumer <name> --release <tag> [--proc X]... [--json|--quiet] [--concurrency n] [--timeout s]
 ```
 
 Record:
@@ -18,13 +19,25 @@ Record:
 check_api_procs <engine-url> --record --names <file> --consumer <name> --release <version> --out <path>
 ```
 
-`--record` reads a hand-kept names list (`--names`), fetches each proc's live map, and writes a recorded declaration to `--out`. `--declaration`, `--proc`, `--json` and `--quiet` are check-mode only; `--names`, `--consumer`, `--release` and `--out` require `--record`. `--json` and `--quiet` cannot be combined. Defaults: `--concurrency 8`, `--timeout 30` (seconds per request). `--proc` may repeat and must name a declared proc.
+`--record` reads a hand-kept names list (`--names`), fetches each proc's live map, and writes a recorded declaration to `--out`. `--declaration`, `--proc`, `--json` and `--quiet` are check-mode only; `--names` and `--out` require `--record`. In record mode `--consumer` and `--release` are written into the declaration as metadata; in check mode they select a release declaration to download and cannot be combined with `--declaration`. `--json` and `--quiet` cannot be combined. Defaults: `--concurrency 8`, `--timeout 30` (seconds per request). `--proc` may repeat and must name a declared proc.
 
-`--declaration` and `--names` take a local file path only. Downloading the declaration by consumer and release version is planned.
+`--declaration` and `--names` take a local file path.
+
+## Release download
+
+Check mode with `--consumer` and `--release` instead of `--declaration` downloads the release's recorded declaration from `ftp.innovative247.com` port 990, at the path and folder the declaration format doc § 4 defines. Both flags are required together.
+
+`--consumer` accepts `sbn-anywhere` and `sbn-media`; any other consumer is a usage error. `--release` is the release git tag, for example `v95.23.1` or `v96.0.0-beta.2`; it must match `v<n>.<n>.<n>` (ASCII digits) followed only by letters, digits, `.`, `+` or `-`. For sbn-media the checker takes the folder number from the tag's first number, which assumes it equals the release branch number § 4 names (verified: sbn-media tags `v96.x` on `releases/08.96`).
+
+The connection is explicit FTPS: `AUTH TLS` on the control connection before any login, TLS 1.2 only, the server certificate validated by the system, then `PBSZ 0`, `PROT P`, `TYPE I` and a passive (`EPSV`, else `PASV`) TLS data connection to the same host. There is no plaintext fallback: a server that refuses `AUTH TLS` fails the run before the login is sent. The download times out after 60 seconds and is capped at 16 MiB.
 
 ## Credentials
 
-`SBN_USERNAME` and `SBN_PASSWORD` from the environment only: the developer's own engine login. No flags, no prompts. Missing either is a usage error (exit 2). The password is redacted from all output.
+`SBN_USERNAME` and `SBN_PASSWORD` from the environment only: the developer's own engine login. No flags, no prompts. Missing either is a usage error (exit 2).
+
+A release download also needs `SBN_RELEASES_FTP_USERNAME` and `SBN_RELEASES_FTP_PASSWORD` from the environment. There is no default user. Missing either when a download is needed is a usage error (exit 2); `--declaration` needs neither.
+
+Both passwords are redacted from all output, including echoed server replies.
 
 ## Engine calls
 
@@ -64,5 +77,5 @@ All or nothing. It exits 1 and writes nothing when a declared name is missing fr
 |---|---|
 | 0 | Pass; warnings allowed. Also `-h`/`--help`. |
 | 1 | Any `MAP-ERROR`, `MISSING` or `PARAM-DIFF`; or a record-mode failure. |
-| 2 | Usage error, unreadable or invalid declaration, no procedures, unsupported `formatVersion` major, or a `--proc` not declared. |
-| 3 | Connectivity, auth or list failure. |
+| 2 | Usage error, unreadable or invalid declaration, no procedures, unsupported `formatVersion` major, a `--proc` not declared, or no declaration published for the release (FTP 550). |
+| 3 | Connectivity, auth or list failure; or a declaration download failure (connect, TLS, FTP login, transfer, timeout or size cap). |

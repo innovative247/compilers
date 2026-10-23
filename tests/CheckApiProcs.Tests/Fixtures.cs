@@ -150,12 +150,26 @@ public static class Run
     public static Task<RunResult> Record(FakeApi api, string namesPath, string outPath, string url = Url) =>
         Raw(api, new[] { url, "--record", "--names", namesPath, "--consumer", "sbn-media", "--release", "v95.23.1", "--out", outPath });
 
-    public static async Task<RunResult> Raw(HttpMessageHandler? api, string[] args, IDictionary? env = null)
+    public static async Task<RunResult> Raw(HttpMessageHandler? api, string[] args, IDictionary? env = null, FakeFtp? ftp = null)
     {
         env ??= new Hashtable { ["SBN_USERNAME"] = "tester", ["SBN_PASSWORD"] = Password };
         var o = new StringWriter();
         var e = new StringWriter();
-        var code = await CheckApiProcs.App.RunAsync(args, o, e, env, api);
+        var code = await CheckApiProcs.App.RunAsync(args, o, e, env, api, ftp ?? new FakeFtp());
         return new RunResult(code, o.ToString(), e.ToString());
+    }
+}
+
+/// <summary>Stands in for the release server; throws when used unless Respond is set.</summary>
+public class FakeFtp : CheckApiProcs.IReleaseTransport
+{
+    public List<(string Path, string User, string Password)> Calls { get; } = new();
+    public Func<string, string>? Respond { get; set; }
+
+    public Task<string> DownloadAsync(string remotePath, string user, string password)
+    {
+        Calls.Add((remotePath, user, password));
+        if (Respond == null) throw new InvalidOperationException("unexpected release download");
+        return Task.FromResult(Respond(remotePath));
     }
 }

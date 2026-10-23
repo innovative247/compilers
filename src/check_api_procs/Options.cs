@@ -16,9 +16,19 @@ public class Options
     public string? Out { get; set; }
     public string User { get; private set; } = "";
     public string Password { get; private set; } = "";
+    public string FtpUser { get; private set; } = "";
+    public string FtpPassword { get; private set; } = "";
+
+    /// <summary>Check mode without --declaration: the declaration is downloaded by --consumer and --release.</summary>
+    public bool IsDownload => !Record && Declaration == null;
+
+    public const string FtpUserVar = "SBN_RELEASES_FTP_USERNAME";
+    public const string FtpPasswordVar = "SBN_RELEASES_FTP_PASSWORD";
 
     public const string Usage =
         "Usage: check_api_procs <engine-url> --declaration <api3-procs.json>\n" +
+        "       check_api_procs <engine-url> --consumer <sbn-anywhere|sbn-media> --release <tag>\n" +
+        "                                       (downloads the release declaration over FTPS)\n" +
         "                [--proc <name>]...     (check only these declared procs)\n" +
         "                [--json]               (machine-readable report)\n" +
         "                [--quiet]              (<proc> <verdict> lines only)\n" +
@@ -26,8 +36,10 @@ public class Options
         "                [--timeout <sec>]      (per request; default: 30)\n" +
         "       check_api_procs <engine-url> --record --names <hand-kept api3-procs.json>\n" +
         "                --consumer <name> --release <version> --out <path>\n" +
-        "Credentials: env SBN_USERNAME / SBN_PASSWORD.\n" +
-        "Exit: 0 pass (warnings allowed), 1 failing verdict or record failure, 2 usage or bad declaration, 3 connectivity/auth/list.";
+        "Credentials: env SBN_USERNAME / SBN_PASSWORD; a download also needs\n" +
+        "             env SBN_RELEASES_FTP_USERNAME / SBN_RELEASES_FTP_PASSWORD.\n" +
+        "Exit: 0 pass (warnings allowed), 1 failing verdict or record failure, 2 usage, bad or unpublished declaration,\n" +
+        "      3 connectivity/auth/list or declaration download failure.";
 
     /// <summary>Null when help was asked for; ArgumentException on a usage error.</summary>
     public static Options? Parse(string[] argv)
@@ -83,9 +95,24 @@ public class Options
         }
         else
         {
-            if (opts.Names != null || opts.Consumer != null || opts.Release != null || opts.Out != null)
-                throw new ArgumentException("--names, --consumer, --release and --out require --record");
-            if (opts.Declaration == null) throw new ArgumentException("--declaration is required");
+            if (opts.Names != null || opts.Out != null)
+                throw new ArgumentException("--names and --out require --record");
+            if (opts.Declaration != null)
+            {
+                if (opts.Consumer != null || opts.Release != null)
+                    throw new ArgumentException("--declaration cannot be combined with --consumer or --release");
+            }
+            else
+            {
+                if (opts.Consumer == null && opts.Release == null)
+                    throw new ArgumentException("--declaration is required (or --consumer and --release to download it)");
+                if (opts.Consumer == null || opts.Release == null)
+                    throw new ArgumentException("--consumer and --release are required together");
+                if (!ReleaseLocations.IsKnownConsumer(opts.Consumer))
+                    throw new ArgumentException($"unknown --consumer; known: {string.Join(", ", ReleaseLocations.Consumers)}");
+                if (!ReleaseLocations.IsValidTag(opts.Release))
+                    throw new ArgumentException("--release must be a release tag such as v95.23.1");
+            }
             if (opts.Json && opts.Quiet) throw new ArgumentException("--json and --quiet cannot be combined");
         }
         return opts;
@@ -98,5 +125,14 @@ public class Options
         Password = env("SBN_PASSWORD") ?? "";
         if (User == "" || Password == "")
             throw new ArgumentException("credentials required: env SBN_USERNAME and SBN_PASSWORD");
+    }
+
+    /// <summary>Download only; no default user. ArgumentException when either is missing.</summary>
+    public void ResolveFtpCredentials(Func<string, string?> env)
+    {
+        FtpUser = env(FtpUserVar) ?? "";
+        FtpPassword = env(FtpPasswordVar) ?? "";
+        if (FtpUser == "" || FtpPassword == "")
+            throw new ArgumentException($"release download requires env {FtpUserVar} and {FtpPasswordVar}; or pass --declaration <path>");
     }
 }

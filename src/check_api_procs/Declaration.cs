@@ -1,10 +1,11 @@
 using System.Text.Encodings.Web;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using ibsCompiler;
 
 namespace CheckApiProcs;
 
-/// <summary>Where a declaration comes from; a downloaded release asset is a later implementation.</summary>
+/// <summary>Where a declaration comes from: a local file or a release download.</summary>
 public interface IDeclarationSource
 {
     Task<string> ReadAsync();
@@ -22,6 +23,71 @@ public class FileDeclarationSource : IDeclarationSource
 public class DeclarationException : Exception
 {
     public DeclarationException(string message) : base(message) { }
+}
+
+/// <summary>The release server has no declaration at that path (FTP 550); exit 2.</summary>
+public class ReleaseNotFoundException : DeclarationException
+{
+    public ReleaseNotFoundException(string message) : base(message) { }
+}
+
+/// <summary>Connect, TLS, login or transfer failure while downloading; exit 3.</summary>
+public class ReleaseDownloadException : Exception
+{
+    public ReleaseDownloadException(string message) : base(message) { }
+}
+
+/// <summary>Fetches one file from the release server.</summary>
+public interface IReleaseTransport
+{
+    Task<string> DownloadAsync(string remotePath, string user, string password);
+}
+
+/// <summary>Where a release declaration is published (format doc § 4).</summary>
+public static class ReleaseLocations
+{
+    public const string Host = "ftp.innovative247.com";
+    public const int Port = 990;
+
+    private static readonly Dictionary<string, string> Folders = new(StringComparer.Ordinal)
+    {
+        ["sbn-anywhere"] = "SBN_Anywhere",
+        ["sbn-media"] = "SBN_Media",
+    };
+
+    private static readonly Regex Tag = new(@"^v([0-9]+)\.[0-9]+\.[0-9]+[A-Za-z0-9.+-]*\z", RegexOptions.CultureInvariant);
+
+    public static IEnumerable<string> Consumers => Folders.Keys;
+    public static bool IsKnownConsumer(string consumer) => Folders.ContainsKey(consumer);
+    public static bool IsValidTag(string tag) => Tag.IsMatch(tag);
+
+    /// <summary>The folder number is the tag's first number, for both consumers.</summary>
+    public static string RemotePath(string consumer, string tag)
+    {
+        if (!Folders.TryGetValue(consumer, out var folder)) throw new ArgumentException($"unknown consumer '{consumer}'");
+        var m = Tag.Match(tag);
+        if (!m.Success) throw new ArgumentException($"invalid release tag '{tag}'");
+        return $"/download/common/Releases/{folder}/{m.Groups[1].Value}/{consumer}-{tag}.api3-procs.json";
+    }
+}
+
+public class ReleaseDeclarationSource : IDeclarationSource
+{
+    private readonly IReleaseTransport _transport;
+    private readonly string _path;
+    private readonly string _user;
+    private readonly string _password;
+
+    public ReleaseDeclarationSource(IReleaseTransport transport, string consumer, string tag, string user, string password)
+    {
+        _transport = transport;
+        _path = ReleaseLocations.RemotePath(consumer, tag);
+        _user = user;
+        _password = password;
+    }
+
+    public string Describe => $"ftp://{ReleaseLocations.Host}:{ReleaseLocations.Port}{_path}";
+    public Task<string> ReadAsync() => _transport.DownloadAsync(_path, _user, _password);
 }
 
 public record DeclParam(string Name, string Type, string? Default, bool Output, bool Required);
