@@ -48,6 +48,7 @@ public static class Report
             o.WriteLine($"{r.Name}  {Verdicts.Label(r.Verdict)}{(Verdicts.Failing(r.Verdict) ? "" : "  (warning)")}");
             if (r.Error != null) o.WriteLine($"  error: {r.Error}");
             if (r.Verdict == Verdict.Missing) o.WriteLine("  not in /api/v1/api3/list");
+            if (r.Verdict == Verdict.Unverified) o.WriteLine("  marked unrecorded: present, signature not verified");
             if (r.Stale) o.WriteLine($"  {StaleHint(r.Name)}");
             foreach (var d in r.Details) o.WriteLine($"  ! {d}");
         }

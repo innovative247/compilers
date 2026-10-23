@@ -50,7 +50,7 @@ Read-only. In order:
 
 Build and execute endpoints are never called. A map request can make the engine build and cache a map that does not exist yet. A 5xx response is retried once for a GET only; `POST /auth` is never retried.
 
-Name matching: the list reports names truncated to 32 characters, so a declared name is looked up in the list by its first 32 characters (case-insensitive). The map request uses the full name.
+Name matching: the list reports names truncated to 32 characters, so a declared name is looked up in the list by its first 32 characters (case-insensitive). The map request uses the full name. A marked name over 32 characters therefore counts as present when another listed proc shares its first 32 characters, even if the marked proc itself is absent; it is reported `UNVERIFIED`, and a names list with such a pair cannot be recorded. Format doc § 6 covers such names.
 
 ## Verdicts
 
@@ -63,13 +63,16 @@ Per proc, in precedence order (first that applies wins):
 | `PARAM-DIFF` | A recorded parameter is removed, or differs in type, default or output, or the relative order changed; or the engine requires a parameter the declaration lacks. An extra optional engine parameter is fine, anywhere. | fail |
 | `MAP-STALE` | The cached map is outdated (proc compiled after it was mapped). A map that was never built (empty `createdOn` in the list) is not stale; the map request builds it. | warn |
 | `RESULT-DIFF` | A recorded result set is missing, or its columns differ. Extra live result sets are ignored. | warn |
+| `UNVERIFIED` | A proc marked `unrecorded` is in the engine's list. Its map is not fetched and its signature is not compared. | warn |
 | `OK` | No difference. | pass |
+
+A proc marked `unrecorded` (format doc § 3) gets only `MISSING` or `UNVERIFIED`.
 
 Types are compared case-insensitively with whitespace removed. An unquoted `null` default is compared case-insensitively; quoted literals are case-sensitive. `MAP-STALE` prints a hint: refresh the map with `remap.py` or `GET /api/v1/api3/build/<proc>`. The checker runs neither.
 
 ## Record mode
 
-All or nothing. It exits 1 and writes nothing when a declared name is missing from the list, a map request errors, or a reference map is stale (a stale map would record an out-of-date signature). A map that was never built (empty `createdOn` in the list) is not stale; the map request builds it. Each cause is reported on stderr. On success it writes the file and prints `recorded <n> procs from <url> (engine <version>) to <path>`.
+All or nothing. It exits 1 and writes nothing when an unmarked name is missing from the list, a name marked `unrecorded` is in the list (a stale mark), a map request errors, or a reference map is stale (a stale map would record an out-of-date signature). A marked name is written with the mark and without parameters or result sets; its map is not fetched. Presence is the same list lookup check mode uses. A map that was never built (empty `createdOn` in the list) is not stale; the map request builds it. Each cause is reported on stderr. On success it writes the file and prints `recorded <n> procs from <url> (engine <version>) to <path>`.
 
 ## Exit codes
 

@@ -534,7 +534,7 @@ Runs over HTTPS (http only for localhost) against a deployed APIEngine and needs
 | `--proc` naming an undeclared proc exits 2 | `--proc <name>` | `UndeclaredProcFilter_Exit2` | COVERED (xunit, tests/CheckApiProcs.Tests) |
 | Never calls build or execute | (check and record) | `NeverBuildsOrExecutes` | COVERED (xunit, tests/CheckApiProcs.Tests) |
 | Record writes a declaration that checks `OK` against the same engine | `--record --names --consumer --release --out` | `Record_RoundTrips` | COVERED (xunit, tests/CheckApiProcs.Tests) |
-| Record fails and writes nothing when a name is missing | `--record ...` | `Record_MissingName_Fails` | COVERED (xunit, tests/CheckApiProcs.Tests) |
+| Record fails and writes nothing when an unmarked name is missing | `--record ...` | `Record_MissingName_Fails` | COVERED (xunit, tests/CheckApiProcs.Tests) |
 | Record fails and writes nothing when a map is stale | `--record ...` | `Record_StaleMap_Fails` | COVERED (xunit, tests/CheckApiProcs.Tests) |
 | JSON report | `--json` | `Json_Report` | COVERED (xunit, tests/CheckApiProcs.Tests) |
 | Password and token never appear in output | (env credentials) | `NoSecretsInOutput` | COVERED (xunit, tests/CheckApiProcs.Tests) |
@@ -549,6 +549,21 @@ Runs over HTTPS (http only for localhost) against a deployed APIEngine and needs
 | `recordedAt` written with invariant culture | `--record ...` | `RecordedAt_InvariantCulture` | COVERED (xunit, tests/CheckApiProcs.Tests) |
 | Password and token absent from output on a map error | (env credentials) | `NoSecretsInOutput_MapError` | COVERED (xunit, tests/CheckApiProcs.Tests) |
 | Password and token absent from output on exit 3 | (env credentials) | `NoSecretsInOutput_Exit3` | COVERED (xunit, tests/CheckApiProcs.Tests) |
+| Marked proc present: `UNVERIFIED`, warning only, exit 0; map not fetched | `unrecorded: true` in the declaration | `MarkedPresent_Unverified_Exit0` | COVERED (xunit, tests/CheckApiProcs.Tests) |
+| Marked proc absent: `MISSING`, exit 1 | (same) | `MarkedAbsent_Missing_Exit1` | COVERED (xunit, tests/CheckApiProcs.Tests) |
+| Marked proc with outdated map: `UNVERIFIED`, no stale flag or remap hint (text and JSON) | (same) | `MarkedStale_Unverified_NoStaleFlag` | COVERED (xunit, tests/CheckApiProcs.Tests) |
+| Marked entry with `parameters` exits 2 | (same) | `MarkedWithParameters_Rejected_Exit2` | COVERED (xunit, tests/CheckApiProcs.Tests) |
+| Marked entry with only `resultSets` exits 2 | (same) | `MarkedWithResultSetsOnly_Rejected_Exit2` | COVERED (xunit, tests/CheckApiProcs.Tests) |
+| Non-boolean `unrecorded` exits 2 | (same) | `UnrecordedNotBoolean_Rejected_Exit2` | COVERED (xunit, tests/CheckApiProcs.Tests) |
+| Non-boolean `unrecorded` on an entry with no name names "a procedure" | (same) | `UnrecordedNotBoolean_NoName_NamesAProcedure` | COVERED (xunit, tests/CheckApiProcs.Tests) |
+| `unrecorded: false` or `null` treated as unmarked | (same) | `UnrecordedFalseOrNull_IsUnmarked` | COVERED (xunit, tests/CheckApiProcs.Tests) |
+| `--proc` selects a marked proc | `--proc <name>` | `ProcFilter_Marked_Works` | COVERED (xunit, tests/CheckApiProcs.Tests) |
+| JSON report counts `UNVERIFIED` as non-failing | `--json` | `Json_Unverified` | COVERED (xunit, tests/CheckApiProcs.Tests) |
+| Marked name over 32 characters sharing its prefix with a listed proc: `UNVERIFIED` even when absent (documented limitation) | `unrecorded: true` in the declaration | `LongMarkedName_SharedPrefix_Unverified_DocumentedLimitation` | COVERED (xunit, tests/CheckApiProcs.Tests) |
+| Record writes a marked name name-only; the result checks `UNVERIFIED` | `--record ...` | `Record_Marked_NameOnly_RoundTrips` | COVERED (xunit, tests/CheckApiProcs.Tests) |
+| Record accepts bare names mixed with marked objects | `--record ...` | `Record_MixedShapes_BareStringAndMarkedObject` | COVERED (xunit, tests/CheckApiProcs.Tests) |
+| Record fails and writes nothing on a stale mark (marked name present); its map is not fetched | `--record ...` | `Record_StaleMark_Fails` | COVERED (xunit, tests/CheckApiProcs.Tests) |
+| Record fails on an unmarked missing name; an absent marked name is not reported | `--record ...` | `Record_UnmarkedMissing_Fails_MarkedAbsentNotReported` | COVERED (xunit, tests/CheckApiProcs.Tests) |
 
 ---
 
