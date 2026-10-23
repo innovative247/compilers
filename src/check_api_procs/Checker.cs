@@ -1,6 +1,6 @@
 namespace CheckApiProcs;
 
-public enum Verdict { Ok, MapError, Missing, ParamDiff, MapStale, ResultDiff }
+public enum Verdict { Ok, MapError, Missing, ParamDiff, MapStale, ResultDiff, Unverified }
 
 public static class Verdicts
 {
@@ -11,14 +11,15 @@ public static class Verdicts
         Verdict.Missing => "MISSING",
         Verdict.ParamDiff => "PARAM-DIFF",
         Verdict.MapStale => "MAP-STALE",
+        Verdict.Unverified => "UNVERIFIED",
         _ => "RESULT-DIFF",
     };
 
     /// <summary>Report order; also the precedence order of the per-proc verdicts.</summary>
     public static readonly Verdict[] Order =
-        { Verdict.MapError, Verdict.Missing, Verdict.ParamDiff, Verdict.MapStale, Verdict.ResultDiff, Verdict.Ok };
+        { Verdict.MapError, Verdict.Missing, Verdict.ParamDiff, Verdict.MapStale, Verdict.ResultDiff, Verdict.Unverified, Verdict.Ok };
 
-    /// <summary>ADR-0019 Decision 4: stale maps and result-column mismatches warn only.</summary>
+    /// <summary>ADR-0019 Decision 4: stale maps, result-column mismatches and unverified marked procs warn only.</summary>
     public static bool Failing(Verdict v) => v is Verdict.MapError or Verdict.Missing or Verdict.ParamDiff;
 }
 
@@ -103,7 +104,7 @@ public static class Checker
         return diffs;
     }
 
-    /// <summary>Precedence: MAP-ERROR > MISSING > PARAM-DIFF > MAP-STALE > RESULT-DIFF > OK.</summary>
+    /// <summary>Precedence: MAP-ERROR > MISSING > PARAM-DIFF > MAP-STALE > RESULT-DIFF > OK; a marked proc is MISSING or UNVERIFIED.</summary>
     public static ProcResult Evaluate(DeclProc decl, ServerProc? listed, LiveMap? map, string? mapError)
     {
         var r = new ProcResult
@@ -111,8 +112,10 @@ public static class Checker
             Name = decl.Name,
             CompiledOn = listed?.CompiledOn,
             MappedOn = map?.CreatedOn ?? listed?.CreatedOn,
-            Stale = IsStale(listed),
+            Stale = !decl.Unrecorded && IsStale(listed),
         };
+        // A marked proc only has to be present; its signature is never compared (ADR-0019 Decision 4).
+        if (decl.Unrecorded) { r.Verdict = listed == null ? Verdict.Missing : Verdict.Unverified; return r; }
         if (mapError != null) { r.Verdict = Verdict.MapError; r.Error = mapError; return r; }
         if (listed == null || map == null) { r.Verdict = Verdict.Missing; return r; }
 
@@ -126,7 +129,7 @@ public static class Checker
         return r;
     }
 
-    /// <summary>Fetches every listed proc's map, at most <paramref name="concurrency"/> at a time; null map with the error when the call fails.</summary>
+    /// <summary>Fetches every listed proc's map except marked procs, at most <paramref name="concurrency"/> at a time; null map with the error when the call fails.</summary>
     public static async Task<List<(DeclProc Proc, ServerProc? Listed, LiveMap? Map, string? Error)>> FetchAsync(
         ApiClient api, IReadOnlyList<DeclProc> procs, List<ServerProc> list, int concurrency)
     {
@@ -137,7 +140,8 @@ public static class Checker
         async Task<(DeclProc, ServerProc?, LiveMap?, string?)> One(DeclProc proc)
         {
             byName.TryGetValue(ListName(proc.Name), out var listed);
-            if (listed == null) return (proc, null, null, null);
+            // Presence is the list lookup alone; a marked proc's map is never fetched.
+            if (listed == null || proc.Unrecorded) return (proc, listed, null, null);
             await gate.WaitAsync();
             try { return (proc, listed, await api.MapAsync(proc.Name), null); }
             catch (ApiException ex) { return (proc, listed, null, ex.Message); }

@@ -100,15 +100,21 @@ public static class App
         return results.Any(r => Verdicts.Failing(r.Verdict)) ? 1 : 0;
     }
 
-    /// <summary>All or nothing: any missing name, map error or stale map writes no file.</summary>
+    /// <summary>All or nothing: any unmarked missing name, stale mark, map error or stale map writes no file.</summary>
     private static async Task<int> RecordAsync(ApiClient api, Options opts, string url, string version,
         List<DeclProc> names, List<ServerProc> list, TextWriter o, TextWriter err, Redactor redact)
     {
         var fetched = await Checker.FetchAsync(api, names, list, opts.Concurrency);
         var failed = false;
-        foreach (var f in fetched.Where(f => f.Listed == null))
+        foreach (var f in fetched.Where(f => f.Listed == null && !f.Proc.Unrecorded))
         {
             err.WriteLine($"check_api_procs: {f.Proc.Name}: not in /api/v1/api3/list");
+            failed = true;
+        }
+        // A mark must not outlive its reason (format doc § 3).
+        foreach (var f in fetched.Where(f => f.Listed != null && f.Proc.Unrecorded))
+        {
+            err.WriteLine($"check_api_procs: {f.Proc.Name}: marked unrecorded but present in /api/v1/api3/list; remove the mark");
             failed = true;
         }
         foreach (var f in fetched.Where(f => f.Error != null))
@@ -117,7 +123,7 @@ public static class App
             failed = true;
         }
         // A stale map would bake an out-of-date signature into the release declaration.
-        foreach (var f in fetched.Where(f => Checker.IsStale(f.Listed) && f.Error == null))
+        foreach (var f in fetched.Where(f => !f.Proc.Unrecorded && Checker.IsStale(f.Listed) && f.Error == null))
         {
             err.WriteLine($"check_api_procs: {f.Proc.Name}: MAP-STALE: {Report.StaleHint(f.Proc.Name)}");
             failed = true;
@@ -138,7 +144,7 @@ public static class App
             RecordedAt = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture),
         };
         foreach (var f in fetched)
-            decl.Procedures.Add(new DeclProc
+            decl.Procedures.Add(f.Proc.Unrecorded ? new DeclProc { Name = f.Proc.Name, Unrecorded = true } : new DeclProc
             {
                 Name = f.Proc.Name,
                 Parameters = f.Map!.Parameters.Select(Checker.Convert).ToList(),

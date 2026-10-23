@@ -99,6 +99,8 @@ public class DeclProc
     public string Name { get; set; } = "";
     public List<DeclParam>? Parameters { get; set; }
     public List<DeclResultSet>? ResultSets { get; set; }
+    /// <summary>Marked by hand as absent from the reference engine; recorded by name only (format doc § 3).</summary>
+    public bool Unrecorded { get; set; }
 }
 
 /// <summary>An api3-procs.json file: a hand-kept names list or a recorded declaration (format doc § 1, § 3).</summary>
@@ -150,15 +152,24 @@ public class Declaration
                 // A hand-kept list may give bare names.
                 var proc = p.ValueKind == JsonValueKind.String
                     ? new DeclProc { Name = p.GetString() ?? "" }
-                    : new DeclProc { Name = Str(p, "name") ?? "", Parameters = Params(p), ResultSets = Sets(p) };
+                    : new DeclProc { Name = Str(p, "name") ?? "", Parameters = Params(p), ResultSets = Sets(p), Unrecorded = Unrecorded(p) };
                 if (proc.Name == "") throw new DeclarationException("a procedure has no name");
-                if (recorded && proc.Parameters == null)
+                if (proc.Unrecorded && (Prop(p, "parameters") != null || Prop(p, "resultSets") != null))
+                    throw new DeclarationException($"{proc.Name} is marked unrecorded but has parameters or resultSets");
+                if (recorded && !proc.Unrecorded && proc.Parameters == null)
                     throw new DeclarationException($"{proc.Name} has no parameters: this is a hand-kept names list, not a recorded declaration (record it with --record)");
                 d.Procedures.Add(proc);
             }
             return d;
         }
     }
+
+    private static bool Unrecorded(JsonElement proc) => Prop(proc, "unrecorded") switch
+    {
+        null or { ValueKind: JsonValueKind.Null or JsonValueKind.False } => false,
+        { ValueKind: JsonValueKind.True } => true,
+        _ => throw new DeclarationException($"{Str(proc, "name") ?? "a procedure"}: unrecorded must be true or false"),
+    };
 
     private static List<DeclParam>? Params(JsonElement proc) =>
         Prop(proc, "parameters") is { ValueKind: JsonValueKind.Array } ps
@@ -186,12 +197,14 @@ public class Declaration
             release = Release,
             referenceEngine = new { url = EngineUrl, version = EngineVersion },
             recordedAt = RecordedAt,
-            procedures = Procedures.Select(p => new
-            {
-                name = p.Name,
-                parameters = (p.Parameters ?? new()).Select(x => new { name = x.Name, type = x.Type, @default = x.Default, output = x.Output, required = x.Required }),
-                resultSets = (p.ResultSets ?? new()).Select(s => new { name = s.Name, columns = s.Columns }),
-            }),
+            procedures = Procedures.Select(p => p.Unrecorded
+                ? (object)new { name = p.Name, unrecorded = true }
+                : new
+                {
+                    name = p.Name,
+                    parameters = (p.Parameters ?? new()).Select(x => new { name = x.Name, type = x.Type, @default = x.Default, output = x.Output, required = x.Required }),
+                    resultSets = (p.ResultSets ?? new()).Select(s => new { name = s.Name, columns = s.Columns }),
+                }),
         };
         var json = JsonSerializer.Serialize(doc, new JsonSerializerOptions
         {
