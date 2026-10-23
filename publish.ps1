@@ -43,6 +43,7 @@ $projects = @(
     'bcp_data'
     'extract_msg'
     'sql-test'
+    'check_api_procs'
 )
 
 # If version specified, update Directory.Build.props
