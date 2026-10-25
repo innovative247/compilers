@@ -45,8 +45,10 @@ Read-only. In order:
 
 1. `GET /api/v1/diagnostic/version`
 2. `POST /auth` (token sent as `User-Token`)
-3. `GET /api/v1/api3/list`
-4. `GET /api/v1/api3/map/<proc>` per proc, at most `--concurrency` at a time
+3. `GET /api/v1/list`
+4. `GET /api/v1/map/<proc>` per proc, at most `--concurrency` at a time
+
+Steps 3 and 4 use the routes that both the .NET 8 engine and the .NET Framework engines (08.93 to 08.95) serve; the `api/v1/api3/` forms exist only on the .NET 8 engine.
 
 Build and execute endpoints are never called. A map request can make the engine build and cache a map that does not exist yet. A 5xx response is retried once for a GET only; `POST /auth` is never retried.
 
@@ -62,13 +64,13 @@ Per proc, in precedence order (first that applies wins):
 | `MISSING` | Not in the engine's list. | fail |
 | `PARAM-DIFF` | A recorded parameter is removed, or differs in type, default or output, or the relative order changed; or the engine requires a parameter the declaration lacks. An extra optional engine parameter is fine, anywhere. | fail |
 | `MAP-STALE` | The cached map is outdated (proc compiled after it was mapped). A map that was never built (empty `createdOn` in the list) is not stale; the map request builds it. | warn |
-| `RESULT-DIFF` | A recorded result set is missing, or its columns differ. Extra live result sets are ignored. | warn |
+| `RESULT-DIFF` | A recorded result set is missing, or its columns differ. Extra live result sets are ignored. A .NET Framework engine reports one merged list, so the recorded sets are joined in order and compared with it exactly. | warn |
 | `UNVERIFIED` | A proc marked `unrecorded` is in the engine's list. Its map is not fetched and its signature is not compared. | warn |
 | `OK` | No difference. | pass |
 
 A proc marked `unrecorded` (format doc § 3) gets only `MISSING` or `UNVERIFIED`.
 
-Types are compared case-insensitively with whitespace removed. An unquoted `null` default is compared case-insensitively; quoted literals are case-sensitive. `MAP-STALE` prints a hint: refresh the map with `remap.py` or `GET /api/v1/api3/build/<proc>`. The checker runs neither.
+Types are compared case-insensitively with whitespace removed. An unquoted `null` default is compared case-insensitively; quoted literals are case-sensitive. `MAP-STALE` prints a hint: refresh the map with `remap.py` or `GET /api/build/<proc>`. The checker runs neither.
 
 ## Record mode
 

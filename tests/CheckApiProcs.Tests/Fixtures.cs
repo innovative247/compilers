@@ -108,6 +108,18 @@ public class FakeApi : HttpMessageHandler
         resultSet = sets.Take(1).Select(s => s.Value.Select(c => new { resultset_name = "IGNORED_" + c })).FirstOrDefault(),
     };
 
+    // 08.93-08.95 engines: no resultSets; every set's columns merged into resultSet.
+    public static object FrameworkMap(IEnumerable<LiveParamSpec> ps, Dictionary<string, string[]> sets) => new
+    {
+        createdOn = "2026-10-01 10:00",
+        parameters = ps.Select(p => new
+        {
+            parm_name = p.Name, parm_type = p.Type, parm_default = p.Default,
+            parm_output = p.Output ? "true" : "false", parm_required = p.IsRequired ? "true" : "false",
+        }),
+        resultSet = sets.SelectMany(s => s.Value).Select(c => new { resultset_name = c }),
+    };
+
     public static HttpResponseMessage Json(HttpStatusCode code, object body) =>
         new(code) { Content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json") };
 
@@ -122,8 +134,8 @@ public class FakeApi : HttpMessageHandler
         if (path == "/auth") return Ok(new { result = Token });
         if (!req.Headers.TryGetValues("User-Token", out var t) || t.Single() != Token)
             return Task.FromResult(Json(HttpStatusCode.Unauthorized, new { error = "no token" }));
-        if (path == "/api/v1/api3/list") return Ok(new { search = "", names = Listed });
-        const string mapPrefix = "/api/v1/api3/map/";
+        if (path == "/api/v1/list") return Ok(new { search = "", names = Listed });
+        const string mapPrefix = "/api/v1/map/";
         if (path.StartsWith(mapPrefix))
         {
             var name = path[mapPrefix.Length..];

@@ -8,7 +8,7 @@ public record ReportHeader(string Url, string ApiVersion, string? Consumer, stri
 public static class Report
 {
     public static string StaleHint(string proc) =>
-        $"live map is outdated (compiled after it was mapped); refresh it with remap.py or GET /api/v1/api3/build/{proc}. This check ran neither.";
+        $"live map is outdated (compiled after it was mapped); refresh it with remap.py or GET /api/build/{proc}. This check ran neither.";
 
     public static Dictionary<string, int> Counts(IEnumerable<ProcResult> results)
     {
@@ -47,7 +47,7 @@ public static class Report
             o.WriteLine();
             o.WriteLine($"{r.Name}  {Verdicts.Label(r.Verdict)}{(Verdicts.Failing(r.Verdict) ? "" : "  (warning)")}");
             if (r.Error != null) o.WriteLine($"  error: {r.Error}");
-            if (r.Verdict == Verdict.Missing) o.WriteLine("  not in /api/v1/api3/list");
+            if (r.Verdict == Verdict.Missing) o.WriteLine("  not in /api/v1/list");
             if (r.Verdict == Verdict.Unverified) o.WriteLine("  marked unrecorded: present, signature not verified");
             if (r.Stale) o.WriteLine($"  {StaleHint(r.Name)}");
             foreach (var d in r.Details) o.WriteLine($"  ! {d}");
