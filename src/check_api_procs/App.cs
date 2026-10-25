@@ -108,13 +108,13 @@ public static class App
         var failed = false;
         foreach (var f in fetched.Where(f => f.Listed == null && !f.Proc.Unrecorded))
         {
-            err.WriteLine($"check_api_procs: {f.Proc.Name}: not in /api/v1/api3/list");
+            err.WriteLine($"check_api_procs: {f.Proc.Name}: not in /api/v1/list");
             failed = true;
         }
         // A mark must not outlive its reason (format doc § 3).
         foreach (var f in fetched.Where(f => f.Listed != null && f.Proc.Unrecorded))
         {
-            err.WriteLine($"check_api_procs: {f.Proc.Name}: marked unrecorded but present in /api/v1/api3/list; remove the mark");
+            err.WriteLine($"check_api_procs: {f.Proc.Name}: marked unrecorded but present in /api/v1/list; remove the mark");
             failed = true;
         }
         foreach (var f in fetched.Where(f => f.Error != null))
@@ -126,6 +126,12 @@ public static class App
         foreach (var f in fetched.Where(f => !f.Proc.Unrecorded && Checker.IsStale(f.Listed) && f.Error == null))
         {
             err.WriteLine($"check_api_procs: {f.Proc.Name}: MAP-STALE: {Report.StaleHint(f.Proc.Name)}");
+            failed = true;
+        }
+        // A framework engine's merged resultSet cannot be split back into named sets.
+        if (fetched.Any(f => f.Map?.FlatResultSet != null))
+        {
+            err.WriteLine("check_api_procs: engine publishes no per-set resultSets (.NET Framework); record from a .NET 8 engine");
             failed = true;
         }
         if (failed)

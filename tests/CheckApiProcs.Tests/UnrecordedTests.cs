@@ -164,7 +164,7 @@ public class UnrecordedTests : IDisposable
         var r = await Run.Check(api, Decl(Std.Declaration(proc)));
         Assert.Equal(0, r.Exit);
         Assert.Contains("1 procs: 1 OK", r.Out);
-        Assert.Contains($"GET /api/v1/api3/map/{Std.Proc}", api.Calls);
+        Assert.Contains($"GET /api/v1/map/{Std.Proc}", api.Calls);
     }
 
     [Fact]

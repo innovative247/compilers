@@ -60,7 +60,7 @@ public static class Checker
     /// <summary>A never-built map lists as outdated with an empty createdOn; the map GET builds it fresh, so it is not stale.</summary>
     public static bool IsStale(ServerProc? listed) => listed is { Outdated: true } && !string.IsNullOrEmpty(listed.CreatedOn);
 
-    /// <summary>The name as /api3/list reports it: api3_geta converts names to varchar(32).</summary>
+    /// <summary>The name as /api/v1/list reports it: api3_geta converts names to varchar(32).</summary>
     internal static string ListName(string name) => name.Length > 32 ? name[..32] : name;
 
     /// <summary>ADR-0019 Decision 4 for parameters; one detail line per difference.</summary>
@@ -91,10 +91,17 @@ public static class Checker
         return diffs;
     }
 
-    /// <summary>Only recorded sets are compared; an extra live set is ignored.</summary>
+    /// <summary>Only recorded sets are compared; an extra live set is ignored, except on a framework engine, whose merged list must match exactly.</summary>
     public static List<string> CompareResultSets(IReadOnlyList<DeclResultSet> recorded, LiveMap live)
     {
         var diffs = new List<string>();
+        if (live.FlatResultSet is { } flat)
+        {
+            var all = recorded.SelectMany(s => s.Columns).ToList();
+            if (!all.SequenceEqual(flat, StringComparer.OrdinalIgnoreCase))
+                diffs.Add($"result sets (merged on this engine): columns {string.Join(", ", all)} -> {string.Join(", ", flat)}");
+            return diffs;
+        }
         foreach (var s in recorded)
         {
             if (!live.ResultSets.TryGetValue(s.Name, out var cols)) { diffs.Add($"result set {s.Name}: missing on the engine"); continue; }

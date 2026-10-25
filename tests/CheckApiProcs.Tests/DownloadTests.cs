@@ -123,7 +123,7 @@ public class DownloadTests : IDisposable
     public async Task FtpPassword_NeverInOutput()
     {
         var api = Std.Api();
-        api.Override = req => req.RequestUri!.AbsolutePath == "/api/v1/api3/list"
+        api.Override = req => req.RequestUri!.AbsolutePath == "/api/v1/list"
             ? FakeApi.Json(HttpStatusCode.InternalServerError, new { error = $"echo {FtpPassword}" })
             : null;
         var ftp = new FakeFtp { Respond = _ => Std.Declaration() };

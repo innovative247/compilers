@@ -42,7 +42,7 @@ public class VerdictTests : IDisposable
         var r = await Run.Check(api, Decl(Std.Declaration(Std.DeclProc(name, Std.Params(), Std.Sets()))));
         Assert.Equal(0, r.Exit);
         Assert.Contains("1 OK", r.Out);
-        Assert.Contains($"GET /api/v1/api3/map/{name}", api.Calls);
+        Assert.Contains($"GET /api/v1/map/{name}", api.Calls);
     }
 
     public static TheoryData<string> Changes => new() { "rename", "retype", "reorder", "default", "output" };
@@ -164,6 +164,42 @@ public class VerdictTests : IDisposable
     }
 
     [Fact]
+    public async Task FrameworkMergedResultSet_Ok()
+    {
+        var api = Std.Api();
+        api.Maps[Std.Proc] = FakeApi.FrameworkMap(Std.Params(), Std.Sets());
+        var r = await Run.Check(api, Decl());
+        Assert.Equal(0, r.Exit);
+        Assert.Contains("1 OK", r.Out);
+    }
+
+    [Fact]
+    public async Task FrameworkMergedResultSet_ColumnDiff_WarnsOnly()
+    {
+        var sets = Std.Sets();
+        sets[sets.Keys.Last()] = new[] { "other_col" };
+        var api = Std.Api();
+        api.Maps[Std.Proc] = FakeApi.FrameworkMap(Std.Params(), sets);
+        var r = await Run.Check(api, Decl());
+        Assert.Equal(0, r.Exit);
+        Assert.Contains("RESULT-DIFF  (warning)", r.Out);
+        Assert.Contains("merged on this engine", r.Out);
+    }
+
+    [Fact]
+    public async Task Record_FrameworkEngine_Refused()
+    {
+        var api = Std.Api();
+        api.Maps[Std.Proc] = FakeApi.FrameworkMap(Std.Params(), Std.Sets());
+        var names = _dir.Write("names.json", "{\"procedures\":[\"c_ma_test\"]}");
+        var outPath = _dir.Path_("out.json");
+        var r = await Run.Record(api, names, outPath);
+        Assert.Equal(1, r.Exit);
+        Assert.Contains(".NET Framework", r.Err);
+        Assert.False(File.Exists(outPath));
+    }
+
+    [Fact]
     public async Task Stale_ReportsHint_NotFail()
     {
         var r = await Run.Check(ApiWith(Std.Params(), outdated: true), Decl());
@@ -210,7 +246,7 @@ public class VerdictTests : IDisposable
     public async Task MapError_Fails()
     {
         var api = Std.Api();
-        api.Override = req => req.RequestUri!.AbsolutePath.StartsWith("/api/v1/api3/map/")
+        api.Override = req => req.RequestUri!.AbsolutePath.StartsWith("/api/v1/map/")
             ? FakeApi.Json(HttpStatusCode.InternalServerError, new { error = "map exploded" })
             : null;
         var r = await Run.Check(api, Decl());
@@ -229,7 +265,7 @@ public class VerdictTests : IDisposable
         {
             ("auth", "/auth") => FakeApi.Json(HttpStatusCode.Unauthorized, new { error = "bad login" }),
             ("unreachable", _) => throw new HttpRequestException("connection refused"),
-            ("list", "/api/v1/api3/list") => FakeApi.Json(HttpStatusCode.InternalServerError, new { error = "list broke" }),
+            ("list", "/api/v1/list") => FakeApi.Json(HttpStatusCode.InternalServerError, new { error = "list broke" }),
             _ => null,
         };
         var r = await Run.Check(api, Decl());
@@ -241,12 +277,12 @@ public class VerdictTests : IDisposable
     {
         var api = Std.Api();
         var failures = 0;
-        api.Override = req => req.RequestUri!.AbsolutePath.StartsWith("/api/v1/api3/map/") && failures++ == 0
+        api.Override = req => req.RequestUri!.AbsolutePath.StartsWith("/api/v1/map/") && failures++ == 0
             ? FakeApi.Json(HttpStatusCode.ServiceUnavailable, new { error = "busy" })
             : null;
         var r = await Run.Check(api, Decl());
         Assert.Equal(0, r.Exit);
-        Assert.Equal(2, api.Calls.Count(c => c.StartsWith("GET /api/v1/api3/map/")));
+        Assert.Equal(2, api.Calls.Count(c => c.StartsWith("GET /api/v1/map/")));
     }
 
     [Fact]
@@ -336,7 +372,7 @@ public class VerdictTests : IDisposable
         await Run.Check(api, Decl());
         var names = _dir.Write("names.json", "{\"procedures\":[\"c_ma_test\"]}");
         await Run.Record(api, names, _dir.Path_("out.json"));
-        Assert.Contains(api.Calls, c => c.Contains("/api3/map/"));
+        Assert.Contains(api.Calls, c => c.Contains("/api/v1/map/"));
         Assert.DoesNotContain(api.Calls, c => c.Contains("/build") || c.Contains("/execute"));
     }
 
@@ -461,7 +497,7 @@ public class VerdictTests : IDisposable
     public async Task NoSecretsInOutput_MapError()
     {
         var api = Std.Api();
-        api.Override = req => req.RequestUri!.AbsolutePath.StartsWith("/api/v1/api3/map/")
+        api.Override = req => req.RequestUri!.AbsolutePath.StartsWith("/api/v1/map/")
             ? FakeApi.Json(HttpStatusCode.InternalServerError, new { error = $"leak {FakeApi.Token} {Run.Password}" })
             : null;
         var r = await Run.Check(api, Decl());

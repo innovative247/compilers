@@ -29,6 +29,8 @@ public class LiveMap
 {
     public List<LiveParam> Parameters { get; } = new();
     public Dictionary<string, List<string>> ResultSets { get; } = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>Framework engines (no resultSets) merge every set into one resultSet list.</summary>
+    public List<string>? FlatResultSet { get; set; }
     public string? CreatedOn { get; set; }
 }
 
@@ -72,9 +74,9 @@ public class ApiClient : IDisposable
 
     public async Task<List<ServerProc>> ListAsync()
     {
-        using var doc = await SendAsync(HttpMethod.Get, "/api/v1/api3/list", null);
+        using var doc = await SendAsync(HttpMethod.Get, "/api/v1/list", null);
         var names = Prop(ResultOf(doc.RootElement), "names");
-        if (names is not { ValueKind: JsonValueKind.Array } arr) throw new ApiException("GET /api/v1/api3/list: no names array");
+        if (names is not { ValueKind: JsonValueKind.Array } arr) throw new ApiException("GET /api/v1/list: no names array");
         return arr.EnumerateArray().Select(n => new ServerProc
         {
             Name = Str(n, "name") ?? "",
@@ -87,7 +89,7 @@ public class ApiClient : IDisposable
 
     public async Task<LiveMap> MapAsync(string proc)
     {
-        using var doc = await SendAsync(HttpMethod.Get, $"/api/v1/api3/map/{Uri.EscapeDataString(proc)}", null);
+        using var doc = await SendAsync(HttpMethod.Get, $"/api/v1/map/{Uri.EscapeDataString(proc)}", null);
         var root = ResultOf(doc.RootElement);
         var map = new LiveMap { CreatedOn = Str(root, "createdOn") };
         if (Prop(root, "parameters") is { ValueKind: JsonValueKind.Array } ps)
@@ -105,6 +107,8 @@ public class ApiClient : IDisposable
                 map.ResultSets[set.Name] = set.Value.ValueKind == JsonValueKind.Array
                     ? set.Value.EnumerateArray().Select(c => Str(c, "resultset_name") ?? "").ToList()
                     : new List<string>();
+        else if (Prop(root, "resultSet") is { ValueKind: JsonValueKind.Array } flat)
+            map.FlatResultSet = flat.EnumerateArray().Select(c => Str(c, "resultset_name") ?? "").ToList();
         return map;
     }
 
