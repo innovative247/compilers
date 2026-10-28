@@ -29,3 +29,4 @@ missing-table	missing-table.sql	error:Msg 208	error:Msg 208	error:Msg 42P01	-
 raiserror	raiserror.sql	error:Msg 20000	error:Msg 102	error:Msg P0001	-
 money-and-decimal	money-and-decimal.sql	ok	ok	error:Msg 08P01	1.00|1.0000
 decimal-scales	decimal-scales.sql	ok	ok	ok	2.500|12.5000|1.5
+non-ascii-comment	non-ascii-comment.sql	ok	ok	ok	after-comment
