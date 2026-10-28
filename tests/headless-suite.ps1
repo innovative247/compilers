@@ -489,6 +489,37 @@ function Test-AdHocQueries {
             Assert-SameBytes $out ([IO.File]::ReadAllBytes((Join-Path $parityDir 'runsql-charset.expected'))) 1
         } finally { Remove-Item $out -ErrorAction SilentlyContinue }
     }
+    # A character cp850 cannot hold is never swapped: runsql keeps a comment's UTF-8 bytes in the
+    # proc text and a literal's real character in univarchar (a, U+2014, b = 0x610014206200).
+    Test-Case 'runsql.sybase_unconvertible_chars_kept' {
+        $r = Invoke-Cli runsql (Join-Path $parityDir 'runsql-unconvertible.sql') 'tempdb' 'GONZO' '--changelog:n'
+        Assert-ExitCode $r
+        if ($r.StdOut -match 'Msg \d+') { throw "server error:`n$($r.StdOut)" }
+        foreach ($want in 'e28094', 'e28099', '0x610014206200') {
+            if ($r.StdOut -notmatch $want) { throw "expected $want in:`n$($r.StdOut)" }
+        }
+    }
+    # French, Nordic and Icelandic letters cp850 holds are stored as their cp850 bytes, unchanged by the above.
+    Test-Case 'runsql.sybase_french_kept' {
+        $r = Invoke-Cli runsql (Join-Path $parityDir 'runsql-french.sql') 'tempdb' 'GONZO' '--changelog:n'
+        Assert-ExitCode $r
+        $want = '0x85838487828a88898c8b93949796819820b7b68e8090d4d2d3d7d8e299ebea9a20aeaf2092919d9b8f86'
+        if (($r.StdOut -replace '\s', '') -notmatch $want) { throw "expected $want in:`n$($r.StdOut)" }
+    }
+    # A byte that is not UTF-8 (a cp1252 'a-umlaut') reads as U+FFFD; it is refused, never sent as a stand-in.
+    Test-Case 'runsql.sybase_decode_damage_refused' {
+        $sql = [IO.Path]::GetTempFileName()
+        try {
+            [IO.File]::WriteAllBytes($sql, [byte[]](@([Text.Encoding]::ASCII.GetBytes("/* M")) + 0xE4 + [Text.Encoding]::ASCII.GetBytes("kel */`nselect 1`ngo`n")))
+            $r = Invoke-Cli runsql $sql 'tempdb' 'GONZO' '--changelog:n'
+            if ($r.ExitCode -eq 0 -or $r.StdOut -notmatch 'Msg 2402') { throw "expected Msg 2402 and a non-zero exit:`n$($r.StdOut)" }
+        } finally { Remove-Item $sql -ErrorAction SilentlyContinue }
+    }
+    Test-Case 'isqlline.sybase_unconvertible_chars_kept' {
+        $r = Invoke-Cli isqlline "`"select b=convert(varbinary(20), 'a$([char]0x2014)b')`"" 'tempdb' 'GONZO'
+        Assert-ExitCode $r
+        if ($r.StdOut -notmatch '0x61e2809462') { throw "expected 0x61e2809462 (the UTF-8 bytes) in:`n$($r.StdOut)" }
+    }
     # MSSQL and PostgreSQL print the same isql layout. The *-portable / -named fixtures are legacy
     # Sybase output (isql on Yoda) for SQL each platform runs alike, so the comparison is against
     # legacy itself. Error text and server names are the server's own; only their layout is checked.

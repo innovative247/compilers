@@ -111,6 +111,10 @@ namespace ibsCompiler.Database
         }
 
         // Server's declared default charset, via syscharsets (config 131 = default charset id).
+        private const string ServerCharsetSql =
+            "select cs.name from master.dbo.syscharsets cs, master.dbo.syscurconfigs cur " +
+            "where cur.config = 131 and cs.id = cur.value";
+
         private string DetectServerCharset()
         {
             if (_serverCharsetName != null) return _serverCharsetName;
@@ -118,13 +122,78 @@ namespace ibsCompiler.Database
             {
                 using var conn = new AseConnection(BuildConnectionString(""));
                 conn.Open();
-                using var cmd = new AseCommand(
-                    "select cs.name from master.dbo.syscharsets cs, master.dbo.syscurconfigs cur " +
-                    "where cur.config = 131 and cs.id = cur.value", conn);
+                using var cmd = new AseCommand(ServerCharsetSql, conn);
                 _serverCharsetName = (cmd.ExecuteScalar()?.ToString() ?? "cp850").Trim();
             }
             catch { _serverCharsetName = "cp850"; }
             return _serverCharsetName;
+        }
+
+        // The server charset read over an open session; null when it cannot be read or has no
+        // .NET encoding (batch text then goes as it is).
+        private static Encoding? ReadServerEncoding(AseConnection connection)
+        {
+            try
+            {
+                // Read through DONE, as RunBatch does: a streaming reader left early breaks the session.
+                string? name = null;
+                using var cmd = new AseCommand(ServerCharsetSql, connection);
+                cmd.ResultObserver = ev => { if (ev.Kind == AseResultEventKind.Row && ev.Values.Length > 0) name ??= ev.Values[0]?.ToString(); };
+                cmd.ExecuteNonQuery();
+                return string.IsNullOrWhiteSpace(name) ? null : CharsetToEncoding(name);
+            }
+            catch (AseException) { return null; }
+        }
+
+        // A character the server charset cannot hold goes as its UTF-8 bytes, as legacy isql -J sent it
+        // (docs/architecture.md § Charset); commentsOnly on a utf8 session, where literals go as they are.
+        private static string KeepUnconvertible(string batch, Encoding? serverEnc, bool commentsOnly)
+        {
+            if (serverEnc == null || serverEnc.CodePage == 65001) return batch;
+            StringBuilder? sb = null;
+            int depth = 0;      // block-comment nesting
+            bool line = false;  // inside a -- comment
+            char quote = '\0';  // inside a '...' or "..." literal
+            for (int i = 0; i < batch.Length; i++)
+            {
+                char c = batch[i];
+                if (c >= 0x80)
+                {
+                    int n = char.IsHighSurrogate(c) && i + 1 < batch.Length && char.IsLowSurrogate(batch[i + 1]) ? 2 : 1;
+                    var unit = batch.Substring(i, n);
+                    var bytes = (!commentsOnly || line || depth > 0) && serverEnc.GetString(serverEnc.GetBytes(unit)) != unit
+                        ? UnconvertibleBytes(unit, serverEnc) : null;
+                    if (bytes != null)
+                    {
+                        sb ??= new StringBuilder(batch, 0, i, batch.Length + 16);
+                        sb.Append(serverEnc.GetString(bytes));
+                    }
+                    else sb?.Append(unit);
+                    i += n - 1;
+                    continue;
+                }
+                sb?.Append(c);
+                char next = i + 1 < batch.Length ? batch[i + 1] : '\0';
+                bool pair = false;
+                if (quote != '\0') { if (c == quote) { if (next == quote) pair = true; else quote = '\0'; } }
+                else if (line) { if (c == '\n') line = false; }
+                else if (c == '/' && next == '*') { depth++; pair = true; }
+                else if (depth > 0) { if (c == '*' && next == '/') { depth--; pair = true; } }
+                else if (c == '-' && next == '-') { line = true; pair = true; }
+                else if (c == '\'' || c == '"') quote = c;
+                if (pair) { sb?.Append(next); i++; }
+            }
+            return sb?.ToString() ?? batch;
+        }
+
+        // The UTF-8 bytes to send for an unconvertible character, or null to send it as it is (the
+        // server then refuses it): U+FFFD and lone surrogates are decode damage, not the source's
+        // character, and a charset that cannot carry the bytes unchanged would swap in others.
+        private static byte[]? UnconvertibleBytes(string unit, Encoding serverEnc)
+        {
+            if (unit[0] == '\uFFFD' || (unit.Length == 1 && char.IsSurrogate(unit[0]))) return null;
+            var bytes = Encoding.UTF8.GetBytes(unit);
+            return serverEnc.GetBytes(serverEnc.GetString(bytes)).AsSpan().SequenceEqual(bytes) ? bytes : null;
         }
 
         // Raw bytes (re-encode to server charset) reinterpreted as the real data charset.
@@ -208,12 +277,14 @@ namespace ibsCompiler.Database
             return result;
         }
 
-        // The persistent (runsql) session is utf8 - see OpenConnection.
+        // The persistent (runsql) session is utf8 - see OpenConnection - and the server's own
+        // charset behind it (KeepUnconvertible).
         private bool _persistentUtf8;
+        private Encoding? _persistentServerEnc;
 
         public void OpenConnection(string database)
         {
-            // Legacy runsql ran isql without -J, so its session used the client's utf8 charset:
+            // Legacy runsql ran isql -Jutf8 ($BCPJ), so its session used the utf8 client charset:
             // the server converts char data to UTF-8 and sizes char columns for it (3 bytes a
             // character), which is what runsql output shows. (Legacy isqlline passed -J and so
             // used the server's own charset, as ExecuteSql does.) A server that refuses utf8
@@ -222,6 +293,7 @@ namespace ibsCompiler.Database
             {
                 _persistentConn = OpenPersistent(database, "utf8");
                 _persistentUtf8 = true;
+                _persistentServerEnc = ReadServerEncoding(_persistentConn);
             }
             catch (AseException ex) when (!ex.Message.Contains("Login failed", StringComparison.OrdinalIgnoreCase))
             {
@@ -305,7 +377,9 @@ namespace ibsCompiler.Database
             _fmt = fmt;
             try
             {
-                using var cmd = new AseCommand(batch, connection);
+                // A utf8 session's server charset is the persistent one; otherwise the session's.
+                using var cmd = new AseCommand(
+                    KeepUnconvertible(batch, utf8 ? _persistentServerEnc : _sessionEnc, commentsOnly: utf8), connection);
                 cmd.CommandTimeout = 0;
                 AseResultColumn[] meta = Array.Empty<AseResultColumn>();
                 // A throw inside the observer would leave the connection mid-command (broken for
