@@ -180,7 +180,7 @@ plain `Choose [..]:` / `Select [..]:` ReadLine prompts unchanged.
       (letters/digits/underscore, e.g. `S254_SBNB`); Enter commits, Esc cancels back out of
       the list. The list is a picker, not a hub — after the editor opens, any exit from it
       (Back/Save/Copy/Delete) unwinds straight to the Main Menu, not back to this list.
-- [ ] **Add to IDE** — Main Menu → 3 shows `1 VS Code extension / 98 Back / 99 Exit` with the
+- [ ] **Add to IDE** — Main Menu → 3 shows `1 Add to VS Code / 98 Back / 99 Exit` with the
       prompt line reading `Choice [1]: ` from the start (it is the only real action, so it is
       the default — plain Enter installs it); Esc = Back.
 - [ ] **Redirected fallback** — `echo "2" | set_profile` (piped stdin) prints the classic

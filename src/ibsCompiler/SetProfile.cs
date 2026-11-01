@@ -1846,7 +1846,7 @@ namespace ibsCompiler
             Console.WriteLine();
             PrintSubheader("Add to IDE");
             Console.WriteLine();
-            PrintMenu(1, "VS Code extension");
+            PrintMenu(1, "Add to VS Code");
             PrintMenu(98, "Back");
             PrintMenu(99, "Exit");
 
@@ -1860,7 +1860,7 @@ namespace ibsCompiler
             else
             {
                 Console.WriteLine();
-                // VS Code extension is the only real action on this menu — obvious default.
+                // Add to VS Code is the only real action on this menu — obvious default.
                 choice = ConsoleMenu.ReadDeferredChoice(defaultChoice: "1");
                 if (string.IsNullOrEmpty(choice)) return; // Esc → Back
             }
@@ -1878,7 +1878,7 @@ namespace ibsCompiler
         private static void AddToVscode()
         {
             Console.WriteLine();
-            PrintSubheader("VS Code extension");
+            PrintSubheader("Add to VS Code");
             Console.WriteLine();
             InstallVscodeExtension();
         }

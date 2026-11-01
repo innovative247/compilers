@@ -43,7 +43,7 @@ in `$env:EDITOR`).
   test suite entirely. If a future change adds CLI flags here, push back.
 - **TTY-only — intentionally not headless:** `set_profile` main-menu option
   4 ("Open settings.json"). Editor invocation requires a terminal. Option 3
-  ("Add to IDE" → "VS Code extension") is headless as `--install-vscode`.
+  ("Add to IDE" → "Add to VS Code") is headless as `--install-vscode`.
 
 ## Status legend
 
@@ -299,7 +299,7 @@ Implementation notes (shipped):
 Interactive main menu:
 - `1` New profile (wizard, 6+ steps)
 - `2` Existing profile → submenu: View / Test / Edit / Copy / Delete
-- `3` Add to IDE → `1` VS Code extension (installs the bundled `compilers.vsix`)
+- `3` Add to IDE → `1` Add to VS Code (installs the bundled `compilers.vsix`)
 - `4` Open settings.json (launches editor)
 - `99` Exit
 
@@ -317,7 +317,7 @@ Interactive main menu:
 | `2` → Test → `5` Changelog | Verify `gclog12` on, `ba_gen_chg_log_new` exists, insert test row | `--test NAME --what changelog` | `set_profile.test_changelog` | COVERED |
 | `2` → Test → `6` Symbolic links | Create missing short-path shortcuts under `IRPath`, sourced from the tree's own `create_links.sh` (else built-in list); skips any whose short path/shortcut already exists | `--test NAME --what symlinks` | `set_profile.test_symlinks` | COVERED |
 | `2` → Test → all | Run all six in order | `--test NAME --what all` | `set_profile.test_all` | COVERED |
-| `3` Add to IDE → `1` VS Code extension | Run `code --install-extension <exe dir>/compilers.vsix --force` (VS Code CLI from PATH or the usual install folders), print the outcome and the F5 hint. Fails plainly when `compilers.vsix` or VS Code is missing | `--install-vscode` (exit 0 on success, 1 on failure) | `set_profile.install_vscode` / `set_profile.install_vscode_missing_vsix` | COVERED (install test SKIPs when VS Code is absent) |
+| `3` Add to IDE → `1` Add to VS Code | Run `code --install-extension <exe dir>/compilers.vsix --force` (VS Code CLI from PATH or the usual install folders), print the outcome and the F5 hint. Fails plainly when `compilers.vsix` or VS Code is missing | `--install-vscode` (exit 0 on success, 1 on failure) | `set_profile.install_vscode` / `set_profile.install_vscode_missing_vsix` | COVERED (install test SKIPs when VS Code is absent) |
 | `4` Open settings.json | Launch editor on `settings.json` | (TTY-only — same reason) | — | SKIP |
 | `5` Shared profiles → list | One full-screen list (refreshed on entry) of every local profile and every shared record. Colour is the state: Cyan = local (incl. a linked copy, shown once), White = shared record with no linked local copy, Yellow = linked and out of sync (repo newer, or your own with unpushed edits); a one-line legend sits above the menu. A short status column (Local / Mine / Linked / Repo newer / Changed here / Shared). An unlinked same-name pair shows twice (cyan + white). Right/Left details: every shared field; on a yellow row each differing field is yellow as `local -> repo: value` (never a password). Up/Down move, Space mark, letters filter (digits go to `Choice:`). Menu: `1` Sync, `2` Unlink, `3` Remove, `4` Change GitHub account, `98` Back (Esc clears the filter, else Back). Each action works on the marked rows, or the highlighted row when none are marked; the list is re-read after it with the filter kept. Redirected or too-small console: numbered coloured list + legend + the same menu, then `Which [1-N ...]` | `--shared [--refresh]` (prints Status per record) | `set_profile.shared_list` | COVERED (picker: TTY-only) |
 | `5` → `1` Sync | Does what each row implies, one result line per profile: unlinked local → share it (a same-name record of someone else's is never overwritten; your own asks `Replace your shared NAME with this one and link? [y/N]`); your own linked → push your edits; linked with a newer repo copy → pull (shared fields only; local password and SQL source kept; restamped); white row → download (new: SQL source and password asked; a same-name local asks `Replace your NAME with the shared NAME and link? [y/N]`, N skips) | `--share`, `--fetch` (below) | (manual - TTY) | SKIP |
