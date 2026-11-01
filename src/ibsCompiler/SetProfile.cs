@@ -32,7 +32,7 @@ namespace ibsCompiler
             var argList = args.ToList();
             if (CliArgs.AnyPresent(argList,
                     "--create", "--edit", "--view", "--copy", "--delete", "--test",
-                    "--share", "--unshare", "--shared", "--fetch", "--shared-status"))
+                    "--share", "--unshare", "--shared", "--fetch", "--shared-status", "--install-vscode"))
             {
                 return RunHeadless(argList);
             }
@@ -66,7 +66,7 @@ namespace ibsCompiler
             "--test",
             "--yes",
             "--rebuild", "--rebuild-cache",
-            "--shared", "--shared-status", "--refresh",
+            "--shared", "--shared-status", "--refresh", "--install-vscode",
             "--accept-all", "--accept-none", "--no-password", "--dry-run",
         };
 
@@ -1846,7 +1846,7 @@ namespace ibsCompiler
             Console.WriteLine();
             PrintSubheader("Add to IDE");
             Console.WriteLine();
-            PrintMenu(1, "VSCode");
+            PrintMenu(1, "VS Code extension");
             PrintMenu(98, "Back");
             PrintMenu(99, "Exit");
 
@@ -1860,7 +1860,7 @@ namespace ibsCompiler
             else
             {
                 Console.WriteLine();
-                // VSCode is the only real action on this menu — obvious default.
+                // VS Code extension is the only real action on this menu — obvious default.
                 choice = ConsoleMenu.ReadDeferredChoice(defaultChoice: "1");
                 if (string.IsNullOrEmpty(choice)) return; // Esc → Back
             }
@@ -1874,354 +1874,120 @@ namespace ibsCompiler
             }
         }
 
+        /// <summary>Menu action: install the bundled VS Code extension.</summary>
         private static void AddToVscode()
         {
             Console.WriteLine();
-            PrintSubheader("Add to VSCode");
+            PrintSubheader("VS Code extension");
             Console.WriteLine();
-            PrintDim("This adds runsql build tasks to your global VSCode settings.");
-            PrintDim("Press Ctrl+Shift+B in VSCode to compile the current SQL file.");
-            Console.WriteLine();
+            InstallVscodeExtension();
+        }
 
-            var profileNames = _settings.Profiles.Keys.ToList();
-            if (profileNames.Count == 0)
+        /// <summary>
+        /// Installs compilers.vsix (shipped beside the exe) into VS Code through its CLI.
+        /// Shared by the menu and <c>set_profile --install-vscode</c>. Returns 0 on success.
+        /// </summary>
+        private static int InstallVscodeExtension()
+        {
+            var exeDir = Path.GetDirectoryName(Environment.ProcessPath) ?? AppContext.BaseDirectory;
+            var vsix = Path.Combine(exeDir, "compilers.vsix");
+            if (!File.Exists(vsix))
             {
-                PrintWarning("No profiles configured. Create a profile first.");
-                return;
+                PrintError($"compilers.vsix not found beside the program ({exeDir}). Reinstall or update the Compilers.");
+                return 1;
             }
 
-            WriteBright("  Profiles: ");
-            Console.WriteLine(string.Join(", ", profileNames));
-            Console.WriteLine();
-
-            // Ask for databases
-            WriteBright("  Enter databases (comma-separated), or press Enter to prompt each time:");
-            Console.WriteLine();
-            Console.Write("> ");
-            var dbInput = Console.ReadLine()?.Trim() ?? "";
-
-            var usePromptMode = string.IsNullOrEmpty(dbInput);
-            var databases = new List<string>();
-            if (!usePromptMode)
+            var code = FindVscodeCli();
+            if (code == null)
             {
-                databases = dbInput.Split(',').Select(d => d.Trim()).Where(d => !string.IsNullOrEmpty(d)).ToList();
-                if (databases.Count == 0) usePromptMode = true;
+                PrintError("VS Code not found: no 'code' command on PATH or in the usual install folders.");
+                return 1;
             }
 
-            // Ask which profile is default
-            string defaultProfile;
-            if (profileNames.Count > 1)
+            var psi = new ProcessStartInfo
             {
-                Console.WriteLine();
-                WriteBright("  Which profile should be the default (Ctrl+Shift+B)?");
-                Console.WriteLine();
-                Console.WriteLine();
-                for (int i = 0; i < profileNames.Count; i++)
-                    PrintMenu(i + 1, profileNames[i]);
-
-                Console.WriteLine();
-                while (true)
-                {
-                    string? choice;
-                    if (Console.IsInputRedirected || Console.IsOutputRedirected)
-                    {
-                        ConsoleMenu.WritePrompt($"Choose [1-{profileNames.Count}]: ");
-                        choice = Console.ReadLine()?.Trim();
-                    }
-                    else
-                    {
-                        Console.WriteLine();
-                        // First profile in the list is the obvious default.
-                        choice = ConsoleMenu.ReadDeferredChoice(defaultChoice: "1");
-                    }
-                    if (int.TryParse(choice, out var idx) && idx >= 1 && idx <= profileNames.Count)
-                    {
-                        defaultProfile = profileNames[idx - 1];
-                        break;
-                    }
-                    if (string.IsNullOrEmpty(choice) &&
-                        !Console.IsInputRedirected && !Console.IsOutputRedirected)
-                        continue; // Esc on a TTY → silently re-prompt
-                    Console.WriteLine($"Please enter 1-{profileNames.Count}.");
-                }
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            };
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            {
+                // code.cmd is a batch file: it needs cmd.exe. The outer quotes are cmd's /c rule.
+                psi.FileName = "cmd.exe";
+                psi.Arguments = $"/c \"\"{code}\" --install-extension \"{vsix}\" --force\"";
             }
             else
             {
-                defaultProfile = profileNames[0];
+                psi.FileName = code;
+                psi.ArgumentList.Add("--install-extension");
+                psi.ArgumentList.Add(vsix);
+                psi.ArgumentList.Add("--force");
             }
 
-            // Default database
-            string? defaultDb = null;
-            if (!usePromptMode && databases.Count > 1)
-            {
-                Console.WriteLine();
-                WriteBright($"  Which database should be the default for {defaultProfile}?");
-                Console.WriteLine();
-                Console.WriteLine();
-                for (int i = 0; i < databases.Count; i++)
-                    PrintMenu(i + 1, databases[i]);
-
-                Console.WriteLine();
-                while (true)
-                {
-                    string? choice;
-                    if (Console.IsInputRedirected || Console.IsOutputRedirected)
-                    {
-                        ConsoleMenu.WritePrompt($"Choose [1-{databases.Count}]: ");
-                        choice = Console.ReadLine()?.Trim();
-                    }
-                    else
-                    {
-                        Console.WriteLine();
-                        // First database in the list is the obvious default.
-                        choice = ConsoleMenu.ReadDeferredChoice(defaultChoice: "1");
-                    }
-                    if (int.TryParse(choice, out var idx) && idx >= 1 && idx <= databases.Count)
-                    {
-                        defaultDb = databases[idx - 1];
-                        break;
-                    }
-                    if (string.IsNullOrEmpty(choice) &&
-                        !Console.IsInputRedirected && !Console.IsOutputRedirected)
-                        continue; // Esc on a TTY → silently re-prompt
-                    Console.WriteLine($"Please enter 1-{databases.Count}.");
-                }
-            }
-            else if (!usePromptMode && databases.Count == 1)
-            {
-                defaultDb = databases[0];
-            }
-
-            // Show target path
-            Console.WriteLine();
-            var vscodeDir = GetVscodeUserFolder();
-            if (string.IsNullOrEmpty(vscodeDir))
-            {
-                PrintError("Could not determine VSCode User folder.");
-                return;
-            }
-            var tasksPath = Path.Combine(vscodeDir, "tasks.json");
-            ConsoleMenu.WritePrompt("Will write to: ");
-            WriteColor(tasksPath, ConsoleColor.Yellow);
-            Console.WriteLine();
-            Console.WriteLine();
-
-            ConsoleMenu.WritePrompt("Proceed? [Y/n]: ");
-            var confirm = Console.ReadLine()?.Trim().ToLower();
-            if (confirm == "n") { Console.WriteLine("Cancelled."); return; }
-
-            // Generate tasks
-            Dictionary<string, object> tasksContent;
-            if (usePromptMode)
-                tasksContent = GenerateVscodeTasksWithPrompt(profileNames, defaultProfile);
-            else
-                tasksContent = GenerateVscodeTasksAllProfiles(profileNames, databases, defaultProfile, defaultDb);
-
-            // Handle existing file
-            if (File.Exists(tasksPath))
-            {
-                Console.WriteLine();
-                PrintWarning("tasks.json already exists.");
-                Console.WriteLine();
-                WriteColor("[O]", ConsoleColor.Cyan); Console.WriteLine("verwrite - Replace with new runsql tasks");
-                WriteColor("[M]", ConsoleColor.Cyan); Console.WriteLine("erge     - Keep existing tasks, add/replace runsql tasks");
-                WriteColor("[C]", ConsoleColor.Cyan); Console.WriteLine("ancel    - Abort");
-                Console.WriteLine();
-                while (true)
-                {
-                    ConsoleMenu.WritePrompt("Choose [O/M/C]: ");
-                    var fc = Console.ReadLine()?.Trim().ToUpper();
-                    if (fc == "C") return;
-                    if (fc == "O") break;
-                    if (fc == "M")
-                    {
-                        try
-                        {
-                            var existingJson = File.ReadAllText(tasksPath);
-                            using var doc = JsonDocument.Parse(existingJson);
-                            if (doc.RootElement.TryGetProperty("tasks", out var existingTasks))
-                            {
-                                var nonRunsql = new List<JsonElement>();
-                                foreach (var task in existingTasks.EnumerateArray())
-                                {
-                                    var label = task.TryGetProperty("label", out var l) ? l.GetString() ?? "" : "";
-                                    if (!label.StartsWith("runsql"))
-                                        nonRunsql.Add(task);
-                                }
-                                Console.WriteLine($"Keeping {nonRunsql.Count} existing non-runsql tasks.");
-                            }
-                        }
-                        catch
-                        {
-                            PrintWarning("Could not read existing file, will overwrite.");
-                        }
-                        break;
-                    }
-                    Console.WriteLine("Please enter O, M, or C.");
-                }
-            }
-
-            // Write
             try
             {
-                Directory.CreateDirectory(vscodeDir);
-                var json = JsonSerializer.Serialize(tasksContent, new JsonSerializerOptions { WriteIndented = true });
-                File.WriteAllText(tasksPath, json);
-
-                Console.WriteLine();
-                if (usePromptMode)
+                using var proc = Process.Start(psi);
+                if (proc == null) { PrintError($"Could not start {code}."); return 1; }
+                var stdout = proc.StandardOutput.ReadToEndAsync();
+                var stderr = proc.StandardError.ReadToEndAsync();
+                if (!proc.WaitForExit(120_000))
                 {
-                    PrintSuccess($"Added {profileNames.Count} tasks to VSCode (will prompt for database):");
-                    foreach (var pn in profileNames)
-                    {
-                        Console.Write($"{Icons.ARROW} runsql {pn}");
-                        if (pn == defaultProfile)
-                            WriteColor(" [default - Ctrl+Shift+B]", ConsoleColor.Green);
-                        Console.WriteLine();
-                    }
+                    try { proc.Kill(true); } catch { }
+                    PrintError("VS Code did not finish installing the extension within 120 seconds.");
+                    return 1;
                 }
-                else
+                var output = (stdout.Result + stderr.Result).Trim();
+                if (output.Length > 0) Console.WriteLine(output);
+                if (proc.ExitCode != 0)
                 {
-                    var taskCount = profileNames.Count * databases.Count;
-                    PrintSuccess($"Added {taskCount} tasks to VSCode:");
-                    foreach (var pn in profileNames)
-                    {
-                        foreach (var db in databases)
-                        {
-                            Console.Write($"{Icons.ARROW} runsql {pn} (");
-                            WriteColor(db, ConsoleColor.Gray);
-                            Console.Write(")");
-                            if (pn == defaultProfile && db == defaultDb)
-                                WriteColor(" [default - Ctrl+Shift+B]", ConsoleColor.Green);
-                            Console.WriteLine();
-                        }
-                    }
+                    PrintError($"VS Code could not install the extension (exit {proc.ExitCode}).");
+                    return 1;
                 }
             }
             catch (Exception ex)
             {
-                PrintError($"Failed to write tasks.json: {ex.Message}");
+                PrintError($"Could not run VS Code: {ex.Message}");
+                return 1;
             }
+
+            Console.WriteLine();
+            PrintSuccess("VS Code extension installed.");
+            Console.WriteLine("In VS Code: F5 runs the file or selection; pick profile/database from the status bar.");
+            return 0;
         }
 
-        private static string? GetVscodeUserFolder()
+        /// <summary>Finds the VS Code command-line launcher, or null when VS Code is not installed.</summary>
+        private static string? FindVscodeCli()
         {
-            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            var isWindows = RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
+            var launcher = isWindows ? "code.cmd" : "code";
+
+            foreach (var dir in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator))
             {
-                var appdata = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-                if (!string.IsNullOrEmpty(appdata))
-                    return Path.Combine(appdata, "Code", "User");
+                if (string.IsNullOrWhiteSpace(dir)) continue;
+                try
+                {
+                    var candidate = Path.Combine(dir.Trim().Trim('"'), launcher);
+                    if (File.Exists(candidate)) return candidate;
+                }
+                catch (ArgumentException) { }
             }
-            else if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+
+            if (isWindows)
             {
-                return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-                    "Library", "Application Support", "Code", "User");
-            }
-            else
-            {
-                return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-                    ".config", "Code", "User");
+                var roots = new[]
+                {
+                    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs"),
+                    Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+                };
+                foreach (var root in roots)
+                {
+                    if (string.IsNullOrEmpty(root)) continue;
+                    var candidate = Path.Combine(root, "Microsoft VS Code", "bin", "code.cmd");
+                    if (File.Exists(candidate)) return candidate;
+                }
             }
             return null;
-        }
-
-        private static readonly Dictionary<string, object> VscodeProblemMatcher = new()
-        {
-            ["owner"] = "runsql",
-            ["fileLocation"] = new[] { "absolute" },
-            ["pattern"] = new object[]
-            {
-                new Dictionary<string, object>
-                {
-                    ["regexp"] = @"^Msg\s+(\d+)\s+\(severity\s+(\d+),\s+state\s+\d+\).*Line\s+(\d+):",
-                    ["line"] = 3,
-                    ["code"] = 1
-                },
-                new Dictionary<string, object>
-                {
-                    ["regexp"] = @"^\s*""?(.+?)""?\s*$",
-                    ["message"] = 1,
-                    ["loop"] = true
-                }
-            }
-        };
-
-        private static Dictionary<string, object> GenerateVscodeTasksAllProfiles(
-            List<string> profileNames, List<string> databases, string defaultProfile, string? defaultDb)
-        {
-            var tasks = new List<Dictionary<string, object>>();
-            foreach (var pn in profileNames)
-            {
-                foreach (var db in databases)
-                {
-                    var task = new Dictionary<string, object>
-                    {
-                        ["label"] = $"runsql {pn} ({db})",
-                        ["type"] = "shell",
-                        ["command"] = "runsql",
-                        ["args"] = new[] { "${file}", db, pn },
-                        ["presentation"] = new Dictionary<string, object>
-                        {
-                            ["reveal"] = "always",
-                            ["panel"] = "shared",
-                            ["clear"] = true
-                        },
-                        ["problemMatcher"] = VscodeProblemMatcher
-                    };
-                    if (pn == defaultProfile && db == defaultDb)
-                        task["group"] = new Dictionary<string, object> { ["kind"] = "build", ["isDefault"] = true };
-                    else
-                        task["group"] = "build";
-                    tasks.Add(task);
-                }
-            }
-            return new Dictionary<string, object>
-            {
-                ["version"] = "2.0.0",
-                ["tasks"] = tasks
-            };
-        }
-
-        private static Dictionary<string, object> GenerateVscodeTasksWithPrompt(
-            List<string> profileNames, string defaultProfile)
-        {
-            var tasks = new List<Dictionary<string, object>>();
-            foreach (var pn in profileNames)
-            {
-                var task = new Dictionary<string, object>
-                {
-                    ["label"] = $"runsql {pn}",
-                    ["type"] = "shell",
-                    ["command"] = "runsql",
-                    ["args"] = new[] { "${file}", "${input:database}", pn },
-                    ["presentation"] = new Dictionary<string, object>
-                    {
-                        ["reveal"] = "always",
-                        ["panel"] = "shared",
-                        ["clear"] = true
-                    },
-                    ["problemMatcher"] = VscodeProblemMatcher
-                };
-                if (pn == defaultProfile)
-                    task["group"] = new Dictionary<string, object> { ["kind"] = "build", ["isDefault"] = true };
-                else
-                    task["group"] = "build";
-                tasks.Add(task);
-            }
-            return new Dictionary<string, object>
-            {
-                ["version"] = "2.0.0",
-                ["tasks"] = tasks,
-                ["inputs"] = new object[]
-                {
-                    new Dictionary<string, object>
-                    {
-                        ["id"] = "database",
-                        ["type"] = "promptString",
-                        ["description"] = "Enter database name"
-                    }
-                }
-            };
         }
         #endregion
 
@@ -2329,6 +2095,7 @@ namespace ibsCompiler
             var fetchName   = CliArgs.GetOption(args, "--fetch");
             var listShared  = CliArgs.HasFlag(args, "--shared");
             var sharedStatus = CliArgs.HasFlag(args, "--shared-status");
+            var installVscode = CliArgs.HasFlag(args, "--install-vscode");
 
             int primary = 0;
             if (createName != null) primary++;
@@ -2342,14 +2109,15 @@ namespace ibsCompiler
             if (fetchName != null)   primary++;
             if (listShared)          primary++;
             if (sharedStatus)        primary++;
+            if (installVscode)       primary++;
             if (primary > 1)
             {
-                Console.Error.WriteLine("ERROR: --create, --edit, --view, --copy, --delete, --test, --share, --unshare, --shared, --shared-status, --fetch are mutually exclusive.");
+                Console.Error.WriteLine("ERROR: --create, --edit, --view, --copy, --delete, --test, --share, --unshare, --shared, --shared-status, --fetch, --install-vscode are mutually exclusive.");
                 return 1;
             }
             if (primary == 0)
             {
-                Console.Error.WriteLine("ERROR: headless mode requires one of --create, --edit, --view, --copy, --delete, --test, --share, --unshare, --shared, --shared-status, --fetch.");
+                Console.Error.WriteLine("ERROR: headless mode requires one of --create, --edit, --view, --copy, --delete, --test, --share, --unshare, --shared, --shared-status, --fetch, --install-vscode.");
                 return 1;
             }
 
@@ -2364,6 +2132,7 @@ namespace ibsCompiler
             if (fetchName != null)   return FetchHeadless(fetchName, args);
             if (listShared)          return SharedListHeadless(args);
             if (sharedStatus)        return SharedStatusHeadless();
+            if (installVscode)       return InstallVscodeExtension();
             return 1;
         }
 

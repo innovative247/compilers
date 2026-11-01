@@ -16,6 +16,12 @@ Set-Location $PSScriptRoot
 # since we create the linux/osx archives manually in step 2.
 Write-Host "=== Publishing v$Version ===" -ForegroundColor Cyan
 .\publish.ps1 -Version $Version
+foreach ($rid in @('win-x64', 'linux-x64', 'osx-x64', 'osx-arm64')) {
+    if (-not (Test-Path (Join-Path $PSScriptRoot "bin\$rid\compilers.vsix"))) {
+        Write-Host "publish.ps1 failed - bin\$rid\compilers.vsix missing (VS Code extension not built)" -ForegroundColor Red
+        exit 1
+    }
+}
 if ($LASTEXITCODE -ne 0) {
     if (-not (Test-Path (Join-Path $PSScriptRoot "bin\win-x64"))) {
         Write-Host "publish.ps1 failed - bin\win-x64 not found" -ForegroundColor Red

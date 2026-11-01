@@ -59,6 +59,9 @@ if ($Version) {
     }
 }
 
+# Stale archives from an earlier run must never survive a failed publish.
+Remove-Item (Join-Path $PSScriptRoot 'bin\compilers-net8-*') -Force -ErrorAction SilentlyContinue
+
 $allFailed = @()
 
 foreach ($rid in $runtimes) {
@@ -99,6 +102,16 @@ foreach ($rid in $runtimes) {
 
     Write-Host ""
 }
+
+# VS Code extension: built once, shipped as bin/<rid>/compilers.vsix (rides in every archive).
+Write-Host "=== Building VS Code extension ===" -ForegroundColor Cyan
+try {
+    & (Join-Path $PSScriptRoot 'vscode\bundle.ps1') -Dest ($runtimes | ForEach-Object { Join-Path $PSScriptRoot "bin\$_" })
+} catch {
+    Write-Host "VS Code extension build FAILED: $($_.Exception.Message)" -ForegroundColor Red
+    exit 1
+}
+Write-Host ""
 
 # Summary
 Write-Host "=== Summary ===" -ForegroundColor Cyan

@@ -2869,6 +2869,47 @@ function Test-SharedProfiles {
         if ("$($r.StdErr)" -notmatch 'mutually exclusive') { throw "expected 'mutually exclusive'. stderr: $($r.StdErr)" }
     }
 
+    Test-Case 'set_profile.install_vscode_missing_vsix' {
+        $vsix = Join-Path $script:Bin 'compilers.vsix'
+        $hold = "$vsix.suite-hold"
+        if ((Test-Path $hold) -and -not (Test-Path $vsix)) { Move-Item $hold $vsix -Force }   # left by an interrupted run
+        $moved = Test-Path $vsix
+        if ($moved) { Move-Item $vsix $hold -Force }
+        try {
+            $r = Invoke-Cli set_profile '--install-vscode'
+            if ($r.ExitCode -eq 0) { throw "--install-vscode must fail when compilers.vsix is absent" }
+            if ("$($r.StdOut)$($r.StdErr)" -notmatch 'compilers\.vsix not found') { throw "expected 'compilers.vsix not found'. out: $($r.StdOut) err: $($r.StdErr)" }
+        } finally {
+            if ($moved) { Move-Item $hold $vsix -Force }
+        }
+    }
+
+    Test-Case 'set_profile.install_vscode' {
+        $code = $null
+        foreach ($c in @(
+                (Get-Command code.cmd -ErrorAction SilentlyContinue).Source,
+                (Join-Path $env:LOCALAPPDATA 'Programs\Microsoft VS Code\bin\code.cmd'),
+                (Join-Path $env:ProgramFiles 'Microsoft VS Code\bin\code.cmd'))) {
+            if ($c -and (Test-Path $c)) { $code = $c; break }
+        }
+        if (-not $code) { Skip-Case 'set_profile.install_vscode' 'VS Code is not installed'; return }
+        if (-not (Test-Path (Join-Path $script:Bin 'compilers.vsix'))) { throw 'bin\win-x64\compilers.vsix missing - run dev.ps1' }
+        # Install into a scratch extensions folder, never the developer's real VS Code.
+        $savedExt = $env:VSCODE_EXTENSIONS
+        $env:VSCODE_EXTENSIONS = Join-Path $script:Scratch 'vscode-extensions'
+        try {
+            $r = Invoke-Cli set_profile '--install-vscode'
+            if ($r.ExitCode -ne 0) { throw "--install-vscode must exit 0. out: $($r.StdOut) err: $($r.StdErr)" }
+            if ("$($r.StdOut)" -notmatch 'F5 runs the file or selection') { throw "expected the usage hint. out: $($r.StdOut)" }
+            $props = [xml](Get-Content -Raw (Join-Path $PSScriptRoot '..\src\Directory.Build.props'))
+            $ver = ($props.Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1)
+            $listed = & cmd.exe /c "`"$code`" --list-extensions --show-versions" 2>&1 | Out-String
+            if ($listed -notmatch "innovative247\.compilers@$([regex]::Escape($ver))") { throw "innovative247.compilers@$ver not listed. got: $listed" }
+        } finally {
+            $env:VSCODE_EXTENSIONS = $savedExt
+        }
+    }
+
     Test-Case 'set_profile.damaged_cache_never_touches_enclosing_repo' {
         # A cache left with a .git folder but no HEAD (half-deleted) must not make git walk up
         # into the repo that contains it. Runs on a scratch copy of the binaries inside a scratch repo.

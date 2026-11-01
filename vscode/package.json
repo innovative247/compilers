@@ -1,0 +1,75 @@
+{
+  "name": "compilers",
+  "displayName": "Compilers",
+  "description": "Run the open SQL file or selection with the Compilers (runsql, isqlline, runcreate) and see server errors in Problems.",
+  "version": "0.0.0",
+  "publisher": "innovative247",
+  "license": "SEE LICENSE IN LICENSE",
+  "repository": { "type": "git", "url": "https://github.com/innovative247/compilers.git" },
+  "engines": { "vscode": "^1.85.0" },
+  "categories": ["Other"],
+  "main": "./extension.js",
+  "scripts": { "test": "node --test test/*.test.js" },
+  "activationEvents": ["onStartupFinished"],
+  "contributes": {
+    "commands": [
+      { "command": "compilers.run", "title": "Compilers: Run selection or file" },
+      { "command": "compilers.runFile", "title": "Compilers: Run file" },
+      { "command": "compilers.runSelection", "title": "Compilers: Run selection" },
+      { "command": "compilers.runCreate", "title": "Compilers: Run create file (runcreate)" },
+      { "command": "compilers.pickProfile", "title": "Compilers: Change profile" },
+      { "command": "compilers.pickDatabase", "title": "Compilers: Change database" }
+    ],
+    "keybindings": [
+      { "command": "compilers.run", "key": "f5", "when": "editorTextFocus && (editorLangId == sql || compilers.sbnFile)" }
+    ],
+    "menus": {
+      "editor/context": [
+        { "command": "compilers.runFile", "when": "editorLangId == sql || compilers.sbnFile", "group": "compilers@1" },
+        { "command": "compilers.runSelection", "when": "(editorLangId == sql || compilers.sbnFile) && editorHasSelection", "group": "compilers@2" },
+        { "command": "compilers.runCreate", "when": "resourceScheme == file", "group": "compilers@3" }
+      ],
+      "explorer/context": [
+        { "command": "compilers.runCreate", "when": "!explorerResourceIsFolder", "group": "compilers@1" }
+      ],
+      "commandPalette": [
+        { "command": "compilers.runSelection", "when": "editorHasSelection" }
+      ]
+    },
+    "configuration": {
+      "title": "Compilers",
+      "properties": {
+        "compilers.installPath": {
+          "type": "string",
+          "default": "",
+          "description": "Folder that holds runsql and settings.json. Leave empty to use the one on PATH."
+        },
+        "compilers.fileExtensions": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [".sql"],
+          "description": "File extensions treated as Compilers scripts (F5 and the context menu) even when VS Code does not call them SQL."
+        }
+      }
+    },
+    "problemMatchers": [
+      {
+        "name": "compilers",
+        "owner": "compilers",
+        "fileLocation": "absolute",
+        "severity": "error",
+        "pattern": {
+          "regexp": "^(.+?):(\\d+):(\\d+): (error|warning): (.*)$",
+          "file": 1,
+          "line": 2,
+          "column": 3,
+          "severity": 4,
+          "message": 5
+        }
+      }
+    ],
+    "taskDefinitions": [
+      { "type": "compilers", "properties": { "kind": { "type": "string" } } }
+    ]
+  }
+}

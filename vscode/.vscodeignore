@@ -1,0 +1,5 @@
+test/**
+package.ps1
+bundle.ps1
+node_modules/**
+*.vsix
