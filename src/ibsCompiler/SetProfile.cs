@@ -146,13 +146,14 @@ namespace ibsCompiler
             Console.WriteLine(text);
         }
 
-        private static void PrintMenu(int num, string text)
+        private static void PrintMenu(int num, string text, ConsoleColor? textColor = null)
         {
             var prev = Console.ForegroundColor;
             Console.ForegroundColor = ConsoleColor.Cyan;
             Console.Write($"{num}.".PadRight(4));
-            Console.ForegroundColor = prev;
+            Console.ForegroundColor = textColor ?? prev;
             Console.WriteLine(text);
+            Console.ForegroundColor = prev;
         }
 
         private static void PrintField(string icon, string label, string value, ConsoleColor valueColor = ConsoleColor.White)
@@ -240,6 +241,11 @@ namespace ibsCompiler
             PrintDim("Profiles store database connection settings used by runsql, runcreate,");
             PrintDim("and other compiler commands. Each profile points to a SQL source directory.");
 
+            // Probe installed IDE integrations in the background; the menu never waits on it
+            // (redirected runs wait <=200 ms once so their output is deterministic).
+            IdeStatus.Start();
+            if (Console.IsInputRedirected || Console.IsOutputRedirected) IdeStatus.WaitAll(200);
+
             while (true)
             {
                 Console.WriteLine();
@@ -248,7 +254,8 @@ namespace ibsCompiler
                 Console.WriteLine();
                 PrintMenu(1, "New profile");
                 PrintMenu(2, "Existing profile");
-                PrintMenu(3, "IDE Integration");
+                if (IdeStatus.AnyOutOfDate()) PrintMenu(3, "IDE Integration (update available)", ConsoleColor.Yellow);
+                else PrintMenu(3, "IDE Integration");
                 PrintMenu(4, "Open settings.json");
                 PrintMenu(5, "Shared profiles");
                 PrintMenu(99, "Exit");

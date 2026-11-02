@@ -2935,7 +2935,11 @@ function Test-SharedProfiles {
     }
 
     Test-Case 'set_profile.ide_menu_invalid_choice_stays' {
-        $r = Invoke-SetProfileMenu "3`nzz`n98`n99`n"
+        $fake = Join-Path $script:Scratch 'ide-fakebin'
+        New-Item -ItemType Directory -Force $fake | Out-Null
+        Set-Content -Path (Join-Path $fake 'code.cmd') -Value '@echo off'
+        $savedProbe = $env:COMPILERS_IDE_PROBE_PATHS; $env:COMPILERS_IDE_PROBE_PATHS = $fake
+        try { $r = Invoke-SetProfileMenu "3`nzz`n98`n99`n" } finally { $env:COMPILERS_IDE_PROBE_PATHS = $savedProbe }
         if ($r.Out -notmatch 'IDE Integration') { throw "expected 'IDE Integration'. out: $($r.Out)" }
         if ($r.Out -match 'Add to IDE') { throw "old 'Add to IDE' label still present" }
         $i = $r.Out.IndexOf('Invalid choice.')
@@ -2955,6 +2959,68 @@ function Test-SharedProfiles {
             $i = $r.Out.IndexOf('nothing to remove')
             if ($r.Out.Substring($i) -notmatch '(?m)^IDE Integration\s*$') { throw "IDE menu must reappear after an action. out: $($r.Out)" }
         } finally { $env:VSCODE_EXTENSIONS = $savedExt }
+    }
+
+    # Fast IDE-version probe (disk only, no `code` spawn): fabricate the extensions dir and
+    # drive the menus through piped input. Redirected runs cannot show colour, so assert text.
+    function Invoke-IdeProbeCase {
+        param([string]$Name, [string[]]$Folders, [string]$ManifestVersion, [switch]$NotDetected)
+        $props = [xml](Get-Content -Raw (Join-Path $PSScriptRoot '..\src\Directory.Build.props'))
+        $cur = [string]($props.Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1)
+        $dir = Join-Path $script:Scratch "vscode-probe-$Name"
+        if (Test-Path $dir) { Remove-Item -Recurse -Force $dir }
+        New-Item -ItemType Directory -Force $dir | Out-Null
+        foreach ($f in $Folders) { New-Item -ItemType Directory -Force (Join-Path $dir ("innovative247.compilers-" + $f.Replace('CUR', $cur))) | Out-Null }
+        if ($ManifestVersion) {
+            $v = $ManifestVersion.Replace('CUR', $cur)
+            '[{"identifier":{"id":"other.ext"},"version":"9.9.9"},{"identifier":{"id":"innovative247.compilers"},"version":"' + $v + '"}]' |
+                Set-Content -Encoding utf8 (Join-Path $dir 'extensions.json')
+        }
+        # Detection seam (test-only): COMPILERS_IDE_PROBE_PATHS replaces the PATH search for the VS Code launcher.
+        $bin = Join-Path $dir 'fakebin'
+        New-Item -ItemType Directory -Force $bin | Out-Null
+        if (-not $NotDetected) { Set-Content -Path (Join-Path $bin 'code.cmd') -Value '@echo off' }
+        $saved = $env:VSCODE_EXTENSIONS; $savedProbe = $env:COMPILERS_IDE_PROBE_PATHS
+        $env:VSCODE_EXTENSIONS = $dir; $env:COMPILERS_IDE_PROBE_PATHS = $bin
+        try { $r = Invoke-SetProfileMenu "3`n98`n99`n" } finally { $env:VSCODE_EXTENSIONS = $saved; $env:COMPILERS_IDE_PROBE_PATHS = $savedProbe }
+        [pscustomobject]@{ Out = $r.Out; Cur = $cur }
+    }
+
+    Test-Case 'set_profile.ide_update_available_older' {
+        $x = Invoke-IdeProbeCase 'older' @('0.0.1') '0.0.1'
+        if ($x.Out -notmatch '3\.\s+IDE Integration \(update available\)') { throw "main menu must flag the update. out: $($x.Out)" }
+        if ($x.Out -notmatch "installed 0\.0\.1, update to $([regex]::Escape($x.Cur))") { throw "IDE menu must show 'installed 0.0.1, update to $($x.Cur)'. out: $($x.Out)" }
+    }
+
+    Test-Case 'set_profile.ide_update_available_current' {
+        $x = Invoke-IdeProbeCase 'current' @('CUR') 'CUR'
+        if ($x.Out -match 'update available') { throw "current install must not be flagged. out: $($x.Out)" }
+        if ($x.Out -notmatch '\(up to date\)') { throw "expected '(up to date)'. out: $($x.Out)" }
+    }
+
+    Test-Case 'set_profile.ide_update_available_not_installed' {
+        $x = Invoke-IdeProbeCase 'none' @() $null
+        if ($x.Out -match 'update available|update to') { throw "not installed must not be flagged. out: $($x.Out)" }
+        if ($x.Out -notmatch '1\.\s+Add to VS Code\s*\r?\n') { throw "expected a plain 'Add to VS Code'. out: $($x.Out)" }
+    }
+
+    Test-Case 'set_profile.ide_menu_not_detected' {
+        # Extension state on disk is older, but the IDE itself is not detected: no items, no flag.
+        $x = Invoke-IdeProbeCase 'undetected' @('0.0.1') '0.0.1' -NotDetected
+        if ($x.Out -notmatch 'No supported IDE detected \(VS Code\)\.') { throw "expected the no-IDE line. out: $($x.Out)" }
+        if ($x.Out -match 'Add to VS Code|Remove from VS Code|update available') { throw "undetected IDE must not be offered or flagged. out: $($x.Out)" }
+        if ($x.Out -notmatch '3\.\s+IDE Integration\s*?
+') { throw "main menu keeps a plain 'IDE Integration'. out: $($x.Out)" }
+        if ($x.Out -notmatch '98\.\s+Back') { throw "expected 98 Back. out: $($x.Out)" }
+    }
+
+    Test-Case 'set_profile.ide_update_available_stale_folders' {
+        # Old folders linger until VS Code restarts; extensions.json is authoritative.
+        $x = Invoke-IdeProbeCase 'stale' @('0.0.1', '0.0.2', 'CUR') 'CUR'
+        if ($x.Out -match 'update available|update to') { throw "stale folders must not trigger a flag. out: $($x.Out)" }
+        # And the reverse: a newer-looking folder must not hide an older manifest entry.
+        $y = Invoke-IdeProbeCase 'stale2' @('0.0.1', 'CUR') '0.0.1'
+        if ($y.Out -notmatch '\(update available\)') { throw "manifest (older) must win over the newer folder. out: $($y.Out)" }
     }
 
     Test-Case 'set_profile.remove_vscode' {

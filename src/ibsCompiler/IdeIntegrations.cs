@@ -17,11 +17,17 @@ namespace ibsCompiler
         /// <summary>Headless flag stem, e.g. "vscode" gives --install-vscode / --remove-vscode.</summary>
         string FlagStem { get; }
 
-        /// <summary>True when the IDE's command-line tool can be found.</summary>
+        /// <summary>True when the IDE is detected (File.Exists checks only; never spawns a process).</summary>
         bool IsAvailable { get; }
 
         /// <summary>Installed extension version, or null when not installed (or not queryable).</summary>
         string? GetInstalledVersion();
+
+        /// <summary>
+        /// Fast installed-version probe: reads the IDE's own install state from disk and never
+        /// runs the IDE's CLI. Null when not installed or unknown; never throws.
+        /// </summary>
+        string? ProbeInstalledVersion();
 
         /// <summary>Installs or updates the integration and verifies it. Returns 0 on success.</summary>
         int Install();
@@ -61,6 +67,71 @@ namespace ibsCompiler
             var r = RunCode(code, new[] { "--list-extensions", "--show-versions" }, 60_000);
             return r.Ok ? ParseVersion(r.Output) : null;
         }
+
+        public string? ProbeInstalledVersion()
+        {
+            try
+            {
+                string? best = null;
+                foreach (var dir in ExtensionDirs())
+                {
+                    var v = ProbeDir(dir);
+                    if (v != null && (best == null || CompareVersions(v, best) > 0)) best = v;
+                }
+                return best;
+            }
+            catch { return null; }
+        }
+
+        private static IEnumerable<string> ExtensionDirs()
+        {
+            var env = Environment.GetEnvironmentVariable("VSCODE_EXTENSIONS");
+            if (!string.IsNullOrWhiteSpace(env)) { yield return env; yield break; }
+            var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            if (string.IsNullOrEmpty(home)) yield break;
+            yield return Path.Combine(home, ".vscode", "extensions");
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+                yield return Path.Combine(home, ".vscode-server", "extensions"); // WSL remote
+        }
+
+        /// <summary>extensions.json is authoritative (old version folders linger until VS Code restarts); folder names only when it is absent.</summary>
+        private static string? ProbeDir(string dir)
+        {
+            try
+            {
+                if (!Directory.Exists(dir)) return null;
+                var manifest = Path.Combine(dir, "extensions.json");
+                if (File.Exists(manifest))
+                {
+                    using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(manifest));
+                    if (doc.RootElement.ValueKind != System.Text.Json.JsonValueKind.Array) return null;
+                    string? best = null;
+                    foreach (var e in doc.RootElement.EnumerateArray())
+                    {
+                        if (!e.TryGetProperty("identifier", out var id) || !id.TryGetProperty("id", out var idv)) continue;
+                        if (!string.Equals(idv.GetString(), ExtensionId, StringComparison.OrdinalIgnoreCase)) continue;
+                        if (!e.TryGetProperty("version", out var ver)) continue;
+                        var v = ver.GetString();
+                        if (!string.IsNullOrWhiteSpace(v) && (best == null || CompareVersions(v, best) > 0)) best = v;
+                    }
+                    return best;
+                }
+                string? folderBest = null;
+                var prefix = ExtensionId + "-";
+                foreach (var d in Directory.EnumerateDirectories(dir, prefix + "*"))
+                {
+                    var v = Path.GetFileName(d).Substring(prefix.Length);
+                    if (folderBest == null || CompareVersions(v, folderBest) > 0) folderBest = v;
+                }
+                return folderBest;
+            }
+            catch { return null; }
+        }
+
+        private static int CompareVersions(string a, string b) =>
+            Version.TryParse(a, out var va) && Version.TryParse(b, out var vb)
+                ? va.CompareTo(vb)
+                : string.CompareOrdinal(a, b);
 
         public int Install()
         {
@@ -225,7 +296,10 @@ namespace ibsCompiler
             var isWindows = RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
             var launcher = isWindows ? "code.cmd" : "code";
 
-            foreach (var dir in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator))
+            // Test-only seam (not user-facing): when set, ONLY these directories are searched.
+            var seam = Environment.GetEnvironmentVariable("COMPILERS_IDE_PROBE_PATHS");
+            var searchPath = string.IsNullOrEmpty(seam) ? Environment.GetEnvironmentVariable("PATH") ?? "" : seam;
+            foreach (var dir in searchPath.Split(Path.PathSeparator))
             {
                 if (string.IsNullOrWhiteSpace(dir)) continue;
                 try
@@ -236,7 +310,7 @@ namespace ibsCompiler
                 catch (ArgumentException) { }
             }
 
-            if (isWindows)
+            if (isWindows && string.IsNullOrEmpty(seam))
             {
                 var roots = new[]
                 {
@@ -252,6 +326,71 @@ namespace ibsCompiler
             }
             return null;
         }
+    }
+
+    /// <summary>
+    /// Background cache of each integration's fast version probe. Nothing here blocks the
+    /// menu except the bounded waits the callers ask for.
+    /// </summary>
+    internal static class IdeStatus
+    {
+        private static readonly object Gate = new();
+        private static readonly Dictionary<string, Task<IdeProbe>> Probes = new();
+
+        /// <summary>One integration's background probe result.</summary>
+        internal readonly record struct IdeProbe(bool Detected, string? Version);
+
+        /// <summary>Starts one background probe per registered integration (idempotent).</summary>
+        public static void Start()
+        {
+            lock (Gate)
+                foreach (var ide in IdeRegistry.All)
+                {
+                    var i = ide;
+                    if (!Probes.ContainsKey(i.FlagStem)) Probes[i.FlagStem] = Task.Run(() => Safe(i));
+                }
+        }
+
+        /// <summary>Re-probes one integration (after Add / Remove).</summary>
+        public static void Refresh(IIdeIntegration ide)
+        {
+            lock (Gate) Probes[ide.FlagStem] = Task.Run(() => Safe(ide));
+        }
+
+        private static IdeProbe Safe(IIdeIntegration ide)
+        {
+            try { return ide.IsAvailable ? new IdeProbe(true, ide.ProbeInstalledVersion()) : default; }
+            catch { return default; }
+        }
+
+        /// <summary>Waits up to <paramref name="ms"/> for every probe to finish.</summary>
+        public static void WaitAll(int ms)
+        {
+            Task[] tasks;
+            lock (Gate) tasks = Probes.Values.ToArray();
+            try { Task.WaitAll(tasks, ms); } catch { }
+        }
+
+        /// <summary>Probe result if finished (waiting up to <paramref name="waitMs"/>), else "not detected".</summary>
+        public static IdeProbe Get(IIdeIntegration ide, int waitMs = 0)
+        {
+            Start();
+            Task<IdeProbe> t;
+            lock (Gate) t = Probes[ide.FlagStem];
+            try { if (!t.IsCompleted && waitMs > 0) t.Wait(waitMs); } catch { }
+            return t.IsCompletedSuccessfully ? t.Result : default;
+        }
+
+        /// <summary>True when the probe returned a version that is older than this build (compared as versions).</summary>
+        public static bool IsOutOfDate(string? installed) =>
+            installed != null
+            && Version.TryParse(installed, out var have)
+            && Version.TryParse(VersionInfo.Version, out var want)
+            && have < want;
+
+        /// <summary>True when any finished probe shows an out-of-date integration (never waits).</summary>
+        public static bool AnyOutOfDate() =>
+            IdeRegistry.All.Any(ide => IsOutOfDate(Get(ide).Version));
     }
 
     public static partial class set_profile_main
@@ -273,13 +412,18 @@ namespace ibsCompiler
                 var n = 1;
                 foreach (var ide in ides)
                 {
-                    PrintMenu(n, AddLabel(ide));
+                    var probe = IdeStatus.Get(ide, 200);
+                    if (!probe.Detected) continue; // only offer IDEs that are installed here
+                    var installed = probe.Version;
+                    PrintMenu(n, AddLabel(ide, installed), IdeStatus.IsOutOfDate(installed) ? ConsoleColor.Yellow : null);
                     actions[n.ToString()] = ide.Install;
                     n++;
                     PrintMenu(n, $"Remove from {ide.Name}");
                     actions[n.ToString()] = ide.Remove;
                     n++;
                 }
+                if (n == 1)
+                    PrintDim($"No supported IDE detected ({string.Join(", ", ides.Select(i => i.Name))}).");
                 PrintMenu(98, "Back");
                 PrintMenu(99, "Exit");
 
@@ -287,7 +431,7 @@ namespace ibsCompiler
                 string? choice;
                 if (Console.IsInputRedirected || Console.IsOutputRedirected)
                 {
-                    ConsoleMenu.WritePrompt($"\nChoose [1-{n - 1}]: ");
+                    ConsoleMenu.WritePrompt(n == 1 ? "\nChoose [98-99]: " : $"\nChoose [1-{n - 1}]: ");
                     choice = Console.ReadLine()?.Trim();
                     if (choice == null) return; // end of piped input
                 }
@@ -304,6 +448,7 @@ namespace ibsCompiler
                 {
                     Console.WriteLine();
                     run();
+                    foreach (var ide in ides) IdeStatus.Refresh(ide);
                 }
                 else
                 {
@@ -312,16 +457,15 @@ namespace ibsCompiler
             }
         }
 
-        private static string AddLabel(IIdeIntegration ide)
+        private static string AddLabel(IIdeIntegration ide, string? installed)
         {
             var label = $"Add to {ide.Name}";
-            if (!ide.IsAvailable) return label;
-            var installed = ide.GetInstalledVersion();
             if (installed == null) return label;
             var current = VersionInfo.Version;
-            return installed == current
-                ? $"{label} (up to date)"
-                : $"{label} (installed {installed}, update to {current})";
+            if (installed == current) return $"{label} (up to date)";
+            return IdeStatus.IsOutOfDate(installed)
+                ? $"{label} (installed {installed}, update to {current})"
+                : $"{label} (installed {installed})";
         }
     }
 }
