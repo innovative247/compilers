@@ -11,6 +11,15 @@ Run the SQL you are editing with the Compilers, without leaving the editor.
 - Output streams in the terminal panel, which opens and takes focus when a run starts, so password prompts still work. Server errors also appear in **Problems**.
 - The **Compilers** output channel logs every command, the profile, database and command line used (without the SQL text), and when each run starts and ends with its exit code. Any failure is also shown as an error message.
 
+## Profiles and source folders
+
+A profile's `SQL_SOURCE` decides which `css/setup` options and table locations resolve placeholders, so the right profile for a file is the one whose `SQL_SOURCE` is the source tree the file lives in. Keep one profile per server and source tree, for example `GONZO` with `SQL_SOURCE` at `current.sql` and `GONZO_95` at `95.sql`.
+
+- A profile matches a file when the file is inside its `SQL_SOURCE` (whole path segments, so `95.sql` does not match `95.sql2`; case-insensitive on Windows). With no saved file, the workspace folder is used. A profile with an empty `SQL_SOURCE` never matches. When several match, the deepest `SQL_SOURCE` comes first.
+- In the profile picker the matching profiles are listed first, marked "(this folder)", then the rest.
+- If you have not picked a profile in this workspace and exactly one matches the active file, it is used without asking. The status bar shows it, with the tooltip "matched SQL_SOURCE <path>", and the Compilers output logs it. With several matches the picker opens with them on top.
+- Your own pick always wins and is remembered per workspace. If the picked profile's `SQL_SOURCE` does not contain the file but another profile's does, the run still uses your pick and the output logs a line naming the matching profile.
+
 ## About error lines
 
 The server reports `Line N` counted from the start of the `GO` batch (or the procedure), not from the top of the file, so Compilers cannot place an error on the exact file line. The problem is shown on line 1 of the file (the first line of the selection for a selection run), and the message carries the server's batch line, for example `(batch line 3)`.

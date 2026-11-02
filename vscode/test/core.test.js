@@ -270,3 +270,45 @@ test('sweepStale removes only old compilers-out files', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ---- matching profiles to a source folder ----
+
+const P = (name, sqlSource) => ({ name, sqlSource });
+const names = (l) => l.map((p) => p.name);
+
+test('parseProfiles reads SQL_SOURCE in any casing, empty when absent', () => {
+  const p = c.parseProfiles(JSON.stringify({ Profiles: { A: { SQL_SOURCE: ' C:\\src\\current.sql ' }, B: { sql_source: 'D:\\x' }, C: {} } }));
+  assert.deepStrictEqual(p.map((x) => x.sqlSource), ['C:\\src\\current.sql', 'D:\\x', '']);
+});
+
+test('matchProfiles on Windows ignores case, slash style and trailing separators', () => {
+  const l = [P('A', 'C:\\Src\\Current.SQL\\')];
+  assert.deepStrictEqual(names(c.matchProfiles(l, 'c:/src/current.sql/proc/a.sql', 'win32')), ['A']);
+  assert.deepStrictEqual(names(c.matchProfiles([P('A', 'c:/src/current.sql')], 'C:\\SRC\\CURRENT.SQL\\x.sql', 'win32')), ['A']);
+  assert.deepStrictEqual(c.matchProfiles(l, 'D:\\src\\current.sql\\a.sql', 'win32'), []);
+});
+
+test('matchProfiles compares whole path segments: 95.sql does not match 95.sql2', () => {
+  const l = [P('A', 'C:\\src\\95.sql')];
+  assert.deepStrictEqual(c.matchProfiles(l, 'C:\\src\\95.sql2\\a.sql', 'win32'), []);
+  assert.deepStrictEqual(names(c.matchProfiles(l, 'C:\\src\\95.sql\\a.sql', 'win32')), ['A']);
+  assert.deepStrictEqual(names(c.matchProfiles(l, 'C:\\src\\95.sql', 'win32')), ['A']);
+});
+
+test('matchProfiles puts the deepest SQL_SOURCE first, then keeps the given order', () => {
+  const l = [P('ROOT', 'C:\\src'), P('B', 'C:\\src\\95.sql'), P('DEEP', 'C:\\src\\95.sql\\proc'), P('B2', 'C:\\SRC\\95.sql')];
+  assert.deepStrictEqual(names(c.matchProfiles(l, 'C:\\src\\95.sql\\proc\\a.sql', 'win32')), ['DEEP', 'B', 'B2', 'ROOT']);
+});
+
+test('matchProfiles never matches an empty SQL_SOURCE, an empty path or a relative path', () => {
+  assert.deepStrictEqual(c.matchProfiles([P('RAW', ''), P('SP', '   ')], 'C:\\src\\a.sql', 'win32'), []);
+  assert.deepStrictEqual(c.matchProfiles([P('A', 'C:\\src')], '', 'win32'), []);
+  assert.deepStrictEqual(c.matchProfiles([P('A', 'C:\\src')], 'relative\\a.sql', 'win32'), []);
+});
+
+test('matchProfiles is case-sensitive on Linux (platform parameter)', () => {
+  const l = [P('A', '/src/Current.sql/')];
+  assert.deepStrictEqual(c.matchProfiles(l, '/src/current.sql/a.sql', 'linux'), []);
+  assert.deepStrictEqual(names(c.matchProfiles(l, '/src/Current.sql//proc/a.sql', 'linux')), ['A']);
+  assert.deepStrictEqual(c.matchProfiles([P('A', '/src/95.sql')], '/src/95.sql2/a.sql', 'linux'), []);
+});

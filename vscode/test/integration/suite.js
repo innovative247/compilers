@@ -174,6 +174,61 @@ test('a user pick overrides the profile default, the picker lists the default fi
   }
 }, 'folder');
 
+const WS = path.dirname(INSIDE);
+const prof = (name, sqlSource, database = '') => ({ name, aliases: [], platform: '', host: '', database, sqlSource });
+
+test('one profile matches the file: F5 auto-picks it, runs with no picker, and does not store it as a pick', async () => {
+  api.setProfiles([prof(PROFILE, WS, DATABASE), prof('ELSEWHERE', path.dirname(OUTSIDE), 'x')]);
+  try {
+    const n = api.log.length;
+    await setTarget(undefined, undefined, undefined);
+    await open(INSIDE);
+    assert.match(logSince(n), /profile auto-picked: \S+ \(matched SQL_SOURCE /);
+    assert.match(api.status().profile, new RegExp(PROFILE));
+    assert.strictEqual(api.statusTooltip().profile, `matched SQL_SOURCE ${WS}`);
+    await runAndExpectSuccess(`runsql inside.sql -> ${DATABASE} on ${PROFILE}`);
+    assert.strictEqual(api.quickPick(), undefined, 'a picker opened');
+    assert.strictEqual(api.state.get('compilers.profile'), undefined);
+  } finally {
+    api.setProfiles(undefined);
+  }
+}, 'folder');
+
+test('two profiles match the file and none is picked: the picker opens with both on top', async () => {
+  api.setProfiles([prof('ELSE_PROFILE', '', 'x'), prof('SECOND_MATCH', DIR, 'x'), prof(PROFILE, WS, DATABASE)]);
+  try {
+    await setTarget(undefined, undefined, undefined);
+    await open(INSIDE);
+    const done = vscode.commands.executeCommand('compilers.run');
+    const qp = await waitFor('profile Quick Pick', () => api.quickPick());
+    assert.deepStrictEqual(qp.items.slice(0, 2).map((i) => i.label), [PROFILE, 'SECOND_MATCH']);
+    assert.ok(qp.items.slice(0, 2).every((i) => /\(this folder\)/.test(i.description)), JSON.stringify(qp.items));
+    assert.strictEqual(qp.items[2].kind, vscode.QuickPickItemKind.Separator);
+    assert.strictEqual(qp.items[3].label, 'ELSE_PROFILE');
+    assert.doesNotMatch(qp.items[3].description || '', /this folder/);
+    await vscode.commands.executeCommand('workbench.action.closeQuickOpen');
+    await done;
+    assert.strictEqual(api.state.get('compilers.profile'), undefined);
+  } finally {
+    api.setProfiles(undefined);
+  }
+}, 'folder');
+
+test('an explicit pick is not overridden by a matching profile; one line suggests the match', async () => {
+  api.setProfiles([prof(PROFILE, path.dirname(OUTSIDE), DATABASE), prof('MATCHING', WS, 'x')]);
+  try {
+    await setTarget(PROFILE, undefined, undefined);
+    await open(INSIDE);
+    const out = await runAndExpectSuccess(`runsql inside.sql -> ${DATABASE} on ${PROFILE}`);
+    assert.strictEqual(api.quickPick(), undefined, 'a picker opened');
+    assert.strictEqual(api.state.get('compilers.profile'), PROFILE);
+    assert.match(out, new RegExp(`profile ${PROFILE} \\(SQL_SOURCE .*\\) does not contain .*; MATCHING matches`));
+    assert.doesNotMatch(out, /auto-picked/);
+  } finally {
+    api.setProfiles(undefined);
+  }
+}, 'folder');
+
 test('first F5 with nothing set asks for profile, then database (profile has none), then runs the file (exit 0)', async () => {
   api.setProfiles([{ name: PROFILE, aliases: [], platform: '', host: '', database: '' }]);
   await setTarget(undefined, undefined, undefined);

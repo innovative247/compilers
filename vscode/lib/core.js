@@ -30,6 +30,7 @@ function parseProfiles(text) {
         platform: String(ci(p, 'PLATFORM') || ''),
         host: String(ci(p, 'HOST') || ''),
         database: String(ci(p, 'DATABASE') || ''),
+        sqlSource: String(ci(p, 'SQL_SOURCE') || '').trim(),
       };
     })
     .sort((a, b) => a.name.localeCompare(b.name));
@@ -52,6 +53,45 @@ function pickedFor(map, profile) {
   if (!map || typeof map !== 'object' || !profile) return '';
   const key = Object.keys(map).find((k) => k.toLowerCase() === String(profile).toLowerCase());
   return key === undefined ? '' : String(map[key] || '');
+}
+
+// ---- matching profiles to a source folder -----------------------------------
+
+/**
+ * Absolute path with one slash style, no trailing separator (except a root), lower-cased on Windows. '' when the
+ * path is empty or not absolute for that platform. `platform` is process.platform's value; tests pass it.
+ */
+function normalizePath(p, platform) {
+  const win = platform === 'win32';
+  const api = win ? path.win32 : path.posix;
+  const raw = String(p || '').trim();
+  if (!raw || !api.isAbsolute(raw)) return '';
+  let s = api.normalize(raw);
+  const root = api.parse(s).root;
+  while (s.length > root.length && s.endsWith(api.sep)) s = s.slice(0, -1);
+  return win ? s.toLowerCase() : s;
+}
+
+/** True when `file` is `dir` or lies under it, compared by whole path segments. */
+function isInside(file, dir, platform) {
+  const f = normalizePath(file, platform);
+  const d = normalizePath(dir, platform);
+  if (!f || !d) return false;
+  const sep = platform === 'win32' ? path.win32.sep : path.posix.sep;
+  return f === d || f.startsWith(d.endsWith(sep) ? d : d + sep);
+}
+
+/**
+ * Profiles whose SQL_SOURCE contains `file`: deepest SQL_SOURCE first, then the order of `profiles`. Profiles with
+ * an empty SQL_SOURCE never match.
+ */
+function matchProfiles(profiles, file, platform) {
+  const sep = platform === 'win32' ? '\\' : '/';
+  return (profiles || [])
+    .filter((p) => p.sqlSource && isInside(file, p.sqlSource, platform))
+    .map((p, i) => ({ p, i, depth: normalizePath(p.sqlSource, platform).split(sep).length }))
+    .sort((a, b) => b.depth - a.depth || a.i - b.i)
+    .map((x) => x.p);
 }
 
 // ---- locating the install ---------------------------------------------------
@@ -233,6 +273,6 @@ function sweepStale(dir, fs, now, maxAgeMs) {
 const PROBLEM_RE = '^(.+?):(\\d+):(\\d+): (error|warning): (.*)$';
 
 module.exports = {
-  parseProfiles, resolveDatabase, pickedFor, findOnPath, settingsPathFor, buildInvocation, matchesExtension, pushRecent,
+  parseProfiles, normalizePath, isInside, matchProfiles, resolveDatabase, pickedFor, findOnPath, settingsPathFor, buildInvocation, matchesExtension, pushRecent,
   createScanner, parseErrors, formatProblem, isToolSubcommand, selectionTooLong, sweepStale, PROBLEM_RE,
 };

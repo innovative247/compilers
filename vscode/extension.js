@@ -19,6 +19,7 @@ let output;
 let taskSeq = 0;
 let currentPick;
 let profilesOverride; // test hook only
+let auto; // { name, source }: the profile matched to the active file while none is picked
 const testLog = [];
 
 const cfg = () => vscode.workspace.getConfiguration('compilers');
@@ -77,16 +78,44 @@ function databaseFor(profile) {
 
 /** Status bar: the profile and database, or a warning-coloured prompt for whichever is missing. */
 function refreshStatus() {
-  const profile = ctx.workspaceState.get(KEY_PROFILE);
+  syncAuto(matchBase(activeFile()));
+  const picked = ctx.workspaceState.get(KEY_PROFILE);
+  const profile = picked || (auto && auto.name);
   const { database: db, source } = databaseFor(profile);
   const warn = new vscode.ThemeColor('statusBarItem.warningBackground');
   statusProfile.text = profile ? `$(database) ${profile}` : '$(warning) Compilers: pick a profile';
   statusProfile.backgroundColor = profile ? undefined : warn;
+  statusProfile.tooltip = !picked && auto ? `matched SQL_SOURCE ${auto.source}` : 'Compilers profile (click to change)';
   statusDb.text = db ? `$(symbol-namespace) ${db}` : '$(warning) Compilers: pick a database';
   statusDb.backgroundColor = db ? undefined : warn;
   statusDb.tooltip = source === 'profile' ? `from profile ${profile}` : 'Compilers database (click to change)';
   statusProfile.show();
   statusDb.show();
+}
+
+/** Profiles whose SQL_SOURCE contains `base` (a file or folder path), deepest first. */
+const matchesFor = (base) => core.matchProfiles(loadProfiles().profiles, base, process.platform);
+
+/** The path to match on: the file, else the first workspace folder (an untitled editor has no file). */
+function matchBase(file) {
+  if (file) return file;
+  const f = vscode.workspace.workspaceFolders;
+  return f && f.length ? f[0].uri.fsPath : '';
+}
+
+/** The saved file of the active editor, or ''. */
+function activeFile() {
+  const ed = targetEditor();
+  return ed && ed.document.uri.scheme === 'file' ? ed.document.fileName : '';
+}
+
+/** While no profile is picked, `auto` is the one profile matching `base`, else undefined. Logs when it changes. */
+function syncAuto(base) {
+  if (ctx.workspaceState.get(KEY_PROFILE)) { auto = undefined; return; }
+  const m = matchesFor(base);
+  const next = m.length === 1 ? { name: m[0].name, source: m[0].sqlSource } : undefined;
+  if (next && (!auto || auto.name !== next.name)) log(`profile auto-picked: ${next.name} (matched SQL_SOURCE ${next.source})`);
+  auto = next;
 }
 
 function isScript(doc) {
@@ -113,6 +142,7 @@ function targetEditor() {
 function updateContext() {
   const ed = targetEditor();
   vscode.commands.executeCommand('setContext', CONTEXT_KEY, !!ed && isScript(ed.document));
+  refreshStatus();
 }
 
 /**
@@ -160,7 +190,7 @@ function pickOne({ title, placeholder, items, allowTyped }) {
   });
 }
 
-async function pickProfile() {
+async function pickProfile(file) {
   const { profiles, error } = loadProfiles();
   if (error || !profiles.length) {
     const why = error || 'No profiles in the Compilers settings.json.';
@@ -169,12 +199,17 @@ async function pickProfile() {
     return undefined;
   }
   const current = ctx.workspaceState.get(KEY_PROFILE);
-  const items = profiles.map((p) => ({
+  const matched = core.matchProfiles(profiles, matchBase(file), process.platform);
+  const item = (p, here) => ({
     label: p.name,
-    description: p.aliases.length ? `aliases: ${p.aliases.join(', ')}` : '',
+    description: [here ? '(this folder)' : '', p.aliases.length ? `aliases: ${p.aliases.join(', ')}` : ''].filter(Boolean).join('  '),
     detail: [p.platform, p.host].filter(Boolean).join('  '),
     picked: p.name === current,
-  }));
+  });
+  const others = profiles.filter((p) => !matched.includes(p)).map((p) => item(p, false));
+  const items = matched.map((p) => item(p, true));
+  if (items.length && others.length) items.push({ label: '', kind: vscode.QuickPickItemKind.Separator });
+  items.push(...others);
   const pick = await pickOne({ title: 'Compilers profile', placeholder: 'Pick the profile to run against', items });
   log(`profile pick: ${pick || '(cancelled)'}`);
   if (!pick) return undefined;
@@ -184,7 +219,7 @@ async function pickProfile() {
 }
 
 async function pickDatabase() {
-  const profile = ctx.workspaceState.get(KEY_PROFILE);
+  const profile = ctx.workspaceState.get(KEY_PROFILE) || (auto && auto.name);
   const recent = (ctx.workspaceState.get(KEY_RECENT) || {})[profile] || [];
   const found = profileEntry(profile);
   const own = found && found.database ? found.database : '';
@@ -212,14 +247,34 @@ async function pickDatabase() {
 
 async function changeProfile() {
   const before = ctx.workspaceState.get(KEY_PROFILE);
-  const p = await pickProfile();
+  const p = await pickProfile(activeFile());
   if (p && p !== before && !databaseFor(p).database) await pickDatabase();
 }
 
+/**
+ * The profile for a run on `file`: an explicit pick always wins (with a log line when another profile's SQL_SOURCE
+ * holds the file); else the single matching profile; else the picker, matches on top.
+ */
+async function profileForRun(file) {
+  const stored = ctx.workspaceState.get(KEY_PROFILE);
+  syncAuto(matchBase(file));
+  if (stored) {
+    const m = matchesFor(matchBase(file));
+    if (m.length && !m.some((p) => p.name.toLowerCase() === String(stored).toLowerCase())) {
+      const own = profileEntry(stored);
+      log(`profile ${stored} (SQL_SOURCE ${(own && own.sqlSource) || 'none'}) does not contain ${matchBase(file)}; ` +
+        `${m[0].name} matches (SQL_SOURCE ${m[0].sqlSource}). Running with ${stored}.`);
+    }
+    return stored;
+  }
+  const matched = auto;
+  refreshStatus();
+  return matched ? matched.name : pickProfile(file);
+}
+
 /** Both targets, prompting for whichever is unset. undefined when the user cancels. */
-async function ensureTarget() {
-  let profile = ctx.workspaceState.get(KEY_PROFILE);
-  if (!profile) profile = await pickProfile();
+async function ensureTarget(file) {
+  const profile = await profileForRun(file);
   if (!profile) return undefined;
   let database = databaseFor(profile).database;
   if (!database) database = await pickDatabase();
@@ -335,7 +390,7 @@ async function runFile(uri) {
     doc = ed.document;
   }
   if (doc.isUntitled || doc.uri.scheme !== 'file') return vscode.window.showWarningMessage('Save the file to disk first.');
-  const target = await ensureTarget();
+  const target = await ensureTarget(doc.fileName);
   if (!target) return;
   if (doc.isDirty && !(await doc.save())) return;
   await runTask(`runsql ${path.basename(doc.fileName)} -> ${target.database} on ${target.profile}`, 'file',
@@ -345,7 +400,7 @@ async function runFile(uri) {
 async function runSelection(ed = sqlEditor()) {
   if (!ed) return;
   if (ed.selection.isEmpty) return vscode.window.showWarningMessage('Select the SQL to run.');
-  const target = await ensureTarget();
+  const target = await ensureTarget(ed.document.uri.scheme === 'file' ? ed.document.fileName : '');
   if (!target) return;
   const text = ed.document.getText(ed.selection);
   if (core.isToolSubcommand(text)) return vscode.window.showWarningMessage(`"${text.trim()}" would be read as a Compilers command, not SQL. Select more of the statement.`);
@@ -368,7 +423,7 @@ async function runCreate(uri) {
   const ed = targetEditor();
   const file = uri instanceof vscode.Uri ? uri.fsPath : ed && ed.document.fileName;
   if (!file) return vscode.window.showWarningMessage('Pick a create file first.');
-  const profile = ctx.workspaceState.get(KEY_PROFILE) || (await pickProfile());
+  const profile = await profileForRun(file);
   if (!profile) return;
   const doc = vscode.workspace.textDocuments.find((d) => d.fileName === file);
   if (doc && doc.isDirty && !(await doc.save())) return;
@@ -398,7 +453,7 @@ function activate(context) {
     command('compilers.runCreate', runCreate),
     command('compilers.pickProfile', changeProfile),
     command('compilers.pickDatabase', async () => {
-      if (!ctx.workspaceState.get(KEY_PROFILE) && !(await pickProfile())) return;
+      if (!ctx.workspaceState.get(KEY_PROFILE) && !auto && !(await pickProfile(activeFile()))) return;
       await pickDatabase();
     }),
     vscode.window.onDidChangeActiveTextEditor(updateContext),
