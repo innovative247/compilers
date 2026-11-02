@@ -31,8 +31,9 @@ namespace ibsCompiler
             // when no headless flag is provided.
             var argList = args.ToList();
             if (CliArgs.AnyPresent(argList,
-                    "--create", "--edit", "--view", "--copy", "--delete", "--test",
-                    "--share", "--unshare", "--shared", "--fetch", "--shared-status", "--install-vscode"))
+                    new[] { "--create", "--edit", "--view", "--copy", "--delete", "--test",
+                            "--share", "--unshare", "--shared", "--fetch", "--shared-status" }
+                        .Concat(IdeRegistry.HeadlessFlags).ToArray()))
             {
                 return RunHeadless(argList);
             }
@@ -66,9 +67,9 @@ namespace ibsCompiler
             "--test",
             "--yes",
             "--rebuild", "--rebuild-cache",
-            "--shared", "--shared-status", "--refresh", "--install-vscode",
+            "--shared", "--shared-status", "--refresh",
             "--accept-all", "--accept-none", "--no-password", "--dry-run",
-        };
+        }.Concat(IdeRegistry.HeadlessFlags).ToArray();
 
         #region Icons
         private static class Icons
@@ -116,7 +117,7 @@ namespace ibsCompiler
             Console.WriteLine(text);
         }
 
-        private static void PrintSuccess(string text)
+        internal static void PrintSuccess(string text)
         {
             var prev = Console.ForegroundColor;
             Console.ForegroundColor = ConsoleColor.Green;
@@ -124,7 +125,7 @@ namespace ibsCompiler
             Console.ForegroundColor = prev;
         }
 
-        private static void PrintError(string text)
+        internal static void PrintError(string text)
         {
             var prev = Console.ForegroundColor;
             Console.ForegroundColor = ConsoleColor.Red;
@@ -247,7 +248,7 @@ namespace ibsCompiler
                 Console.WriteLine();
                 PrintMenu(1, "New profile");
                 PrintMenu(2, "Existing profile");
-                PrintMenu(3, "Add to IDE");
+                PrintMenu(3, "IDE Integration");
                 PrintMenu(4, "Open settings.json");
                 PrintMenu(5, "Shared profiles");
                 PrintMenu(99, "Exit");
@@ -275,7 +276,7 @@ namespace ibsCompiler
                 {
                     case "1": CreateProfile(); break;
                     case "2": ExistingProfileMenu(); break;
-                    case "3": AddToIdeMenu(); break;
+                    case "3": IdeIntegrationMenu(); break;
                     case "4": OpenSettingsJson(); break;
                     case "5": SharedProfilesMenu(); break;
                     case "99":
@@ -1840,157 +1841,6 @@ namespace ibsCompiler
         }
         #endregion
 
-        #region Add to IDE
-        private static void AddToIdeMenu()
-        {
-            Console.WriteLine();
-            PrintSubheader("Add to IDE");
-            Console.WriteLine();
-            PrintMenu(1, "Add to VS Code (install or update)");
-            PrintMenu(98, "Back");
-            PrintMenu(99, "Exit");
-
-            // Interactive TTY → deferred 'Choice:' entry; redirected → plain ReadLine.
-            string? choice;
-            if (Console.IsInputRedirected || Console.IsOutputRedirected)
-            {
-                ConsoleMenu.WritePrompt("\nChoose [1]: ");
-                choice = Console.ReadLine()?.Trim();
-            }
-            else
-            {
-                Console.WriteLine();
-                // Add to VS Code is the only real action on this menu — obvious default.
-                choice = ConsoleMenu.ReadDeferredChoice(defaultChoice: "1");
-                if (string.IsNullOrEmpty(choice)) return; // Esc → Back
-            }
-
-            switch (choice)
-            {
-                case "1": AddToVscode(); break;
-                case "98": return;
-                case "99": Environment.Exit(0); break;
-                default: Console.WriteLine("Invalid choice."); break;
-            }
-        }
-
-        /// <summary>Menu action: install the bundled VS Code extension.</summary>
-        private static void AddToVscode()
-        {
-            Console.WriteLine();
-            PrintSubheader("Add to VS Code (install or update)");
-            Console.WriteLine();
-            InstallVscodeExtension();
-        }
-
-        /// <summary>
-        /// Installs compilers.vsix (shipped beside the exe) into VS Code through its CLI.
-        /// Shared by the menu and <c>set_profile --install-vscode</c>. Returns 0 on success.
-        /// </summary>
-        private static int InstallVscodeExtension()
-        {
-            var exeDir = Path.GetDirectoryName(Environment.ProcessPath) ?? AppContext.BaseDirectory;
-            var vsix = Path.Combine(exeDir, "compilers.vsix");
-            if (!File.Exists(vsix))
-            {
-                PrintError($"compilers.vsix not found beside the program ({exeDir}). Reinstall or update the Compilers.");
-                return 1;
-            }
-
-            var code = FindVscodeCli();
-            if (code == null)
-            {
-                PrintError("VS Code not found: no 'code' command on PATH or in the usual install folders.");
-                return 1;
-            }
-
-            var psi = new ProcessStartInfo
-            {
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-            };
-            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-            {
-                // code.cmd is a batch file: it needs cmd.exe. The outer quotes are cmd's /c rule.
-                psi.FileName = "cmd.exe";
-                psi.Arguments = $"/c \"\"{code}\" --install-extension \"{vsix}\" --force\"";
-            }
-            else
-            {
-                psi.FileName = code;
-                psi.ArgumentList.Add("--install-extension");
-                psi.ArgumentList.Add(vsix);
-                psi.ArgumentList.Add("--force");
-            }
-
-            try
-            {
-                using var proc = Process.Start(psi);
-                if (proc == null) { PrintError($"Could not start {code}."); return 1; }
-                var stdout = proc.StandardOutput.ReadToEndAsync();
-                var stderr = proc.StandardError.ReadToEndAsync();
-                if (!proc.WaitForExit(120_000))
-                {
-                    try { proc.Kill(true); } catch { }
-                    PrintError("VS Code did not finish installing the extension within 120 seconds.");
-                    return 1;
-                }
-                var output = (stdout.Result + stderr.Result).Trim();
-                if (output.Length > 0) Console.WriteLine(output);
-                if (proc.ExitCode != 0)
-                {
-                    PrintError($"VS Code could not install the extension (exit {proc.ExitCode}).");
-                    return 1;
-                }
-            }
-            catch (Exception ex)
-            {
-                PrintError($"Could not run VS Code: {ex.Message}");
-                return 1;
-            }
-
-            Console.WriteLine();
-            PrintSuccess($"VS Code extension {VersionInfo.Version} installed.");
-            Console.WriteLine("In VS Code: F5 runs the file or selection; pick profile/database from the status bar.");
-            return 0;
-        }
-
-        /// <summary>Finds the VS Code command-line launcher, or null when VS Code is not installed.</summary>
-        private static string? FindVscodeCli()
-        {
-            var isWindows = RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
-            var launcher = isWindows ? "code.cmd" : "code";
-
-            foreach (var dir in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator))
-            {
-                if (string.IsNullOrWhiteSpace(dir)) continue;
-                try
-                {
-                    var candidate = Path.Combine(dir.Trim().Trim('"'), launcher);
-                    if (File.Exists(candidate)) return candidate;
-                }
-                catch (ArgumentException) { }
-            }
-
-            if (isWindows)
-            {
-                var roots = new[]
-                {
-                    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs"),
-                    Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
-                };
-                foreach (var root in roots)
-                {
-                    if (string.IsNullOrEmpty(root)) continue;
-                    var candidate = Path.Combine(root, "Microsoft VS Code", "bin", "code.cmd");
-                    if (File.Exists(candidate)) return candidate;
-                }
-            }
-            return null;
-        }
-        #endregion
-
         #region Open Settings
         private static void OpenSettingsJson()
         {
@@ -2095,7 +1945,15 @@ namespace ibsCompiler
             var fetchName   = CliArgs.GetOption(args, "--fetch");
             var listShared  = CliArgs.HasFlag(args, "--shared");
             var sharedStatus = CliArgs.HasFlag(args, "--shared-status");
-            var installVscode = CliArgs.HasFlag(args, "--install-vscode");
+            // IDE integrations: --install-<stem> / --remove-<stem> come from the registry.
+            var ideActions = new List<(string Flag, Func<int> Run)>();
+            foreach (var ide in IdeRegistry.All)
+            {
+                if (CliArgs.HasFlag(args, IdeRegistry.InstallFlag(ide))) ideActions.Add((IdeRegistry.InstallFlag(ide), ide.Install));
+                if (CliArgs.HasFlag(args, IdeRegistry.RemoveFlag(ide))) ideActions.Add((IdeRegistry.RemoveFlag(ide), ide.Remove));
+            }
+            var flagList = "--create, --edit, --view, --copy, --delete, --test, --share, --unshare, --shared, --shared-status, --fetch, "
+                + string.Join(", ", IdeRegistry.HeadlessFlags);
 
             int primary = 0;
             if (createName != null) primary++;
@@ -2109,15 +1967,15 @@ namespace ibsCompiler
             if (fetchName != null)   primary++;
             if (listShared)          primary++;
             if (sharedStatus)        primary++;
-            if (installVscode)       primary++;
+            primary += ideActions.Count;
             if (primary > 1)
             {
-                Console.Error.WriteLine("ERROR: --create, --edit, --view, --copy, --delete, --test, --share, --unshare, --shared, --shared-status, --fetch, --install-vscode are mutually exclusive.");
+                Console.Error.WriteLine($"ERROR: {flagList} are mutually exclusive.");
                 return 1;
             }
             if (primary == 0)
             {
-                Console.Error.WriteLine("ERROR: headless mode requires one of --create, --edit, --view, --copy, --delete, --test, --share, --unshare, --shared, --shared-status, --fetch, --install-vscode.");
+                Console.Error.WriteLine($"ERROR: headless mode requires one of {flagList}.");
                 return 1;
             }
 
@@ -2132,7 +1990,7 @@ namespace ibsCompiler
             if (fetchName != null)   return FetchHeadless(fetchName, args);
             if (listShared)          return SharedListHeadless(args);
             if (sharedStatus)        return SharedStatusHeadless();
-            if (installVscode)       return InstallVscodeExtension();
+            if (ideActions.Count == 1) return ideActions[0].Run();
             return 1;
         }
 
