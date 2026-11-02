@@ -1846,7 +1846,7 @@ namespace ibsCompiler
             Console.WriteLine();
             PrintSubheader("Add to IDE");
             Console.WriteLine();
-            PrintMenu(1, "Add to VS Code");
+            PrintMenu(1, "Add to VS Code (install or update)");
             PrintMenu(98, "Back");
             PrintMenu(99, "Exit");
 
@@ -1878,7 +1878,7 @@ namespace ibsCompiler
         private static void AddToVscode()
         {
             Console.WriteLine();
-            PrintSubheader("Add to VS Code");
+            PrintSubheader("Add to VS Code (install or update)");
             Console.WriteLine();
             InstallVscodeExtension();
         }
@@ -1951,7 +1951,7 @@ namespace ibsCompiler
             }
 
             Console.WriteLine();
-            PrintSuccess("VS Code extension installed.");
+            PrintSuccess($"VS Code extension {VersionInfo.Version} installed.");
             Console.WriteLine("In VS Code: F5 runs the file or selection; pick profile/database from the status bar.");
             return 0;
         }
