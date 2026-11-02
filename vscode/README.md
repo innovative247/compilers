@@ -4,10 +4,12 @@ Run the SQL you are editing with the Compilers, without leaving the editor.
 
 ## What it does
 
-- **F5** in a SQL editor runs the selection (with `isqlline`) or, when nothing is selected, saves and runs the whole file (with `runsql`).
+- **F5** runs the selection (with `isqlline`) or, when nothing is selected, saves and runs the whole file (with `runsql`) whenever the active editor is a SQL file, even when focus is in the terminal, the Problems or Output panel or the status bar. On a SQL file F5 never starts the debugger. The extension adds `compilers.run` to `terminal.integrated.commandsToSkipShell` by default so F5 in the terminal reaches it; if you set that setting yourself, add `compilers.run` to your list.
 - **Compilers: Run file**, **Compilers: Run selection** and **Compilers: Run create file (runcreate)** are in the Command Palette and the editor right-click menu. Run create file is also in the Explorer right-click menu.
 - The status bar shows the current **profile** and **database**. Click either to change it. Profiles come from the Compilers `settings.json`, with their aliases. The database list remembers what you used per profile, and you can type any name. You are asked for both the first time you run something.
-- Output streams in the terminal panel, so password prompts still work. Server errors also appear in **Problems**.
+- The status bar shows a warning-coloured **pick a profile** / **pick a database** while either is unset.
+- Output streams in the terminal panel, which opens and takes focus when a run starts, so password prompts still work. Server errors also appear in **Problems**.
+- The **Compilers** output channel logs every command, the profile, database and command line used (without the SQL text), and when each run starts and ends with its exit code. Any failure is also shown as an error message.
 
 ## About error lines
 
@@ -26,6 +28,10 @@ The server reports `Line N` counted from the start of the `GO` batch (or the pro
 |---|---|
 | `compilers.installPath` | Folder that holds `runsql` and `settings.json`. Empty means the one on PATH. |
 | `compilers.fileExtensions` | Extra extensions treated as Compilers scripts for F5 and the menu. Default `[".sql"]`. |
+
+## Tests
+
+`npm test` runs the unit tests. `npm run test:integration` starts a real VS Code with its own user-data and extensions folders (see the header of `test/integration/run.js` for the environment variables) and runs `select` scripts against `SRM_LOCAL` / `master` by default.
 
 ## Requirements
 

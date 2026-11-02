@@ -1,5 +1,6 @@
 'use strict';
 // Task runner: runner.js <kind> <diagFile|-> <diagLine> <batchOffset> <command> [args...]
+// The same list may come as a JSON array in COMPILERS_RUNNER_ARGS instead (Windows, via runner.cmd, so no cmd quoting).
 // Runs the compiler with -O to a temp file and echoes that file to the terminal (so the compiler keeps the
 // terminal for prompts), then prints one "<file>:<line>:1: error: ..." line per server error for $compilers.
 const fs = require('fs');
@@ -9,7 +10,10 @@ const { StringDecoder } = require('string_decoder');
 const { spawn } = require('child_process');
 const { createScanner, formatProblem } = require('./lib/core');
 
-const [kind, diagFile, diagLine, batchOffset, command, ...args] = process.argv.slice(2);
+const argv = process.env.COMPILERS_RUNNER_ARGS ? JSON.parse(process.env.COMPILERS_RUNNER_ARGS) : process.argv.slice(2);
+delete process.env.COMPILERS_RUNNER_ARGS;
+delete process.env.ELECTRON_RUN_AS_NODE;
+const [kind, diagFile, diagLine, batchOffset, command, ...args] = argv;
 const tmp = path.join(os.tmpdir(), `compilers-out-${process.pid}-${Date.now()}.txt`);
 // runcreate writes <outfile>.out (and creates <outfile>.err); the others write the file itself.
 const outPath = kind === 'create' ? tmp + '.out' : tmp;

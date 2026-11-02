@@ -9,8 +9,21 @@
   "engines": { "vscode": "^1.85.0" },
   "categories": ["Other"],
   "main": "./extension.js",
-  "scripts": { "test": "node --test test/*.test.js" },
-  "activationEvents": ["onStartupFinished"],
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "test:integration": "node test/integration/run.js"
+  },
+  "activationEvents": [
+    "onLanguage:sql",
+    "onStartupFinished",
+    "onCommand:compilers.run",
+    "onCommand:compilers.runFile",
+    "onCommand:compilers.runSelection",
+    "onCommand:compilers.runCreate",
+    "onCommand:compilers.pickProfile",
+    "onCommand:compilers.pickDatabase"
+  ],
+  "devDependencies": { "@vscode/test-electron": "^3.1.0" },
   "contributes": {
     "commands": [
       { "command": "compilers.run", "title": "Compilers: Run selection or file" },
@@ -21,12 +34,12 @@
       { "command": "compilers.pickDatabase", "title": "Compilers: Change database" }
     ],
     "keybindings": [
-      { "command": "compilers.run", "key": "f5", "when": "editorTextFocus && (editorLangId == sql || compilers.sbnFile)" }
+      { "command": "compilers.run", "key": "f5", "when": "compilers.sqlEditorActive || editorTextFocus && editorLangId == sql" }
     ],
     "menus": {
       "editor/context": [
-        { "command": "compilers.runFile", "when": "editorLangId == sql || compilers.sbnFile", "group": "compilers@1" },
-        { "command": "compilers.runSelection", "when": "(editorLangId == sql || compilers.sbnFile) && editorHasSelection", "group": "compilers@2" },
+        { "command": "compilers.runFile", "when": "editorLangId == sql || compilers.sqlEditorActive", "group": "compilers@1" },
+        { "command": "compilers.runSelection", "when": "(editorLangId == sql || compilers.sqlEditorActive) && editorHasSelection", "group": "compilers@2" },
         { "command": "compilers.runCreate", "when": "resourceScheme == file", "group": "compilers@3" }
       ],
       "explorer/context": [
@@ -35,6 +48,9 @@
       "commandPalette": [
         { "command": "compilers.runSelection", "when": "editorHasSelection" }
       ]
+    },
+    "configurationDefaults": {
+      "terminal.integrated.commandsToSkipShell": ["compilers.run"]
     },
     "configuration": {
       "title": "Compilers",
@@ -69,7 +85,7 @@
       }
     ],
     "taskDefinitions": [
-      { "type": "compilers", "properties": { "kind": { "type": "string" } } }
+      { "type": "compilers", "properties": { "kind": { "type": "string" }, "id": { "type": "string" } } }
     ]
   }
 }
