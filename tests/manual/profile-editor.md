@@ -187,8 +187,9 @@ plain `Choose [..]:` / `Select [..]:` ReadLine prompts unchanged.
       refreshed state; 98 or Esc = Back to the Main Menu. Add prints `installed` / `updated from X`
       only after the version is verified; Remove of a not-installed extension reports it and succeeds.
 - [ ] **IDE not detected** — on a machine without VS Code (or with `code` off PATH), Main Menu → 3
-      shows `No supported IDE detected (VS Code).` with only `98 Back / 99 Exit`; Main Menu keeps
-      plain `IDE Integration`.
+      shows `No supported IDE detected`, then `1 Add to VS Code` / `2 Remove from VS Code` in
+      **dark grey** (number and label), then `98 Back / 99 Exit`. Choosing 1 or 2 prints `VS Code is not detected on
+      this machine.` and stays in this menu; Main Menu keeps plain `IDE Integration`.
 - [ ] **IDE update flag (real TTY)** — install an older build of the extension (or set
       `VSCODE_EXTENSIONS` to a scratch folder holding an `extensions.json` with
       `innovative247.compilers` at an older version), run `set_profile`: Main Menu item 3 reads

@@ -2964,7 +2964,7 @@ function Test-SharedProfiles {
     # Fast IDE-version probe (disk only, no `code` spawn): fabricate the extensions dir and
     # drive the menus through piped input. Redirected runs cannot show colour, so assert text.
     function Invoke-IdeProbeCase {
-        param([string]$Name, [string[]]$Folders, [string]$ManifestVersion, [switch]$NotDetected)
+        param([string]$Name, [string[]]$Folders, [string]$ManifestVersion, [switch]$NotDetected, [string]$MenuInput = "3`n98`n99`n")
         $props = [xml](Get-Content -Raw (Join-Path $PSScriptRoot '..\src\Directory.Build.props'))
         $cur = [string]($props.Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1)
         $dir = Join-Path $script:Scratch "vscode-probe-$Name"
@@ -2982,7 +2982,7 @@ function Test-SharedProfiles {
         if (-not $NotDetected) { Set-Content -Path (Join-Path $bin 'code.cmd') -Value '@echo off' }
         $saved = $env:VSCODE_EXTENSIONS; $savedProbe = $env:COMPILERS_IDE_PROBE_PATHS
         $env:VSCODE_EXTENSIONS = $dir; $env:COMPILERS_IDE_PROBE_PATHS = $bin
-        try { $r = Invoke-SetProfileMenu "3`n98`n99`n" } finally { $env:VSCODE_EXTENSIONS = $saved; $env:COMPILERS_IDE_PROBE_PATHS = $savedProbe }
+        try { $r = Invoke-SetProfileMenu $MenuInput } finally { $env:VSCODE_EXTENSIONS = $saved; $env:COMPILERS_IDE_PROBE_PATHS = $savedProbe }
         [pscustomobject]@{ Out = $r.Out; Cur = $cur }
     }
 
@@ -3005,10 +3005,17 @@ function Test-SharedProfiles {
     }
 
     Test-Case 'set_profile.ide_menu_not_detected' {
-        # Extension state on disk is older, but the IDE itself is not detected: no items, no flag.
-        $x = Invoke-IdeProbeCase 'undetected' @('0.0.1') '0.0.1' -NotDetected
-        if ($x.Out -notmatch 'No supported IDE detected \(VS Code\)\.') { throw "expected the no-IDE line. out: $($x.Out)" }
-        if ($x.Out -match 'Add to VS Code|Remove from VS Code|update available') { throw "undetected IDE must not be offered or flagged. out: $($x.Out)" }
+        # Extension state on disk is older, but the IDE itself is not detected: items listed but
+        # disabled (plain labels, no version, no flag); choosing one says so and stays in the menu.
+        $x = Invoke-IdeProbeCase 'undetected' @('0.0.1') '0.0.1' -NotDetected -MenuInput "3`n1`n2`n98`n99`n"
+        if ($x.Out -notmatch '(?m)^No supported IDE detected\s*$') { throw "expected the no-IDE header. out: $($x.Out)" }
+        if ($x.Out -notmatch '1\.\s+Add to VS Code\s*\r?\n') { throw "expected a plain (disabled) 'Add to VS Code'. out: $($x.Out)" }
+        if ($x.Out -notmatch '2\.\s+Remove from VS Code') { throw "expected a disabled 'Remove from VS Code'. out: $($x.Out)" }
+        if ($x.Out -match 'update available|update to|installed 0\.0\.1') { throw "undetected IDE must not be flagged. out: $($x.Out)" }
+        if ($x.Out -match 'VS Code not found|compilers\.vsix not found') { throw "a disabled item must not run its action. out: $($x.Out)" }
+        if ([regex]::Matches($x.Out, 'VS Code is not detected on this machine\.').Count -ne 2) { throw "expected the not-detected message for 1 and 2. out: $($x.Out)" }
+        $i = $x.Out.LastIndexOf('VS Code is not detected on this machine.')
+        if ($x.Out.Substring($i) -notmatch '(?m)^IDE Integration\s*$') { throw "IDE menu must be shown again after a disabled choice. out: $($x.Out)" }
         if ($x.Out -notmatch '3\.\s+IDE Integration\s*\r?\n') { throw "main menu keeps a plain 'IDE Integration'. out: $($x.Out)" }
         if ($x.Out -notmatch '98\.\s+Back') { throw "expected 98 Back. out: $($x.Out)" }
     }
