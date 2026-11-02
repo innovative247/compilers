@@ -410,7 +410,9 @@ namespace ibsCompiler
     {
         /// <summary>
         /// The "IDE Integration" menu, generated from <see cref="IdeRegistry"/>: two numbered
-        /// items per IDE (Add, Remove), then 98 Back and 99 Exit. An invalid choice stays here.
+        /// items per IDE (Add, Remove), then 98 Back and 99 Exit. Every registered IDE is listed so the
+        /// menu shows what the Compilers support; an IDE not detected here has its items dimmed and
+        /// not selectable (choosing one says so). An invalid or disabled choice stays here.
         /// </summary>
         private static void IdeIntegrationMenu()
         {
@@ -421,22 +423,35 @@ namespace ibsCompiler
                 Console.WriteLine();
 
                 var ides = IdeRegistry.All;
+                var probes = ides.Select(i => IdeStatus.Get(i, 200)).ToArray();
                 var actions = new Dictionary<string, Func<int>>();
-                var n = 1;
-                foreach (var ide in ides)
+                var disabled = new Dictionary<string, IIdeIntegration>();
+                if (!probes.Any(p => p.Detected))
                 {
-                    var probe = IdeStatus.Get(ide, 200);
-                    if (!probe.Detected) continue; // only offer IDEs that are installed here
-                    var installed = probe.Version;
-                    PrintMenu(n, AddLabel(ide, installed), IdeStatus.IsOutOfDate(installed) ? ConsoleColor.Yellow : null);
-                    actions[n.ToString()] = ide.Install;
-                    n++;
-                    PrintMenu(n, $"Remove from {ide.Name}");
-                    actions[n.ToString()] = ide.Remove;
-                    n++;
+                    PrintDim("No supported IDE detected");
+                    Console.WriteLine();
                 }
-                if (n == 1)
-                    PrintDim($"No supported IDE detected ({string.Join(", ", ides.Select(i => i.Name))}).");
+                var n = 1;
+                for (var k = 0; k < ides.Count; k++)
+                {
+                    var ide = ides[k];
+                    if (probes[k].Detected)
+                    {
+                        var installed = probes[k].Version;
+                        PrintMenu(n, AddLabel(ide, installed), IdeStatus.IsOutOfDate(installed) ? ConsoleColor.Yellow : null);
+                        actions[(n++).ToString()] = ide.Install;
+                        PrintMenu(n, $"Remove from {ide.Name}");
+                        actions[(n++).ToString()] = ide.Remove;
+                    }
+                    else
+                    {
+                        // Not detected here: listed (the menu shows what is supported) but not selectable.
+                        PrintMenu(n, $"Add to {ide.Name}", ConsoleColor.DarkGray, ConsoleColor.DarkGray);
+                        disabled[(n++).ToString()] = ide;
+                        PrintMenu(n, $"Remove from {ide.Name}", ConsoleColor.DarkGray, ConsoleColor.DarkGray);
+                        disabled[(n++).ToString()] = ide;
+                    }
+                }
                 PrintMenu(98, "Back");
                 PrintMenu(99, "Exit");
 
@@ -444,7 +459,7 @@ namespace ibsCompiler
                 string? choice;
                 if (Console.IsInputRedirected || Console.IsOutputRedirected)
                 {
-                    ConsoleMenu.WritePrompt(n == 1 ? "\nChoose [98-99]: " : $"\nChoose [1-{n - 1}]: ");
+                    ConsoleMenu.WritePrompt(actions.Count == 0 ? "\nChoose [98-99]: " : $"\nChoose [1-{n - 1}]: ");
                     choice = Console.ReadLine()?.Trim();
                     if (choice == null) return; // end of piped input
                 }
@@ -462,6 +477,10 @@ namespace ibsCompiler
                     Console.WriteLine();
                     run();
                     foreach (var ide in ides) IdeStatus.Refresh(ide);
+                }
+                else if (disabled.TryGetValue(choice, out var missing))
+                {
+                    Console.WriteLine($"{missing.Name} is not detected on this machine.");
                 }
                 else
                 {

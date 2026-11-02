@@ -149,10 +149,10 @@ namespace ibsCompiler
             Console.WriteLine(text);
         }
 
-        private static void PrintMenu(int num, string text, ConsoleColor? textColor = null)
+        private static void PrintMenu(int num, string text, ConsoleColor? textColor = null, ConsoleColor numColor = ConsoleColor.Cyan)
         {
             var prev = Console.ForegroundColor;
-            Console.ForegroundColor = ConsoleColor.Cyan;
+            Console.ForegroundColor = numColor;
             Console.Write($"{num}.".PadRight(4));
             Console.ForegroundColor = textColor ?? prev;
             Console.WriteLine(text);
