@@ -103,6 +103,14 @@ if ($settingsBackup) {
     Set-Content $settingsFile $settingsBackup -NoNewline
 }
 
+# --- VS Code extension -> bin\win-x64\compilers.vsix ---
+try {
+    & (Join-Path $PSScriptRoot 'vscode\bundle.ps1') -Dest $outputDir
+} catch {
+    Write-Host "VS Code extension build FAILED: $($_.Exception.Message)" -ForegroundColor Red
+    $failed += 'vscode extension'
+}
+
 Write-Host ""
 
 if ($failed.Count -gt 0) {

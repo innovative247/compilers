@@ -24,18 +24,22 @@ namespace ibsCompiler
         {
             try { Console.OutputEncoding = System.Text.Encoding.UTF8; } catch { }
 
-            LoadSettings();
-
             // Headless dispatch — any of these flags routes to the non-interactive
             // CRUD/test handlers. Profile shortcut and the wizard remain unchanged
             // when no headless flag is provided.
             var argList = args.ToList();
-            if (CliArgs.AnyPresent(argList,
-                    "--create", "--edit", "--view", "--copy", "--delete", "--test",
-                    "--share", "--unshare", "--shared", "--fetch", "--shared-status"))
-            {
-                return RunHeadless(argList);
-            }
+            var headless = CliArgs.AnyPresent(argList,
+                new[] { "--create", "--edit", "--view", "--copy", "--delete", "--test",
+                        "--share", "--unshare", "--shared", "--fetch", "--shared-status" }
+                    .Concat(IdeRegistry.HeadlessFlags).ToArray());
+
+            // Interactive runs: start the background IDE probe now so it is done (or nearly)
+            // by the time the main menu draws.
+            if (!headless) IdeStatus.Start();
+
+            LoadSettings();
+
+            if (headless) return RunHeadless(argList);
 
             // Profile shortcut: set_profile GONZO  → open GONZO directly
             //                   set_profile NEWNAME → open new profile wizard with name pre-filled
@@ -68,7 +72,7 @@ namespace ibsCompiler
             "--rebuild", "--rebuild-cache",
             "--shared", "--shared-status", "--refresh",
             "--accept-all", "--accept-none", "--no-password", "--dry-run",
-        };
+        }.Concat(IdeRegistry.HeadlessFlags).ToArray();
 
         #region Icons
         private static class Icons
@@ -116,7 +120,7 @@ namespace ibsCompiler
             Console.WriteLine(text);
         }
 
-        private static void PrintSuccess(string text)
+        internal static void PrintSuccess(string text)
         {
             var prev = Console.ForegroundColor;
             Console.ForegroundColor = ConsoleColor.Green;
@@ -124,7 +128,7 @@ namespace ibsCompiler
             Console.ForegroundColor = prev;
         }
 
-        private static void PrintError(string text)
+        internal static void PrintError(string text)
         {
             var prev = Console.ForegroundColor;
             Console.ForegroundColor = ConsoleColor.Red;
@@ -145,13 +149,14 @@ namespace ibsCompiler
             Console.WriteLine(text);
         }
 
-        private static void PrintMenu(int num, string text)
+        private static void PrintMenu(int num, string text, ConsoleColor? textColor = null)
         {
             var prev = Console.ForegroundColor;
             Console.ForegroundColor = ConsoleColor.Cyan;
             Console.Write($"{num}.".PadRight(4));
-            Console.ForegroundColor = prev;
+            Console.ForegroundColor = textColor ?? prev;
             Console.WriteLine(text);
+            Console.ForegroundColor = prev;
         }
 
         private static void PrintField(string icon, string label, string value, ConsoleColor valueColor = ConsoleColor.White)
@@ -239,6 +244,11 @@ namespace ibsCompiler
             PrintDim("Profiles store database connection settings used by runsql, runcreate,");
             PrintDim("and other compiler commands. Each profile points to a SQL source directory.");
 
+            // The IDE probe started in Run; give it at most 200 ms once so the first draw can
+            // show the out-of-date flag. The menu never waits longer than that.
+            IdeStatus.Start();
+            IdeStatus.WaitAll(200);
+
             while (true)
             {
                 Console.WriteLine();
@@ -247,7 +257,8 @@ namespace ibsCompiler
                 Console.WriteLine();
                 PrintMenu(1, "New profile");
                 PrintMenu(2, "Existing profile");
-                PrintMenu(3, "Add to IDE");
+                if (IdeStatus.AnyOutOfDate()) PrintMenu(3, "IDE Integration (update available)", ConsoleColor.Yellow);
+                else PrintMenu(3, "IDE Integration");
                 PrintMenu(4, "Open settings.json");
                 PrintMenu(5, "Shared profiles");
                 PrintMenu(99, "Exit");
@@ -275,7 +286,7 @@ namespace ibsCompiler
                 {
                     case "1": CreateProfile(); break;
                     case "2": ExistingProfileMenu(); break;
-                    case "3": AddToIdeMenu(); break;
+                    case "3": IdeIntegrationMenu(); break;
                     case "4": OpenSettingsJson(); break;
                     case "5": SharedProfilesMenu(); break;
                     case "99":
@@ -1840,391 +1851,6 @@ namespace ibsCompiler
         }
         #endregion
 
-        #region Add to IDE
-        private static void AddToIdeMenu()
-        {
-            Console.WriteLine();
-            PrintSubheader("Add to IDE");
-            Console.WriteLine();
-            PrintMenu(1, "VSCode");
-            PrintMenu(98, "Back");
-            PrintMenu(99, "Exit");
-
-            // Interactive TTY → deferred 'Choice:' entry; redirected → plain ReadLine.
-            string? choice;
-            if (Console.IsInputRedirected || Console.IsOutputRedirected)
-            {
-                ConsoleMenu.WritePrompt("\nChoose [1]: ");
-                choice = Console.ReadLine()?.Trim();
-            }
-            else
-            {
-                Console.WriteLine();
-                // VSCode is the only real action on this menu — obvious default.
-                choice = ConsoleMenu.ReadDeferredChoice(defaultChoice: "1");
-                if (string.IsNullOrEmpty(choice)) return; // Esc → Back
-            }
-
-            switch (choice)
-            {
-                case "1": AddToVscode(); break;
-                case "98": return;
-                case "99": Environment.Exit(0); break;
-                default: Console.WriteLine("Invalid choice."); break;
-            }
-        }
-
-        private static void AddToVscode()
-        {
-            Console.WriteLine();
-            PrintSubheader("Add to VSCode");
-            Console.WriteLine();
-            PrintDim("This adds runsql build tasks to your global VSCode settings.");
-            PrintDim("Press Ctrl+Shift+B in VSCode to compile the current SQL file.");
-            Console.WriteLine();
-
-            var profileNames = _settings.Profiles.Keys.ToList();
-            if (profileNames.Count == 0)
-            {
-                PrintWarning("No profiles configured. Create a profile first.");
-                return;
-            }
-
-            WriteBright("  Profiles: ");
-            Console.WriteLine(string.Join(", ", profileNames));
-            Console.WriteLine();
-
-            // Ask for databases
-            WriteBright("  Enter databases (comma-separated), or press Enter to prompt each time:");
-            Console.WriteLine();
-            Console.Write("> ");
-            var dbInput = Console.ReadLine()?.Trim() ?? "";
-
-            var usePromptMode = string.IsNullOrEmpty(dbInput);
-            var databases = new List<string>();
-            if (!usePromptMode)
-            {
-                databases = dbInput.Split(',').Select(d => d.Trim()).Where(d => !string.IsNullOrEmpty(d)).ToList();
-                if (databases.Count == 0) usePromptMode = true;
-            }
-
-            // Ask which profile is default
-            string defaultProfile;
-            if (profileNames.Count > 1)
-            {
-                Console.WriteLine();
-                WriteBright("  Which profile should be the default (Ctrl+Shift+B)?");
-                Console.WriteLine();
-                Console.WriteLine();
-                for (int i = 0; i < profileNames.Count; i++)
-                    PrintMenu(i + 1, profileNames[i]);
-
-                Console.WriteLine();
-                while (true)
-                {
-                    string? choice;
-                    if (Console.IsInputRedirected || Console.IsOutputRedirected)
-                    {
-                        ConsoleMenu.WritePrompt($"Choose [1-{profileNames.Count}]: ");
-                        choice = Console.ReadLine()?.Trim();
-                    }
-                    else
-                    {
-                        Console.WriteLine();
-                        // First profile in the list is the obvious default.
-                        choice = ConsoleMenu.ReadDeferredChoice(defaultChoice: "1");
-                    }
-                    if (int.TryParse(choice, out var idx) && idx >= 1 && idx <= profileNames.Count)
-                    {
-                        defaultProfile = profileNames[idx - 1];
-                        break;
-                    }
-                    if (string.IsNullOrEmpty(choice) &&
-                        !Console.IsInputRedirected && !Console.IsOutputRedirected)
-                        continue; // Esc on a TTY → silently re-prompt
-                    Console.WriteLine($"Please enter 1-{profileNames.Count}.");
-                }
-            }
-            else
-            {
-                defaultProfile = profileNames[0];
-            }
-
-            // Default database
-            string? defaultDb = null;
-            if (!usePromptMode && databases.Count > 1)
-            {
-                Console.WriteLine();
-                WriteBright($"  Which database should be the default for {defaultProfile}?");
-                Console.WriteLine();
-                Console.WriteLine();
-                for (int i = 0; i < databases.Count; i++)
-                    PrintMenu(i + 1, databases[i]);
-
-                Console.WriteLine();
-                while (true)
-                {
-                    string? choice;
-                    if (Console.IsInputRedirected || Console.IsOutputRedirected)
-                    {
-                        ConsoleMenu.WritePrompt($"Choose [1-{databases.Count}]: ");
-                        choice = Console.ReadLine()?.Trim();
-                    }
-                    else
-                    {
-                        Console.WriteLine();
-                        // First database in the list is the obvious default.
-                        choice = ConsoleMenu.ReadDeferredChoice(defaultChoice: "1");
-                    }
-                    if (int.TryParse(choice, out var idx) && idx >= 1 && idx <= databases.Count)
-                    {
-                        defaultDb = databases[idx - 1];
-                        break;
-                    }
-                    if (string.IsNullOrEmpty(choice) &&
-                        !Console.IsInputRedirected && !Console.IsOutputRedirected)
-                        continue; // Esc on a TTY → silently re-prompt
-                    Console.WriteLine($"Please enter 1-{databases.Count}.");
-                }
-            }
-            else if (!usePromptMode && databases.Count == 1)
-            {
-                defaultDb = databases[0];
-            }
-
-            // Show target path
-            Console.WriteLine();
-            var vscodeDir = GetVscodeUserFolder();
-            if (string.IsNullOrEmpty(vscodeDir))
-            {
-                PrintError("Could not determine VSCode User folder.");
-                return;
-            }
-            var tasksPath = Path.Combine(vscodeDir, "tasks.json");
-            ConsoleMenu.WritePrompt("Will write to: ");
-            WriteColor(tasksPath, ConsoleColor.Yellow);
-            Console.WriteLine();
-            Console.WriteLine();
-
-            ConsoleMenu.WritePrompt("Proceed? [Y/n]: ");
-            var confirm = Console.ReadLine()?.Trim().ToLower();
-            if (confirm == "n") { Console.WriteLine("Cancelled."); return; }
-
-            // Generate tasks
-            Dictionary<string, object> tasksContent;
-            if (usePromptMode)
-                tasksContent = GenerateVscodeTasksWithPrompt(profileNames, defaultProfile);
-            else
-                tasksContent = GenerateVscodeTasksAllProfiles(profileNames, databases, defaultProfile, defaultDb);
-
-            // Handle existing file
-            if (File.Exists(tasksPath))
-            {
-                Console.WriteLine();
-                PrintWarning("tasks.json already exists.");
-                Console.WriteLine();
-                WriteColor("[O]", ConsoleColor.Cyan); Console.WriteLine("verwrite - Replace with new runsql tasks");
-                WriteColor("[M]", ConsoleColor.Cyan); Console.WriteLine("erge     - Keep existing tasks, add/replace runsql tasks");
-                WriteColor("[C]", ConsoleColor.Cyan); Console.WriteLine("ancel    - Abort");
-                Console.WriteLine();
-                while (true)
-                {
-                    ConsoleMenu.WritePrompt("Choose [O/M/C]: ");
-                    var fc = Console.ReadLine()?.Trim().ToUpper();
-                    if (fc == "C") return;
-                    if (fc == "O") break;
-                    if (fc == "M")
-                    {
-                        try
-                        {
-                            var existingJson = File.ReadAllText(tasksPath);
-                            using var doc = JsonDocument.Parse(existingJson);
-                            if (doc.RootElement.TryGetProperty("tasks", out var existingTasks))
-                            {
-                                var nonRunsql = new List<JsonElement>();
-                                foreach (var task in existingTasks.EnumerateArray())
-                                {
-                                    var label = task.TryGetProperty("label", out var l) ? l.GetString() ?? "" : "";
-                                    if (!label.StartsWith("runsql"))
-                                        nonRunsql.Add(task);
-                                }
-                                Console.WriteLine($"Keeping {nonRunsql.Count} existing non-runsql tasks.");
-                            }
-                        }
-                        catch
-                        {
-                            PrintWarning("Could not read existing file, will overwrite.");
-                        }
-                        break;
-                    }
-                    Console.WriteLine("Please enter O, M, or C.");
-                }
-            }
-
-            // Write
-            try
-            {
-                Directory.CreateDirectory(vscodeDir);
-                var json = JsonSerializer.Serialize(tasksContent, new JsonSerializerOptions { WriteIndented = true });
-                File.WriteAllText(tasksPath, json);
-
-                Console.WriteLine();
-                if (usePromptMode)
-                {
-                    PrintSuccess($"Added {profileNames.Count} tasks to VSCode (will prompt for database):");
-                    foreach (var pn in profileNames)
-                    {
-                        Console.Write($"{Icons.ARROW} runsql {pn}");
-                        if (pn == defaultProfile)
-                            WriteColor(" [default - Ctrl+Shift+B]", ConsoleColor.Green);
-                        Console.WriteLine();
-                    }
-                }
-                else
-                {
-                    var taskCount = profileNames.Count * databases.Count;
-                    PrintSuccess($"Added {taskCount} tasks to VSCode:");
-                    foreach (var pn in profileNames)
-                    {
-                        foreach (var db in databases)
-                        {
-                            Console.Write($"{Icons.ARROW} runsql {pn} (");
-                            WriteColor(db, ConsoleColor.Gray);
-                            Console.Write(")");
-                            if (pn == defaultProfile && db == defaultDb)
-                                WriteColor(" [default - Ctrl+Shift+B]", ConsoleColor.Green);
-                            Console.WriteLine();
-                        }
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                PrintError($"Failed to write tasks.json: {ex.Message}");
-            }
-        }
-
-        private static string? GetVscodeUserFolder()
-        {
-            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-            {
-                var appdata = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-                if (!string.IsNullOrEmpty(appdata))
-                    return Path.Combine(appdata, "Code", "User");
-            }
-            else if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
-            {
-                return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-                    "Library", "Application Support", "Code", "User");
-            }
-            else
-            {
-                return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-                    ".config", "Code", "User");
-            }
-            return null;
-        }
-
-        private static readonly Dictionary<string, object> VscodeProblemMatcher = new()
-        {
-            ["owner"] = "runsql",
-            ["fileLocation"] = new[] { "absolute" },
-            ["pattern"] = new object[]
-            {
-                new Dictionary<string, object>
-                {
-                    ["regexp"] = @"^Msg\s+(\d+)\s+\(severity\s+(\d+),\s+state\s+\d+\).*Line\s+(\d+):",
-                    ["line"] = 3,
-                    ["code"] = 1
-                },
-                new Dictionary<string, object>
-                {
-                    ["regexp"] = @"^\s*""?(.+?)""?\s*$",
-                    ["message"] = 1,
-                    ["loop"] = true
-                }
-            }
-        };
-
-        private static Dictionary<string, object> GenerateVscodeTasksAllProfiles(
-            List<string> profileNames, List<string> databases, string defaultProfile, string? defaultDb)
-        {
-            var tasks = new List<Dictionary<string, object>>();
-            foreach (var pn in profileNames)
-            {
-                foreach (var db in databases)
-                {
-                    var task = new Dictionary<string, object>
-                    {
-                        ["label"] = $"runsql {pn} ({db})",
-                        ["type"] = "shell",
-                        ["command"] = "runsql",
-                        ["args"] = new[] { "${file}", db, pn },
-                        ["presentation"] = new Dictionary<string, object>
-                        {
-                            ["reveal"] = "always",
-                            ["panel"] = "shared",
-                            ["clear"] = true
-                        },
-                        ["problemMatcher"] = VscodeProblemMatcher
-                    };
-                    if (pn == defaultProfile && db == defaultDb)
-                        task["group"] = new Dictionary<string, object> { ["kind"] = "build", ["isDefault"] = true };
-                    else
-                        task["group"] = "build";
-                    tasks.Add(task);
-                }
-            }
-            return new Dictionary<string, object>
-            {
-                ["version"] = "2.0.0",
-                ["tasks"] = tasks
-            };
-        }
-
-        private static Dictionary<string, object> GenerateVscodeTasksWithPrompt(
-            List<string> profileNames, string defaultProfile)
-        {
-            var tasks = new List<Dictionary<string, object>>();
-            foreach (var pn in profileNames)
-            {
-                var task = new Dictionary<string, object>
-                {
-                    ["label"] = $"runsql {pn}",
-                    ["type"] = "shell",
-                    ["command"] = "runsql",
-                    ["args"] = new[] { "${file}", "${input:database}", pn },
-                    ["presentation"] = new Dictionary<string, object>
-                    {
-                        ["reveal"] = "always",
-                        ["panel"] = "shared",
-                        ["clear"] = true
-                    },
-                    ["problemMatcher"] = VscodeProblemMatcher
-                };
-                if (pn == defaultProfile)
-                    task["group"] = new Dictionary<string, object> { ["kind"] = "build", ["isDefault"] = true };
-                else
-                    task["group"] = "build";
-                tasks.Add(task);
-            }
-            return new Dictionary<string, object>
-            {
-                ["version"] = "2.0.0",
-                ["tasks"] = tasks,
-                ["inputs"] = new object[]
-                {
-                    new Dictionary<string, object>
-                    {
-                        ["id"] = "database",
-                        ["type"] = "promptString",
-                        ["description"] = "Enter database name"
-                    }
-                }
-            };
-        }
-        #endregion
-
         #region Open Settings
         private static void OpenSettingsJson()
         {
@@ -2329,6 +1955,15 @@ namespace ibsCompiler
             var fetchName   = CliArgs.GetOption(args, "--fetch");
             var listShared  = CliArgs.HasFlag(args, "--shared");
             var sharedStatus = CliArgs.HasFlag(args, "--shared-status");
+            // IDE integrations: --install-<stem> / --remove-<stem> come from the registry.
+            var ideActions = new List<(string Flag, Func<int> Run)>();
+            foreach (var ide in IdeRegistry.All)
+            {
+                if (CliArgs.HasFlag(args, IdeRegistry.InstallFlag(ide))) ideActions.Add((IdeRegistry.InstallFlag(ide), ide.Install));
+                if (CliArgs.HasFlag(args, IdeRegistry.RemoveFlag(ide))) ideActions.Add((IdeRegistry.RemoveFlag(ide), ide.Remove));
+            }
+            var flagList = "--create, --edit, --view, --copy, --delete, --test, --share, --unshare, --shared, --shared-status, --fetch, "
+                + string.Join(", ", IdeRegistry.HeadlessFlags);
 
             int primary = 0;
             if (createName != null) primary++;
@@ -2342,14 +1977,15 @@ namespace ibsCompiler
             if (fetchName != null)   primary++;
             if (listShared)          primary++;
             if (sharedStatus)        primary++;
+            primary += ideActions.Count;
             if (primary > 1)
             {
-                Console.Error.WriteLine("ERROR: --create, --edit, --view, --copy, --delete, --test, --share, --unshare, --shared, --shared-status, --fetch are mutually exclusive.");
+                Console.Error.WriteLine($"ERROR: {flagList} are mutually exclusive.");
                 return 1;
             }
             if (primary == 0)
             {
-                Console.Error.WriteLine("ERROR: headless mode requires one of --create, --edit, --view, --copy, --delete, --test, --share, --unshare, --shared, --shared-status, --fetch.");
+                Console.Error.WriteLine($"ERROR: headless mode requires one of {flagList}.");
                 return 1;
             }
 
@@ -2364,6 +2000,7 @@ namespace ibsCompiler
             if (fetchName != null)   return FetchHeadless(fetchName, args);
             if (listShared)          return SharedListHeadless(args);
             if (sharedStatus)        return SharedStatusHeadless();
+            if (ideActions.Count == 1) return ideActions[0].Run();
             return 1;
         }
 

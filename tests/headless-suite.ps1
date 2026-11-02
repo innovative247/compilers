@@ -2869,6 +2869,189 @@ function Test-SharedProfiles {
         if ("$($r.StdErr)" -notmatch 'mutually exclusive') { throw "expected 'mutually exclusive'. stderr: $($r.StdErr)" }
     }
 
+    Test-Case 'set_profile.install_vscode_missing_vsix' {
+        $vsix = Join-Path $script:Bin 'compilers.vsix'
+        $hold = "$vsix.suite-hold"
+        if ((Test-Path $hold) -and -not (Test-Path $vsix)) { Move-Item $hold $vsix -Force }   # left by an interrupted run
+        $moved = Test-Path $vsix
+        if ($moved) { Move-Item $vsix $hold -Force }
+        try {
+            $r = Invoke-Cli set_profile '--install-vscode'
+            if ($r.ExitCode -eq 0) { throw "--install-vscode must fail when compilers.vsix is absent" }
+            if ("$($r.StdOut)$($r.StdErr)" -notmatch 'compilers\.vsix not found') { throw "expected 'compilers.vsix not found'. out: $($r.StdOut) err: $($r.StdErr)" }
+        } finally {
+            if ($moved) { Move-Item $hold $vsix -Force }
+        }
+    }
+
+    Test-Case 'set_profile.install_vscode' {
+        $code = $null
+        foreach ($c in @(
+                (Get-Command code.cmd -ErrorAction SilentlyContinue).Source,
+                (Join-Path $env:LOCALAPPDATA 'Programs\Microsoft VS Code\bin\code.cmd'),
+                (Join-Path $env:ProgramFiles 'Microsoft VS Code\bin\code.cmd'))) {
+            if ($c -and (Test-Path $c)) { $code = $c; break }
+        }
+        if (-not $code) { Skip-Case 'set_profile.install_vscode' 'VS Code is not installed'; return }
+        if (-not (Test-Path (Join-Path $script:Bin 'compilers.vsix'))) { throw 'bin\win-x64\compilers.vsix missing - run dev.ps1' }
+        # Install into a scratch extensions folder, never the developer's real VS Code.
+        $savedExt = $env:VSCODE_EXTENSIONS
+        $env:VSCODE_EXTENSIONS = Join-Path $script:Scratch 'vscode-extensions'
+        try {
+            $r = Invoke-Cli set_profile '--install-vscode'
+            if ($r.ExitCode -ne 0) { throw "--install-vscode must exit 0. out: $($r.StdOut) err: $($r.StdErr)" }
+            if ("$($r.StdOut)" -notmatch 'F5 runs the file or selection') { throw "expected the usage hint. out: $($r.StdOut)" }
+            $props = [xml](Get-Content -Raw (Join-Path $PSScriptRoot '..\src\Directory.Build.props'))
+            $ver = ($props.Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1)
+            $listed = & cmd.exe /c "`"$code`" --list-extensions --show-versions" 2>&1 | Out-String
+            if ($listed -notmatch "innovative247\.compilers@$([regex]::Escape($ver))") { throw "innovative247.compilers@$ver not listed. got: $listed" }
+        } finally {
+            $env:VSCODE_EXTENSIONS = $savedExt
+        }
+    }
+
+    # Shared by the IDE tests: path of code.cmd, or $null when VS Code is not installed.
+    function Find-VscodeCmd {
+        foreach ($c in @(
+                (Get-Command code.cmd -ErrorAction SilentlyContinue).Source,
+                (Join-Path $env:LOCALAPPDATA 'Programs\Microsoft VS Code\bin\code.cmd'),
+                (Join-Path $env:ProgramFiles 'Microsoft VS Code\bin\code.cmd'))) {
+            if ($c -and (Test-Path $c)) { return $c }
+        }
+        return $null
+    }
+
+    # Runs set_profile with piped stdin; returns ExitCode + combined output.
+    function Invoke-SetProfileMenu {
+        param([string]$InputText)
+        $psi = [System.Diagnostics.ProcessStartInfo]::new((Join-Path $script:Bin 'set_profile.exe'))
+        $psi.RedirectStandardInput = $true; $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
+        $psi.UseShellExecute = $false
+        $p = [System.Diagnostics.Process]::Start($psi)
+        $outTask = $p.StandardOutput.ReadToEndAsync(); $errTask = $p.StandardError.ReadToEndAsync()
+        $p.StandardInput.Write($InputText); $p.StandardInput.Close()
+        if (-not $p.WaitForExit(60000)) { try { $p.Kill($true) } catch {}; throw 'set_profile menu did not exit within 60s' }
+        [pscustomobject]@{ ExitCode = $p.ExitCode; Out = ($outTask.Result + $errTask.Result) }
+    }
+
+    Test-Case 'set_profile.ide_menu_invalid_choice_stays' {
+        $fake = Join-Path $script:Scratch 'ide-fakebin'
+        New-Item -ItemType Directory -Force $fake | Out-Null
+        Set-Content -Path (Join-Path $fake 'code.cmd') -Value '@echo off'
+        $savedProbe = $env:COMPILERS_IDE_PROBE_PATHS; $env:COMPILERS_IDE_PROBE_PATHS = $fake
+        try { $r = Invoke-SetProfileMenu "3`nzz`n98`n99`n" } finally { $env:COMPILERS_IDE_PROBE_PATHS = $savedProbe }
+        if ($r.Out -notmatch 'IDE Integration') { throw "expected 'IDE Integration'. out: $($r.Out)" }
+        if ($r.Out -match 'Add to IDE') { throw "old 'Add to IDE' label still present" }
+        $i = $r.Out.IndexOf('Invalid choice.')
+        if ($i -lt 0) { throw "expected 'Invalid choice.'. out: $($r.Out)" }
+        if ($r.Out.Substring($i) -notmatch '(?m)^IDE Integration\s*$') { throw "IDE menu must be shown again after 'Invalid choice.'. out: $($r.Out)" }
+        if ($r.Out -notmatch '2\.\s+Remove from VS Code') { throw "expected 'Remove from VS Code' item. out: $($r.Out)" }
+    }
+
+    Test-Case 'set_profile.ide_menu_returns_after_action' {
+        if (-not (Find-VscodeCmd)) { Skip-Case 'set_profile.ide_menu_returns_after_action' 'VS Code is not installed'; return }
+        $savedExt = $env:VSCODE_EXTENSIONS
+        $env:VSCODE_EXTENSIONS = Join-Path $script:Scratch 'vscode-extensions-menu'
+        try {
+            # 2 = Remove from VS Code (nothing installed in the scratch folder: cheap).
+            $r = Invoke-SetProfileMenu "3`n2`n98`n99`n"
+            if ($r.Out -notmatch 'not installed; nothing to remove') { throw "expected the remove outcome. out: $($r.Out)" }
+            $i = $r.Out.IndexOf('nothing to remove')
+            if ($r.Out.Substring($i) -notmatch '(?m)^IDE Integration\s*$') { throw "IDE menu must reappear after an action. out: $($r.Out)" }
+        } finally { $env:VSCODE_EXTENSIONS = $savedExt }
+    }
+
+    # Fast IDE-version probe (disk only, no `code` spawn): fabricate the extensions dir and
+    # drive the menus through piped input. Redirected runs cannot show colour, so assert text.
+    function Invoke-IdeProbeCase {
+        param([string]$Name, [string[]]$Folders, [string]$ManifestVersion, [switch]$NotDetected)
+        $props = [xml](Get-Content -Raw (Join-Path $PSScriptRoot '..\src\Directory.Build.props'))
+        $cur = [string]($props.Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1)
+        $dir = Join-Path $script:Scratch "vscode-probe-$Name"
+        if (Test-Path $dir) { Remove-Item -Recurse -Force $dir }
+        New-Item -ItemType Directory -Force $dir | Out-Null
+        foreach ($f in $Folders) { New-Item -ItemType Directory -Force (Join-Path $dir ("innovative247.compilers-" + $f.Replace('CUR', $cur))) | Out-Null }
+        if ($ManifestVersion) {
+            $v = $ManifestVersion.Replace('CUR', $cur)
+            '[{"identifier":{"id":"other.ext"},"version":"9.9.9"},{"identifier":{"id":"innovative247.compilers"},"version":"' + $v + '"}]' |
+                Set-Content -Encoding utf8 (Join-Path $dir 'extensions.json')
+        }
+        # Detection seam (test-only): COMPILERS_IDE_PROBE_PATHS replaces the PATH search for the VS Code launcher.
+        $bin = Join-Path $dir 'fakebin'
+        New-Item -ItemType Directory -Force $bin | Out-Null
+        if (-not $NotDetected) { Set-Content -Path (Join-Path $bin 'code.cmd') -Value '@echo off' }
+        $saved = $env:VSCODE_EXTENSIONS; $savedProbe = $env:COMPILERS_IDE_PROBE_PATHS
+        $env:VSCODE_EXTENSIONS = $dir; $env:COMPILERS_IDE_PROBE_PATHS = $bin
+        try { $r = Invoke-SetProfileMenu "3`n98`n99`n" } finally { $env:VSCODE_EXTENSIONS = $saved; $env:COMPILERS_IDE_PROBE_PATHS = $savedProbe }
+        [pscustomobject]@{ Out = $r.Out; Cur = $cur }
+    }
+
+    Test-Case 'set_profile.ide_update_available_older' {
+        $x = Invoke-IdeProbeCase 'older' @('0.0.1') '0.0.1'
+        if ($x.Out -notmatch '3\.\s+IDE Integration \(update available\)') { throw "main menu must flag the update. out: $($x.Out)" }
+        if ($x.Out -notmatch "installed 0\.0\.1, update to $([regex]::Escape($x.Cur))") { throw "IDE menu must show 'installed 0.0.1, update to $($x.Cur)'. out: $($x.Out)" }
+    }
+
+    Test-Case 'set_profile.ide_update_available_current' {
+        $x = Invoke-IdeProbeCase 'current' @('CUR') 'CUR'
+        if ($x.Out -match 'update available') { throw "current install must not be flagged. out: $($x.Out)" }
+        if ($x.Out -notmatch '\(up to date\)') { throw "expected '(up to date)'. out: $($x.Out)" }
+    }
+
+    Test-Case 'set_profile.ide_update_available_not_installed' {
+        $x = Invoke-IdeProbeCase 'none' @() $null
+        if ($x.Out -match 'update available|update to') { throw "not installed must not be flagged. out: $($x.Out)" }
+        if ($x.Out -notmatch '1\.\s+Add to VS Code\s*\r?\n') { throw "expected a plain 'Add to VS Code'. out: $($x.Out)" }
+    }
+
+    Test-Case 'set_profile.ide_menu_not_detected' {
+        # Extension state on disk is older, but the IDE itself is not detected: no items, no flag.
+        $x = Invoke-IdeProbeCase 'undetected' @('0.0.1') '0.0.1' -NotDetected
+        if ($x.Out -notmatch 'No supported IDE detected \(VS Code\)\.') { throw "expected the no-IDE line. out: $($x.Out)" }
+        if ($x.Out -match 'Add to VS Code|Remove from VS Code|update available') { throw "undetected IDE must not be offered or flagged. out: $($x.Out)" }
+        if ($x.Out -notmatch '3\.\s+IDE Integration\s*\r?\n') { throw "main menu keeps a plain 'IDE Integration'. out: $($x.Out)" }
+        if ($x.Out -notmatch '98\.\s+Back') { throw "expected 98 Back. out: $($x.Out)" }
+    }
+
+    Test-Case 'set_profile.ide_update_available_stale_folders' {
+        # Old folders linger until VS Code restarts; extensions.json is authoritative.
+        $x = Invoke-IdeProbeCase 'stale' @('0.0.1', '0.0.2', 'CUR') 'CUR'
+        if ($x.Out -match 'update available|update to') { throw "stale folders must not trigger a flag. out: $($x.Out)" }
+        # And the reverse: a newer-looking folder must not hide an older manifest entry.
+        $y = Invoke-IdeProbeCase 'stale2' @('0.0.1', 'CUR') '0.0.1'
+        if ($y.Out -notmatch '\(update available\)') { throw "manifest (older) must win over the newer folder. out: $($y.Out)" }
+    }
+
+    Test-Case 'set_profile.remove_vscode' {
+        $code = Find-VscodeCmd
+        if (-not $code) { Skip-Case 'set_profile.remove_vscode' 'VS Code is not installed'; return }
+        if (-not (Test-Path (Join-Path $script:Bin 'compilers.vsix'))) { throw 'bin\win-x64\compilers.vsix missing - run dev.ps1' }
+        $savedExt = $env:VSCODE_EXTENSIONS
+        $env:VSCODE_EXTENSIONS = Join-Path $script:Scratch 'vscode-extensions-remove'
+        try {
+            $r = Invoke-Cli set_profile '--remove-vscode'
+            if ($r.ExitCode -ne 0) { throw "--remove-vscode when not installed must exit 0. out: $($r.StdOut) err: $($r.StdErr)" }
+            if ("$($r.StdOut)" -notmatch 'not installed') { throw "expected 'not installed'. out: $($r.StdOut)" }
+            # install -> remove -> install round trip
+            $r = Invoke-Cli set_profile '--install-vscode'
+            if ($r.ExitCode -ne 0) { throw "--install-vscode must exit 0. out: $($r.StdOut) err: $($r.StdErr)" }
+            if ("$($r.StdOut)$($r.StdErr)" -match 'DEP0169') { throw "deprecation noise must be hidden. out: $($r.StdOut) err: $($r.StdErr)" }
+            $r = Invoke-Cli set_profile '--remove-vscode'
+            if ($r.ExitCode -ne 0) { throw "--remove-vscode must exit 0. out: $($r.StdOut) err: $($r.StdErr)" }
+            if ("$($r.StdOut)" -notmatch 'removed') { throw "expected 'removed'. out: $($r.StdOut)" }
+            $listed = & cmd.exe /c "`"$code`" --list-extensions --show-versions" 2>&1 | Out-String
+            if ($listed -match 'innovative247\.compilers') { throw "extension must be gone after remove. got: $listed" }
+            $r = Invoke-Cli set_profile '--install-vscode'
+            if ($r.ExitCode -ne 0) { throw "re-install must exit 0. out: $($r.StdOut) err: $($r.StdErr)" }
+        } finally { $env:VSCODE_EXTENSIONS = $savedExt }
+    }
+
+    Test-Case 'set_profile.install_remove_mutually_exclusive' {
+        $r = Invoke-Cli set_profile '--install-vscode' '--remove-vscode'
+        if ($r.ExitCode -eq 0) { throw "--install-vscode and --remove-vscode together must fail" }
+        if ("$($r.StdErr)" -notmatch 'mutually exclusive') { throw "expected 'mutually exclusive'. stderr: $($r.StdErr)" }
+    }
+
     Test-Case 'set_profile.damaged_cache_never_touches_enclosing_repo' {
         # A cache left with a .git folder but no HEAD (half-deleted) must not make git walk up
         # into the repo that contains it. Runs on a scratch copy of the binaries inside a scratch repo.

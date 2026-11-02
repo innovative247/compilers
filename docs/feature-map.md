@@ -41,9 +41,9 @@ in `$env:EDITOR`).
   (default `GONZO`).
 - **Out of scope — never agent-accessible:** `transfer_data`. Excluded from the
   test suite entirely. If a future change adds CLI flags here, push back.
-- **TTY-only — intentionally not headless:** `set_profile` main-menu options
-  3 ("Add to IDE") and 4 ("Open settings.json"). Editor invocation requires a
-  terminal.
+- **TTY-only — intentionally not headless:** `set_profile` main-menu option
+  4 ("Open settings.json"). Editor invocation requires a terminal. Option 3
+  ("IDE Integration" → Add to / Remove from VS Code) is headless as `--install-vscode` / `--remove-vscode`.
 
 ## Status legend
 
@@ -299,7 +299,7 @@ Implementation notes (shipped):
 Interactive main menu:
 - `1` New profile (wizard, 6+ steps)
 - `2` Existing profile → submenu: View / Test / Edit / Copy / Delete
-- `3` Add to IDE → VSCode tasks generator
+- `3` IDE Integration → per IDE, an Add item (installs or updates the bundled `compilers.vsix`; label shows installed state) and a Remove item; `98` Back, `99` Exit. An invalid choice stays in this menu; after any action the menu is shown again. Items come from the IDE registry (`IdeIntegrations.cs`): `1` Add to VS Code, `2` Remove from VS Code
 - `4` Open settings.json (launches editor)
 - `99` Exit
 
@@ -317,7 +317,10 @@ Interactive main menu:
 | `2` → Test → `5` Changelog | Verify `gclog12` on, `ba_gen_chg_log_new` exists, insert test row | `--test NAME --what changelog` | `set_profile.test_changelog` | COVERED |
 | `2` → Test → `6` Symbolic links | Create missing short-path shortcuts under `IRPath`, sourced from the tree's own `create_links.sh` (else built-in list); skips any whose short path/shortcut already exists | `--test NAME --what symlinks` | `set_profile.test_symlinks` | COVERED |
 | `2` → Test → all | Run all six in order | `--test NAME --what all` | `set_profile.test_all` | COVERED |
-| `3` Add to IDE | Write VSCode `tasks.json` | (TTY-only — explicit project decision) | — | SKIP |
+| `3` IDE Integration → `1` Add to VS Code | Run `code --install-extension <exe dir>/compilers.vsix --force` (VS Code CLI from PATH or the usual install folders; Node deprecation warnings suppressed via the child environment), then verify with `code --list-extensions --show-versions` that `innovative247.compilers@<running version>` is present; print installed / updated-from outcome and the F5 hint. Fails plainly when `compilers.vsix` or VS Code is missing or the version is wrong | `--install-vscode` (exit 0 on success, 1 on failure) | `set_profile.install_vscode` / `set_profile.install_vscode_missing_vsix` | COVERED (install test SKIPs when VS Code is absent) |
+| `3` IDE Integration → `2` Remove from VS Code | Run `code --uninstall-extension innovative247.compilers`, then verify the extension is absent. Not installed is reported and counts as success | `--remove-vscode` (exit 0 on success, 1 on failure) | `set_profile.remove_vscode` (install, remove, install round trip) / `set_profile.install_remove_mutually_exclusive` | COVERED (SKIPs when VS Code is absent) |
+| `3` IDE Integration (menu) | Generated from the IDE registry, listing only IDEs detected on this machine (file checks on the background probe, no spawn; none detected: one line `No supported IDE detected (VS Code).` then 98/99; numbering is dynamic); invalid choice stays in the menu; after an action the menu returns with refreshed installed state; 98 Back / Esc to main menu | n/a (interactive) | `set_profile.ide_menu_invalid_choice_stays` / `set_profile.ide_menu_returns_after_action` | COVERED |
+| `3` IDE Integration (out-of-date flag) | A background task probes each registered IDE from disk (no `code` spawn; `extensions.json` is authoritative, folder names only as fallback; `$VSCODE_EXTENSIONS` honoured; also `~/.vscode-server` on Linux). Older than this build: main menu item 3 reads `IDE Integration (update available)` and the Add item `Add to VS Code (installed X, update to Y)`, both yellow on a TTY. Menus never wait on it (redirected runs wait <=200 ms; the IDE menu <=200 ms); refreshed after Add/Remove | n/a (interactive) | `set_profile.ide_menu_not_detected` / `set_profile.ide_update_available_older` / `_current` / `_not_installed` / `_stale_folders` | COVERED (yellow itself is manual: `tests/manual/profile-editor.md`) |
 | `4` Open settings.json | Launch editor on `settings.json` | (TTY-only — same reason) | — | SKIP |
 | `5` Shared profiles → list | One full-screen list (refreshed on entry) of every local profile and every shared record. Colour is the state: Cyan = local (incl. a linked copy, shown once), White = shared record with no linked local copy, Yellow = linked and out of sync (repo newer, or your own with unpushed edits); a one-line legend sits above the menu. A short status column (Local / Mine / Linked / Repo newer / Changed here / Shared). An unlinked same-name pair shows twice (cyan + white). Right/Left details: every shared field; on a yellow row each differing field is yellow as `local -> repo: value` (never a password). Up/Down move, Space mark, letters filter (digits go to `Choice:`). Menu: `1` Sync, `2` Unlink, `3` Remove, `4` Change GitHub account, `98` Back (Esc clears the filter, else Back). Each action works on the marked rows, or the highlighted row when none are marked; the list is re-read after it with the filter kept. Redirected or too-small console: numbered coloured list + legend + the same menu, then `Which [1-N ...]` | `--shared [--refresh]` (prints Status per record) | `set_profile.shared_list` | COVERED (picker: TTY-only) |
 | `5` → `1` Sync | Does what each row implies, one result line per profile: unlinked local → share it (a same-name record of someone else's is never overwritten; your own asks `Replace your shared NAME with this one and link? [y/N]`); your own linked → push your edits; linked with a newer repo copy → pull (shared fields only; local password and SQL source kept; restamped); white row → download (new: SQL source and password asked; a same-name local asks `Replace your NAME with the shared NAME and link? [y/N]`, N skips) | `--share`, `--fetch` (below) | (manual - TTY) | SKIP |
@@ -343,7 +346,7 @@ Interactive main menu:
   every publish, which FAILS rather than scrubbing them. `--accept` only recognizes
   shareable fields. A fetched raw target skips the SQL-source step — it has no
   source tree to point at.
-- `--share`, `--unshare`, `--shared`, `--shared-status` and `--fetch` are mutually exclusive with each
+- `--share`, `--unshare`, `--shared`, `--shared-status`, `--fetch`, `--install-vscode` and `--remove-vscode` are mutually exclusive with each
   other and with `--create`/`--edit`/`--view`/`--copy`/`--delete`/`--test`.
 - No git, no network, or no access to the private store: the shared actions report
   one line and do nothing. Every local profile operation still works.
@@ -586,11 +589,10 @@ BCP files on disk. **Permanently excluded from headless mode and from this
 test suite by team policy.** Any future request to add `--flags` here must be
 rejected — see project notes / session record.
 
-### `set_profile --add-to-ide` and `--open-settings`
+### `set_profile --open-settings`
 
-Both require launching an editor / pointing to a user's IDE config. There is
-no useful headless equivalent — an agent that needs VSCode tasks should write
-`tasks.json` directly.
+Requires launching an editor on `settings.json`. There is no useful headless
+equivalent — an agent edits `settings.json` directly.
 
 ---
 

@@ -24,3 +24,8 @@ PLANTRACE.*
 
 # Test scratch (tests/SqlTest.Tests TestScratch; kept only when a test fails)
 .test-scratch/
+
+# VS Code extension build output
+vscode/*.vsix
+vscode/node_modules
+vscode/dist

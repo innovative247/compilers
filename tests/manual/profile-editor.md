@@ -180,12 +180,21 @@ plain `Choose [..]:` / `Select [..]:` ReadLine prompts unchanged.
       (letters/digits/underscore, e.g. `S254_SBNB`); Enter commits, Esc cancels back out of
       the list. The list is a picker, not a hub — after the editor opens, any exit from it
       (Back/Save/Copy/Delete) unwinds straight to the Main Menu, not back to this list.
-- [ ] **Add to IDE** — Main Menu → 3 shows `1 VSCode / 98 Back / 99 Exit` with the prompt
-      line reading `Choice [1]: ` from the start (VSCode is the only real action, so it is
-      the default — plain Enter opens it); Esc = Back. The "default profile" and "default
-      database" sub-menus (multi-profile / multi-database, when more than one exists) show
-      `Choice [1]: ` from the start — plain Enter picks the first profile/database in the
-      list.
+- [ ] **IDE Integration** — Main Menu → 3 shows `1 Add to VS Code` (suffixed `(up to date)` or
+      `(installed X, update to Y)` when installed) / `2 Remove from VS Code` / `98 Back / 99 Exit`
+      with `Choice: ` on the prompt line (no default). An invalid entry prints `Invalid choice.` and
+      stays in this menu; after Add or Remove (success or failure) the menu is shown again with
+      refreshed state; 98 or Esc = Back to the Main Menu. Add prints `installed` / `updated from X`
+      only after the version is verified; Remove of a not-installed extension reports it and succeeds.
+- [ ] **IDE not detected** — on a machine without VS Code (or with `code` off PATH), Main Menu → 3
+      shows `No supported IDE detected (VS Code).` with only `98 Back / 99 Exit`; Main Menu keeps
+      plain `IDE Integration`.
+- [ ] **IDE update flag (real TTY)** — install an older build of the extension (or set
+      `VSCODE_EXTENSIONS` to a scratch folder holding an `extensions.json` with
+      `innovative247.compilers` at an older version), run `set_profile`: Main Menu item 3 reads
+      `IDE Integration (update available)` in **yellow**; inside it `1 Add to VS Code (installed X,
+      update to Y)` is yellow. The menu appears instantly (no `code` process is started); after
+      Add, the yellow clears. Current or not installed: both plain.
 - [ ] **Redirected fallback** — `echo "2" | set_profile` (piped stdin) prints the classic
       `Choose [1-4]:` / `Select […]:` prompts and does not hang — the always-visible
       `ReadKey` path is never taken on a redirected console.
