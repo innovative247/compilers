@@ -35,6 +35,25 @@ function parseProfiles(text) {
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
+/**
+ * The database to run against: the one picked for the profile, else the profile's DATABASE when non-empty, else
+ * none (the caller opens the picker). source is 'pick', 'profile' or ''.
+ */
+function resolveDatabase(picked, profileDatabase) {
+  const pick = String(picked || '').trim();
+  if (pick) return { database: pick, source: 'pick' };
+  const own = String(profileDatabase || '').trim();
+  if (own) return { database: own, source: 'profile' };
+  return { database: '', source: '' };
+}
+
+/** The user's pick for one profile out of the stored map (case-insensitive name). A legacy single string is ignored. */
+function pickedFor(map, profile) {
+  if (!map || typeof map !== 'object' || !profile) return '';
+  const key = Object.keys(map).find((k) => k.toLowerCase() === String(profile).toLowerCase());
+  return key === undefined ? '' : String(map[key] || '');
+}
+
 // ---- locating the install ---------------------------------------------------
 
 /** First existing <dir>/<name>[ext] on PATH. exists(p) is injected for tests. */
@@ -214,6 +233,6 @@ function sweepStale(dir, fs, now, maxAgeMs) {
 const PROBLEM_RE = '^(.+?):(\\d+):(\\d+): (error|warning): (.*)$';
 
 module.exports = {
-  parseProfiles, findOnPath, settingsPathFor, buildInvocation, matchesExtension, pushRecent,
+  parseProfiles, resolveDatabase, pickedFor, findOnPath, settingsPathFor, buildInvocation, matchesExtension, pushRecent,
   createScanner, parseErrors, formatProblem, isToolSubcommand, selectionTooLong, sweepStale, PROBLEM_RE,
 };

@@ -1,6 +1,6 @@
 {
   "name": "compilers",
-  "displayName": "Compilers",
+  "displayName": "Innovative247 Compilers",
   "description": "Run the open SQL file or selection with the Compilers (runsql, isqlline, runcreate) and see server errors in Problems.",
   "version": "0.0.0",
   "publisher": "innovative247",

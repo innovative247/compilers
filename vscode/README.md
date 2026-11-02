@@ -1,4 +1,4 @@
-# Compilers for VS Code
+# Innovative247 Compilers for VS Code
 
 Run the SQL you are editing with the Compilers, without leaving the editor.
 
@@ -6,7 +6,7 @@ Run the SQL you are editing with the Compilers, without leaving the editor.
 
 - **F5** runs the selection (with `isqlline`) or, when nothing is selected, saves and runs the whole file (with `runsql`) whenever the active editor is a SQL file, even when focus is in the terminal, the Problems or Output panel or the status bar. On a SQL file F5 never starts the debugger. The extension adds `compilers.run` to `terminal.integrated.commandsToSkipShell` by default so F5 in the terminal reaches it; if you set that setting yourself, add `compilers.run` to your list.
 - **Compilers: Run file**, **Compilers: Run selection** and **Compilers: Run create file (runcreate)** are in the Command Palette and the editor right-click menu. Run create file is also in the Explorer right-click menu.
-- The status bar shows the current **profile** and **database**. Click either to change it. Profiles come from the Compilers `settings.json`, with their aliases. The database list remembers what you used per profile, and you can type any name. You are asked for both the first time you run something.
+- The status bar shows the current **profile** and **database**. Click either to change it. Profiles come from the Compilers `settings.json`, with their aliases. The database is remembered per profile. With no database picked for the profile, the profile's `DATABASE` is used (tooltip "from profile <NAME>") and the picker lists it first as "(profile default)"; with neither, you are asked. You can type any name in the picker. You are asked for the profile the first time you run something.
 - The status bar shows a warning-coloured **pick a profile** / **pick a database** while either is unset.
 - Output streams in the terminal panel, which opens and takes focus when a run starts, so password prompts still work. Server errors also appear in **Problems**.
 - The **Compilers** output channel logs every command, the profile, database and command line used (without the SQL text), and when each run starts and ends with its exit code. Any failure is also shown as an error message.

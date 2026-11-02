@@ -32,6 +32,29 @@ test('parseProfiles reads names, aliases, platform, case-insensitively, with BOM
   assert.strictEqual(p[1].database, 'srm');
 });
 
+test('parseProfiles reads DATABASE in any casing, trimmed to a string, empty when absent or not text', () => {
+  const p = c.parseProfiles(JSON.stringify({ Profiles: { A: { Database: 'srm' }, B: {}, C: { DATABASE: null }, D: { database: '' } } }));
+  assert.deepStrictEqual(p.map((x) => x.database), ['srm', '', '', '']);
+});
+
+test('resolveDatabase: the pick wins, then the profile DATABASE, then nothing', () => {
+  assert.deepStrictEqual(c.resolveDatabase('mine', 'srm'), { database: 'mine', source: 'pick' });
+  assert.deepStrictEqual(c.resolveDatabase('', 'srm'), { database: 'srm', source: 'profile' });
+  assert.deepStrictEqual(c.resolveDatabase(undefined, ' srm '), { database: 'srm', source: 'profile' });
+  assert.deepStrictEqual(c.resolveDatabase('mine', ''), { database: 'mine', source: 'pick' });
+  assert.deepStrictEqual(c.resolveDatabase('  ', ''), { database: '', source: '' });
+  assert.deepStrictEqual(c.resolveDatabase(undefined, undefined), { database: '', source: '' });
+});
+
+test('pickedFor reads one profile out of the per-profile map', () => {
+  const m = { SRM_LOCAL: 'a', GONZO: 'b' };
+  assert.strictEqual(c.pickedFor(m, 'srm_local'), 'a');
+  assert.strictEqual(c.pickedFor(m, 'GONZO'), 'b');
+  assert.strictEqual(c.pickedFor(m, 'OTHER'), '');
+  assert.strictEqual(c.pickedFor('legacy', 'GONZO'), '');
+  assert.strictEqual(c.pickedFor(undefined, 'GONZO'), '');
+});
+
 test('parseProfiles tolerates bad input', () => {
   assert.deepStrictEqual(c.parseProfiles('not json'), []);
   assert.deepStrictEqual(c.parseProfiles('{}'), []);

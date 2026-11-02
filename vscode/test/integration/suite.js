@@ -28,7 +28,7 @@ const logSince = (n) => api.log.slice(n).join('\n');
 
 async function setTarget(profile, database, recent) {
   await api.state.update('compilers.profile', profile);
-  await api.state.update('compilers.database', database);
+  await api.state.update('compilers.databasePicks', database && profile ? { [profile]: database } : undefined);
   await api.state.update('compilers.recentDatabases', recent);
   api.refreshStatus();
 }
@@ -102,17 +102,80 @@ test('database picker, profile set and no recent databases: shows and takes a ty
   const done = vscode.commands.executeCommand('compilers.pickDatabase');
   const qp = await waitFor('database Quick Pick', () => api.quickPick());
   assert.strictEqual(qp.items.length, 0);
+  assert.strictEqual(qp.title, 'Pick a database for NO_DATABASE_PROFILE');
+  assert.match(qp.placeholder, /type a database name and press Enter/i);
   qp.value = 'sbnmaster';
   await waitFor('typed item', () => qp.items.length === 1);
   await accept(qp);
   await done;
-  assert.strictEqual(api.state.get('compilers.database'), 'sbnmaster');
+  assert.deepStrictEqual(api.state.get('compilers.databasePicks'), { NO_DATABASE_PROFILE: 'sbnmaster' });
   assert.deepStrictEqual(api.state.get('compilers.recentDatabases'), { NO_DATABASE_PROFILE: ['sbnmaster'] });
   assert.match(api.status().database, /sbnmaster/);
   assert.match(logSince(n), /compilers\.pickDatabase invoked[\s\S]*database pick: sbnmaster/);
 }, 'folder');
 
-test('first F5 with nothing set asks for profile, then database, then runs the file (exit 0)', async () => {
+test('a profile with DATABASE and no pick: F5 runs without a picker, the status bar says where it came from', async () => {
+  api.setProfiles([{ name: PROFILE, aliases: [], platform: '', host: '', database: DATABASE }]);
+  try {
+    await setTarget(PROFILE, undefined, undefined);
+    await open(INSIDE);
+    assert.ok(api.status().database.includes(DATABASE), api.status().database);
+    assert.doesNotMatch(api.status().database, /pick a database/);
+    assert.strictEqual(api.statusTooltip().database, `from profile ${PROFILE}`);
+    const out = await runAndExpectSuccess(`runsql inside.sql -> ${DATABASE} on ${PROFILE}`);
+    assert.strictEqual(api.quickPick(), undefined, 'a picker opened');
+    assert.match(out, new RegExp(`run file: profile=${PROFILE} database=${DATABASE}`));
+  } finally {
+    api.setProfiles(undefined);
+  }
+}, 'folder');
+
+test('a profile without DATABASE and no pick: F5 opens the picker, titled for the profile', async () => {
+  api.setProfiles([{ name: 'NO_DATABASE_PROFILE', aliases: [], platform: '', host: '', database: '' }]);
+  try {
+    await setTarget('NO_DATABASE_PROFILE', undefined, undefined);
+    await open(INSIDE);
+    const done = vscode.commands.executeCommand('compilers.run');
+    const qp = await waitFor('database Quick Pick', () => api.quickPick());
+    assert.strictEqual(qp.title, 'Pick a database for NO_DATABASE_PROFILE');
+    assert.match(qp.placeholder, /type a database name and press Enter/i);
+    await vscode.commands.executeCommand('workbench.action.closeQuickOpen');
+    await done;
+    assert.match(api.status().database, /pick a database/);
+  } finally {
+    api.setProfiles(undefined);
+  }
+}, 'folder');
+
+test('a user pick overrides the profile default, the picker lists the default first, and other profiles keep their own', async () => {
+  api.setProfiles([
+    { name: PROFILE, aliases: [], platform: '', host: '', database: DATABASE },
+    { name: 'OTHER_PROFILE', aliases: [], platform: '', host: '', database: 'otherdb' },
+  ]);
+  try {
+    await setTarget(PROFILE, undefined, { [PROFILE]: ['zzz_recent'] });
+    const done = vscode.commands.executeCommand('compilers.pickDatabase');
+    const qp = await waitFor('database Quick Pick', () => api.quickPick());
+    assert.deepStrictEqual(qp.items.map((i) => [i.label, i.description || '']), [[DATABASE, '(profile default)'], ['zzz_recent', '']]);
+    qp.value = 'picked_db';
+    await waitFor('typed item', () => qp.items.some((i) => i.label === 'picked_db'));
+    qp.activeItems = [qp.items.find((i) => i.label === 'picked_db')];
+    await accept(qp);
+    await done;
+    assert.deepStrictEqual(api.state.get('compilers.databasePicks'), { [PROFILE]: 'picked_db' });
+    assert.ok(api.status().database.includes('picked_db'));
+    assert.notStrictEqual(api.statusTooltip().database, `from profile ${PROFILE}`);
+    await api.state.update('compilers.profile', 'OTHER_PROFILE');
+    api.refreshStatus();
+    assert.ok(api.status().database.includes('otherdb'), api.status().database);
+    assert.strictEqual(api.statusTooltip().database, 'from profile OTHER_PROFILE');
+  } finally {
+    api.setProfiles(undefined);
+  }
+}, 'folder');
+
+test('first F5 with nothing set asks for profile, then database (profile has none), then runs the file (exit 0)', async () => {
+  api.setProfiles([{ name: PROFILE, aliases: [], platform: '', host: '', database: '' }]);
   await setTarget(undefined, undefined, undefined);
   await open(INSIDE);
   const n = api.log.length;
@@ -133,6 +196,7 @@ test('first F5 with nothing set asks for profile, then database, then runs the f
   assert.match(out, /run file: profile=\S+ database=\S+ tool=.*runsql/i);
   assert.match(out, /argv: \[/);
   assert.match(api.status().profile, new RegExp(PROFILE));
+  api.setProfiles(undefined);
 }, 'folder');
 
 test('a selection runs with isqlline and its SQL text is not logged', async () => {

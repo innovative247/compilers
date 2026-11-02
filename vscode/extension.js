@@ -6,7 +6,7 @@ const path = require('path');
 const core = require('./lib/core');
 
 const KEY_PROFILE = 'compilers.profile';
-const KEY_DB = 'compilers.database';
+const KEY_DB = 'compilers.databasePicks'; // { profile: database } the user picked
 const KEY_RECENT = 'compilers.recentDatabases';
 const CONTEXT_KEY = 'compilers.sqlEditorActive';
 const TEST_HOOK = process.env.COMPILERS_TEST_HOOK === '1';
@@ -18,6 +18,7 @@ let statusDb;
 let output;
 let taskSeq = 0;
 let currentPick;
+let profilesOverride; // test hook only
 const testLog = [];
 
 const cfg = () => vscode.workspace.getConfiguration('compilers');
@@ -53,6 +54,7 @@ function resolveCommand(name) {
 }
 
 function loadProfiles() {
+  if (profilesOverride) return { profiles: profilesOverride };
   const exe = resolveCommand('runsql');
   if (!exe) return { error: 'runsql was not found on PATH. Install Compilers or set "compilers.installPath".', profiles: [] };
   const settings = core.settingsPathFor(exe, exists, fs.realpathSync, process.cwd());
@@ -64,15 +66,25 @@ function loadProfiles() {
   }
 }
 
+const profileEntry = (profile) => loadProfiles().profiles.find((p) => p.name.toLowerCase() === String(profile).toLowerCase());
+
+/** The database for a profile: the user's pick for it, else the profile's DATABASE. { database, source } */
+function databaseFor(profile) {
+  if (!profile) return { database: '', source: '' };
+  const entry = profileEntry(profile);
+  return core.resolveDatabase(core.pickedFor(ctx.workspaceState.get(KEY_DB), profile), entry && entry.database);
+}
+
 /** Status bar: the profile and database, or a warning-coloured prompt for whichever is missing. */
 function refreshStatus() {
   const profile = ctx.workspaceState.get(KEY_PROFILE);
-  const db = ctx.workspaceState.get(KEY_DB);
+  const { database: db, source } = databaseFor(profile);
   const warn = new vscode.ThemeColor('statusBarItem.warningBackground');
   statusProfile.text = profile ? `$(database) ${profile}` : '$(warning) Compilers: pick a profile';
   statusProfile.backgroundColor = profile ? undefined : warn;
   statusDb.text = db ? `$(symbol-namespace) ${db}` : '$(warning) Compilers: pick a database';
   statusDb.backgroundColor = db ? undefined : warn;
+  statusDb.tooltip = source === 'profile' ? `from profile ${profile}` : 'Compilers database (click to change)';
   statusProfile.show();
   statusDb.show();
 }
@@ -174,13 +186,16 @@ async function pickProfile() {
 async function pickDatabase() {
   const profile = ctx.workspaceState.get(KEY_PROFILE);
   const recent = (ctx.workspaceState.get(KEY_RECENT) || {})[profile] || [];
-  const found = loadProfiles().profiles.find((p) => p.name === profile);
-  const own = found && found.database ? [found.database] : [];
-  const names = recent.concat(own.filter((n) => !recent.some((r) => r.toLowerCase() === n.toLowerCase())));
+  const found = profileEntry(profile);
+  const own = found && found.database ? found.database : '';
+  const current = databaseFor(profile).database;
+  const same = (a, b) => a.toLowerCase() === b.toLowerCase();
+  const items = (own ? [{ label: own, description: '(profile default)', picked: same(own, current) }] : []).concat(
+    recent.filter((n) => !own || !same(n, own)).map((n) => ({ label: n, picked: same(n, current) })));
   const chosen = await pickOne({
-    title: `Compilers database on ${profile}`,
-    placeholder: names.length ? 'Pick a database, or type a name and press Enter' : 'Type a database name and press Enter',
-    items: names.map((n) => ({ label: n })),
+    title: `Pick a database for ${profile}`,
+    placeholder: 'Type a database name and press Enter' + (items.length ? ', or pick one from the list' : ''),
+    items,
     allowTyped: true,
   });
   log(`database pick: ${chosen || '(cancelled)'}`);
@@ -188,7 +203,9 @@ async function pickDatabase() {
   const all = ctx.workspaceState.get(KEY_RECENT) || {};
   all[profile] = core.pushRecent(all[profile], chosen);
   await ctx.workspaceState.update(KEY_RECENT, all);
-  await ctx.workspaceState.update(KEY_DB, chosen);
+  const picks = Object.assign({}, typeof ctx.workspaceState.get(KEY_DB) === 'object' ? ctx.workspaceState.get(KEY_DB) : {});
+  picks[profile] = chosen;
+  await ctx.workspaceState.update(KEY_DB, picks);
   refreshStatus();
   return chosen;
 }
@@ -196,7 +213,7 @@ async function pickDatabase() {
 async function changeProfile() {
   const before = ctx.workspaceState.get(KEY_PROFILE);
   const p = await pickProfile();
-  if (p && p !== before) await pickDatabase();
+  if (p && p !== before && !databaseFor(p).database) await pickDatabase();
 }
 
 /** Both targets, prompting for whichever is unset. undefined when the user cancels. */
@@ -204,7 +221,7 @@ async function ensureTarget() {
   let profile = ctx.workspaceState.get(KEY_PROFILE);
   if (!profile) profile = await pickProfile();
   if (!profile) return undefined;
-  let database = ctx.workspaceState.get(KEY_DB);
+  let database = databaseFor(profile).database;
   if (!database) database = await pickDatabase();
   if (!database) return undefined;
   return { profile, database };
@@ -398,6 +415,8 @@ function activate(context) {
       refreshStatus,
       status: () => ({ profile: statusProfile.text, database: statusDb.text }),
       quickPick: () => currentPick,
+      statusTooltip: () => ({ profile: statusProfile.tooltip, database: statusDb.tooltip }),
+      setProfiles: (list) => { profilesOverride = list; },
     };
   }
   return undefined;
