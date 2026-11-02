@@ -89,9 +89,12 @@ namespace ibsCompiler
             if (!string.IsNullOrWhiteSpace(env)) { yield return env; yield break; }
             var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
             if (string.IsNullOrEmpty(home)) yield break;
-            yield return Path.Combine(home, ".vscode", "extensions");
-            if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
-                yield return Path.Combine(home, ".vscode-server", "extensions"); // WSL remote
+            var local = Path.Combine(home, ".vscode", "extensions");
+            // WSL / remote hosts have only ~/.vscode-server; use it only when ~/.vscode is absent.
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux) && !Directory.Exists(local))
+                yield return Path.Combine(home, ".vscode-server", "extensions");
+            else
+                yield return local;
         }
 
         /// <summary>extensions.json is authoritative (old version folders linger until VS Code restarts); folder names only when it is absent.</summary>
@@ -371,14 +374,24 @@ namespace ibsCompiler
             try { Task.WaitAll(tasks, ms); } catch { }
         }
 
-        /// <summary>Probe result if finished (waiting up to <paramref name="waitMs"/>), else "not detected".</summary>
+        /// <summary>
+        /// Probe result if finished (waiting up to <paramref name="waitMs"/>); while the probe is
+        /// still in flight, detection comes from <see cref="IIdeIntegration.IsAvailable"/> (file
+        /// lookups only) with no version, so "still checking" never reads as "not installed".
+        /// </summary>
         public static IdeProbe Get(IIdeIntegration ide, int waitMs = 0)
         {
-            Start();
-            Task<IdeProbe> t;
-            lock (Gate) t = Probes[ide.FlagStem];
+            var t = ProbeTask(ide);
             try { if (!t.IsCompleted && waitMs > 0) t.Wait(waitMs); } catch { }
-            return t.IsCompletedSuccessfully ? t.Result : default;
+            if (t.IsCompletedSuccessfully) return t.Result;
+            try { return new IdeProbe(ide.IsAvailable, null); }
+            catch { return default; }
+        }
+
+        private static Task<IdeProbe> ProbeTask(IIdeIntegration ide)
+        {
+            Start();
+            lock (Gate) return Probes[ide.FlagStem];
         }
 
         /// <summary>True when the probe returned a version that is older than this build (compared as versions).</summary>
@@ -390,7 +403,7 @@ namespace ibsCompiler
 
         /// <summary>True when any finished probe shows an out-of-date integration (never waits).</summary>
         public static bool AnyOutOfDate() =>
-            IdeRegistry.All.Any(ide => IsOutOfDate(Get(ide).Version));
+            IdeRegistry.All.Select(ProbeTask).Any(t => t.IsCompletedSuccessfully && IsOutOfDate(t.Result.Version));
     }
 
     public static partial class set_profile_main

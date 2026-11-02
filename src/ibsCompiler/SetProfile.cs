@@ -24,19 +24,22 @@ namespace ibsCompiler
         {
             try { Console.OutputEncoding = System.Text.Encoding.UTF8; } catch { }
 
-            LoadSettings();
-
             // Headless dispatch — any of these flags routes to the non-interactive
             // CRUD/test handlers. Profile shortcut and the wizard remain unchanged
             // when no headless flag is provided.
             var argList = args.ToList();
-            if (CliArgs.AnyPresent(argList,
-                    new[] { "--create", "--edit", "--view", "--copy", "--delete", "--test",
-                            "--share", "--unshare", "--shared", "--fetch", "--shared-status" }
-                        .Concat(IdeRegistry.HeadlessFlags).ToArray()))
-            {
-                return RunHeadless(argList);
-            }
+            var headless = CliArgs.AnyPresent(argList,
+                new[] { "--create", "--edit", "--view", "--copy", "--delete", "--test",
+                        "--share", "--unshare", "--shared", "--fetch", "--shared-status" }
+                    .Concat(IdeRegistry.HeadlessFlags).ToArray());
+
+            // Interactive runs: start the background IDE probe now so it is done (or nearly)
+            // by the time the main menu draws.
+            if (!headless) IdeStatus.Start();
+
+            LoadSettings();
+
+            if (headless) return RunHeadless(argList);
 
             // Profile shortcut: set_profile GONZO  → open GONZO directly
             //                   set_profile NEWNAME → open new profile wizard with name pre-filled
@@ -241,10 +244,10 @@ namespace ibsCompiler
             PrintDim("Profiles store database connection settings used by runsql, runcreate,");
             PrintDim("and other compiler commands. Each profile points to a SQL source directory.");
 
-            // Probe installed IDE integrations in the background; the menu never waits on it
-            // (redirected runs wait <=200 ms once so their output is deterministic).
+            // The IDE probe started in Run; give it at most 200 ms once so the first draw can
+            // show the out-of-date flag. The menu never waits longer than that.
             IdeStatus.Start();
-            if (Console.IsInputRedirected || Console.IsOutputRedirected) IdeStatus.WaitAll(200);
+            IdeStatus.WaitAll(200);
 
             while (true)
             {

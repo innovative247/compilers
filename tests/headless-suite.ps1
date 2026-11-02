@@ -3009,8 +3009,7 @@ function Test-SharedProfiles {
         $x = Invoke-IdeProbeCase 'undetected' @('0.0.1') '0.0.1' -NotDetected
         if ($x.Out -notmatch 'No supported IDE detected \(VS Code\)\.') { throw "expected the no-IDE line. out: $($x.Out)" }
         if ($x.Out -match 'Add to VS Code|Remove from VS Code|update available') { throw "undetected IDE must not be offered or flagged. out: $($x.Out)" }
-        if ($x.Out -notmatch '3\.\s+IDE Integration\s*?
-') { throw "main menu keeps a plain 'IDE Integration'. out: $($x.Out)" }
+        if ($x.Out -notmatch '3\.\s+IDE Integration\s*\r?\n') { throw "main menu keeps a plain 'IDE Integration'. out: $($x.Out)" }
         if ($x.Out -notmatch '98\.\s+Back') { throw "expected 98 Back. out: $($x.Out)" }
     }
 
