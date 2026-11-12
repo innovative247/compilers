@@ -41,6 +41,7 @@ $projects = @(
     'i_run_upgrade'
     'transfer_data'
     'bcp_data'
+    'ibcp'
     'extract_msg'
     'sql-test'
     'check_api_procs'
@@ -67,18 +68,25 @@ $allFailed = @()
 foreach ($rid in $runtimes) {
     $outputDir = Join-Path $PSScriptRoot "bin\$rid"
 
-    # Clean previous output for this platform (preserve settings.json)
+    # Clean previous output for this platform (preserve settings.json and a SQLCMDINI.sql beside it, kept by older installs)
     if (Test-Path $outputDir) {
         $settingsBackup = $null
         $settingsFile = Join-Path $outputDir "settings.json"
         if (Test-Path $settingsFile) {
             $settingsBackup = Get-Content $settingsFile -Raw
         }
+        $sessionFile = Join-Path $outputDir "SQLCMDINI.sql"
+        $sessionBackup = if (Test-Path $sessionFile) { [IO.File]::ReadAllBytes($sessionFile) } else { $null }
         Remove-Item $outputDir -Recurse -Force
         if ($settingsBackup) {
             New-Item $outputDir -ItemType Directory -Force | Out-Null
             Set-Content (Join-Path $outputDir "settings.json") $settingsBackup -NoNewline
             Write-Host "  Preserved settings.json" -ForegroundColor Yellow
+        }
+        if ($null -ne $sessionBackup) {
+            New-Item $outputDir -ItemType Directory -Force | Out-Null
+            [IO.File]::WriteAllBytes((Join-Path $outputDir "SQLCMDINI.sql"), $sessionBackup)
+            Write-Host "  Preserved SQLCMDINI.sql" -ForegroundColor Yellow
         }
     }
 

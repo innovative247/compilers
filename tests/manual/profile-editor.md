@@ -200,6 +200,45 @@ plain `Choose [..]:` / `Select [..]:` ReadLine prompts unchanged.
       `Choose [1-4]:` / `Select […]:` prompts and does not hang — the always-visible
       `ReadKey` path is never taken on a redirected console.
 
+## MSSQL session settings (main menu item 6)
+
+The script is the file the `SQLCMDINI` environment variable names. Use a scratch machine or user: these steps change the real variable.
+
+- [ ] **Screen** - Main Menu -> 6 shows `The script path is set in the environment variable SQLCMDINI.`,
+      then `SQLCMDINI = <value>` or `SQLCMDINI is not set`, then the source line (`Using: shipped defaults <path to
+      SQLCMDINI.default.sql>` on a clean install), then the script text (six `SET` lines), then
+      `1 Modify / 2 Set the path / 3 Turn off / 4 Revert to shipped defaults / 98 Back / 99 Exit` with
+      `Choice: ` on the prompt line. An invalid entry prints `Invalid choice.` and stays; 98 or Esc goes back.
+- [ ] **Bad path** - point `SQLCMDINI` at a missing file, then at a folder: the screen still draws, the value
+      reads `<path> (not found)`, and the source line says `Using: shipped defaults <path>`.
+- [ ] **Modify (shipped file)** - with the variable naming the shipped file (or not set), 1 prints `An update
+      replaces this file. To keep your changes, save them to your own file and choose "Set the path".` and
+      opens the file in the editor; no copy is made. When the variable was not set it now reads the shipped path.
+- [ ] **Modify (your file)** - after step 2 below, 1 opens your file with no extra line. If that file has been
+      deleted, 1 asks `<path> does not exist. Create it from the shipped settings? [Y/n]`: Enter creates it
+      (and its folder) and opens it; `n` stays in the menu.
+- [ ] **Set the path, back out** - 2, then Esc on the empty path prompt (or Enter on it):
+      back in the MSSQL session settings menu, nothing saved. Esc on a part-typed path clears it.
+- [ ] **Set the path** - 2, enter a path that does not exist: a red error, back in the menu, nothing changed.
+      Enter an existing file: it prints `SQLCMDINI = <path>` and `Open a new terminal for other programs to pick
+      up the change.`; the screen shows that path and the file's text.
+- [ ] **Set the path fails** - where the variable cannot be saved (no permission), 2 asks `SQLCMDINI could not be
+      set. Use this file from set_profile instead? [Y/n]`. Enter: it prints `Using <path> from settings.json.` and
+      the screen reads `Using: <path> (set in settings.json because SQLCMDINI could not be set)`. `n`: it prints the
+      manual step (`[Environment]::SetEnvironmentVariable(...)` on Windows, `export SQLCMDINI=...` on Linux/macOS) and
+      stays in the menu. A later successful 2 removes the `settings.json` file.
+- [ ] **New terminal** - after a successful 2, a terminal opened before it still shows the old
+      `SQLCMDINI`; a new one shows the new path.
+- [ ] **Turn off / Turn on** - 3 turns the settings off: `Off: no session settings are applied`,
+      no script shown, `SQLCMDINI` unchanged, and the item now reads `Turn on`. 3 again returns to
+      whatever `SQLCMDINI` (or the `settings.json` file) names.
+- [ ] **Revert** - 4 asks first (`[y/N]`); `n` changes nothing. `y` points `SQLCMDINI` at the shipped
+      file and clears off; the screen reads `Using: shipped defaults <path>`. No file is deleted.
+- [ ] **Configure** - with `SQLCMDINI` unset, `set_profile configure` sets it to the shipped file and
+      says so; with it set, it leaves it and prints the value.
+- [ ] **Redirected fallback** - `echo "6" | set_profile` prints the screen and the plain
+      `Choose [1-4]:` prompt and does not hang.
+
 ## Robustness
 
 - [ ] **Save confirmation in scrollback** — after Save exits, the green

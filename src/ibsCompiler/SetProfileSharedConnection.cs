@@ -33,6 +33,18 @@ namespace ibsCompiler
 
         private static bool WriteSharedSection(SharedProfilesSettings? section)
         {
+            if (!WriteTopLevelSection("SharedProfiles", section)) return false;
+            _settings.SharedProfiles = section;
+            return true;
+        }
+
+        /// <summary>
+        /// Replace (or, with null, remove) one top-level node of settings.json. The file is re-read
+        /// and every other node is written back untouched, atomically. False (after printing why)
+        /// when the write failed.
+        /// </summary>
+        private static bool WriteTopLevelSection(string key, object? value)
+        {
             try
             {
                 System.Text.Json.Nodes.JsonNode root = new System.Text.Json.Nodes.JsonObject();
@@ -41,13 +53,12 @@ namespace ibsCompiler
                 if (root is not System.Text.Json.Nodes.JsonObject obj)
                     throw new InvalidOperationException("settings.json is not a JSON object");
 
-                if (section == null) obj.Remove("SharedProfiles");
-                else obj["SharedProfiles"] = System.Text.Json.JsonSerializer.SerializeToNode(section);
+                if (value == null) obj.Remove(key);
+                else obj[key] = System.Text.Json.JsonSerializer.SerializeToNode(value, value.GetType());
 
                 var json = obj.ToJsonString(new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
                 if (!ibs_compiler_common.WriteAllTextAtomic(_settingsPath, json))
                     throw new IOException("the file could not be written");
-                _settings.SharedProfiles = section;
                 return true;
             }
             catch (Exception ex)

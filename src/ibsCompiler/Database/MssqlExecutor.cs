@@ -11,7 +11,19 @@ namespace ibsCompiler.Database
         private readonly ResolvedProfile _profile;
         private static readonly Regex GoRegex = new(@"^\s*go\s*$", RegexOptions.IgnoreCase | RegexOptions.Multiline);
         private static readonly Regex ExitRegex = new(@"^\s*(exit|quit)\s*$", RegexOptions.IgnoreCase);
-        private static readonly string? SqlCmdInitScript = LoadSqlCmdInit();
+        // Resolved once per process (off, settings.json file, SQLCMDINI, shipped); nothing may escape.
+        private static readonly string SqlCmdInitScript = ResolveSessionScript();
+
+        private static string ResolveSessionScript()
+        {
+            try { return MssqlSessionSettings.ResolveCurrent().Script; }
+            catch (Exception ex)
+            {
+                MssqlSessionSettings.WarnOnce($"warning: MSSQL session settings could not be resolved ({ex.Message}); using the built-in defaults.");
+                try { return MssqlSessionSettings.ShippedScript(); }
+                catch (Exception) { return ""; }
+            }
+        }
 
         // Per-call output sink wired up by ExecuteSql/ExecuteBatch. The persistent
         // connection's InfoMessage handler routes through this so PRINT/RAISERROR
@@ -42,29 +54,10 @@ namespace ibsCompiler.Database
             _profile = profile;
         }
 
-        private static string? LoadSqlCmdInit()
-        {
-            // Session defaults live in a SQLCMDINI.sql, exactly like native sqlcmd reads its
-            // SQLCMDINI startup script (the mechanism the legacy compiler relied on). Resolve it
-            // from $env:SQLCMDINI first (explicit, matches the legacy toolchain), else a local
-            // SQLCMDINI.sql sitting next to settings.json/the binaries. A local, versionable
-            // settings file — never hard-coded values.
-            var path = Environment.GetEnvironmentVariable("SQLCMDINI");
-            if (string.IsNullOrEmpty(path) || !File.Exists(path))
-            {
-                var settings = ProfileManager.FindSettingsFile();
-                var dir = (settings != null ? Path.GetDirectoryName(settings) : null) ?? AppContext.BaseDirectory;
-                path = Path.Combine(dir, "SQLCMDINI.sql");
-            }
-            return File.Exists(path) ? File.ReadAllText(path) : null;
-        }
-
         private static void ExecuteInitScript(SqlConnection connection)
         {
-            // Session defaults (ARITHABORT, CONCAT_NULL_YIELDS_NULL, ANSI_NULL_DFLT, ...) come from
-            // SQLCMDINI.sql via the env var / local file — never hard-coded. Same mechanism native
-            // sqlcmd and the legacy compiler used.
-            if (SqlCmdInitScript != null)
+            // Session defaults come from MssqlSessionSettings, never hard-coded here; an empty script means off.
+            if (!string.IsNullOrWhiteSpace(SqlCmdInitScript))
                 using (var cmd = new SqlCommand(SqlCmdInitScript, connection))
                     cmd.ExecuteNonQuery();
             // Honor the target database's QUOTED_IDENTIFIER. Microsoft.Data.SqlClient forces it ON at

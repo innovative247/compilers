@@ -42,6 +42,7 @@ $script:Bin     = (Resolve-Path "$PSScriptRoot\..\bin\win-x64").Path
 $script:Scratch = Join-Path $env:TEMP "compilers-tests-$([Guid]::NewGuid().ToString('N').Substring(0,8))"
 $script:TestProfile  = 'TEST_LOCAL'
 $script:SourceProfile = 'SRM_LOCAL'
+$script:MssqlProfile = 'QUEBEC'          # live MSSQL profile for the session-settings cases (read-only selects)
 $script:PgProfile    = 'TEST_PG_LOCAL'   # POSTGRES profile over the scratch source (SR 52910 # quoting)
 
 # ---------- test harness ----------
@@ -179,6 +180,10 @@ function Initialize-Suite {
     $setup = Join-Path $script:Scratch 'CSS\Setup'
     New-Item -ItemType Directory -Path $setup -Force | Out-Null
 
+    # The SQLCMDINI step of every `configure` run must land in the scratch, never in the developer's real environment.
+    $script:OriginalSqlCmdIniStore = $env:COMPILERS_SQLCMDINI_STORE
+    $env:COMPILERS_SQLCMDINI_STORE = Join-Path $script:Scratch 'sqlcmdini-suite-store.txt'
+
     # options.def — minimal valid file (value option + onoff option)
     @(
         '# Test options.def for headless suite'
@@ -267,6 +272,7 @@ function Initialize-Suite {
 
 function Remove-Suite {
     $env:EDITOR = $script:OriginalEditor
+    $env:COMPILERS_SQLCMDINI_STORE = $script:OriginalSqlCmdIniStore
     if ($NoCleanup) {
         Write-Host "Leaving TEST_LOCAL and $script:Scratch in place (--NoCleanup)." -ForegroundColor Yellow
         return
@@ -2465,6 +2471,370 @@ function Test-ProfileManagement {
         finally { [IO.File]::WriteAllText($settingsPath, $backup) }
     }
 
+    # --- MSSQL session settings (set_profile menu item 6): the script is named by the SQLCMDINI variable ---
+    # Each case runs against a scratch store (COMPILERS_SQLCMDINI_STORE) with SQLCMDINI cleared, so the developer's real environment is never touched.
+    function Use-DefaultMssqlSession {
+        param([Parameter(Mandatory)][scriptblock]$Body)
+        $msSettings = Join-Path $script:Bin 'settings.json'
+        $msLocal    = Join-Path $script:Bin 'SQLCMDINI.sql'
+        $msKeep     = "$msLocal.suite-bak"
+        $msStore    = Join-Path $script:Scratch 'sqlcmdini-store.txt'
+        $msBackup   = [IO.File]::ReadAllText($msSettings)
+        $msEnvBak   = $env:SQLCMDINI
+        $msStoreBak = $env:COMPILERS_SQLCMDINI_STORE
+        # A killed earlier run leaves the developer's copy in the .suite-bak file: put it back first.
+        if (Test-Path $msKeep) { Move-Item $msKeep $msLocal -Force }
+        $msHadLocal = Test-Path $msLocal
+        try {
+            $env:SQLCMDINI = $null
+            $env:COMPILERS_SQLCMDINI_STORE = $msStore
+            if (Test-Path $msStore) { Remove-Item $msStore -Force }
+            if ($msHadLocal) { Copy-Item $msLocal $msKeep -Force; Remove-Item $msLocal -Force }
+            # A MssqlSessionSettings key the developer already has must not leak into the case (the finally restores the file).
+            $msObj = [IO.File]::ReadAllText($msSettings) | ConvertFrom-Json
+            if ($msObj.PSObject.Properties['MssqlSessionSettings']) {
+                $msObj.PSObject.Properties.Remove('MssqlSessionSettings')
+                [IO.File]::WriteAllText($msSettings, ($msObj | ConvertTo-Json -Depth 20))
+            }
+            & $Body
+        }
+        finally {
+            [IO.File]::WriteAllText($msSettings, $msBackup)
+            if (Test-Path $msLocal) { Remove-Item $msLocal -Force }
+            if ($msHadLocal) { Move-Item $msKeep $msLocal -Force }
+            if (Test-Path $msStore) { Remove-Item $msStore -Force }
+            $env:SQLCMDINI = $msEnvBak
+            $env:COMPILERS_SQLCMDINI_STORE = $msStoreBak
+        }
+    }
+
+    # What the scratch store holds ('' when unset). Paths are compared by leaf name plus Test-Path: the scratch dir can be an 8.3 short path.
+    function Get-MssqlStore {
+        $p = Join-Path $script:Scratch 'sqlcmdini-store.txt'
+        if (-not (Test-Path $p)) { return '' }
+        return ([IO.File]::ReadAllText($p)).Trim()
+    }
+    function Assert-MssqlStoreNames {
+        param([Parameter(Mandatory)][string]$Leaf, [switch]$MustExist)
+        $v = Get-MssqlStore
+        if ($v -eq '' -or (Split-Path $v -Leaf) -ne $Leaf) { throw "the saved SQLCMDINI should name $Leaf. got: '$v'" }
+        if ($MustExist -and -not (Test-Path $v)) { throw "the saved SQLCMDINI names a file that does not exist: $v" }
+    }
+    # Writes a FILE entry straight into settings.json (the bin copy the case restores afterwards), even for a path that does not exist.
+    function Set-MssqlFileSetting {
+        param([Parameter(Mandatory)][string]$Path)
+        $msSettings = Join-Path $script:Bin 'settings.json'
+        $obj = [IO.File]::ReadAllText($msSettings) | ConvertFrom-Json
+        $obj | Add-Member -NotePropertyName 'MssqlSessionSettings' -NotePropertyValue ([pscustomobject]@{ FILE = $Path }) -Force
+        [IO.File]::WriteAllText($msSettings, ($obj | ConvertTo-Json -Depth 20))
+    }
+
+    Test-Case 'set_profile.mssql_settings_show_default' {
+        Use-DefaultMssqlSession {
+            $r = Invoke-Cli set_profile '--mssql-settings' 'show'
+            Assert-ExitCode $r
+            if ($r.StdOut -notmatch 'Using: shipped defaults') { throw "show should report the shipped defaults. stdout: $($r.StdOut)" }
+            if ($r.StdOut -notmatch 'SQLCMDINI is not set') { throw "show should say the variable is not set. stdout: $($r.StdOut)" }
+            if ($r.StdOut -notmatch 'script path is set in the environment variable SQLCMDINI') { throw "show should say where the path lives. stdout: $($r.StdOut)" }
+            if ($r.StdOut -notmatch 'CONCAT_NULL_YIELDS_NULL') { throw "show should print the script. stdout: $($r.StdOut)" }
+            if ((Get-Settings).PSObject.Properties['MssqlSessionSettings']) { throw 'a clean state must not write the MssqlSessionSettings key' }
+        }
+    }
+
+    Test-Case 'set_profile.mssql_settings_off_on' {
+        Use-DefaultMssqlSession {
+            Assert-ExitCode (Invoke-Cli set_profile '--mssql-settings' 'off')
+            $r = Invoke-Cli set_profile '--mssql-settings' 'show'
+            Assert-ExitCode $r
+            if ($r.StdOut -notmatch 'Off: no session settings are applied') { throw "show should report off. stdout: $($r.StdOut)" }
+            if ($r.StdOut -match 'CONCAT_NULL_YIELDS_NULL') { throw 'show must not print a script while off' }
+            if ((Get-Settings).MssqlSessionSettings.MODE -ne 'off') { throw 'settings.json should hold MODE off' }
+            if ((Get-MssqlStore) -ne '') { throw 'off must leave the SQLCMDINI variable alone' }
+
+            Assert-ExitCode (Invoke-Cli set_profile '--mssql-settings' 'on')
+            if ((Get-Settings).PSObject.Properties['MssqlSessionSettings']) { throw 'turning on should remove the MssqlSessionSettings key' }
+            $r = Invoke-Cli set_profile '--mssql-settings' 'show'
+            if ($r.StdOut -notmatch 'Using: shipped defaults') { throw "show should be back on the shipped defaults. stdout: $($r.StdOut)" }
+        }
+    }
+
+    Test-Case 'set_profile.mssql_settings_file' {
+        Use-DefaultMssqlSession {
+            $f = Join-Path $script:Scratch 'mssql-session-suite.sql'
+            Set-Content -Path $f -Value @('SET ARITHABORT OFF', '-- suite marker') -Encoding ASCII
+            Assert-ExitCode (Invoke-Cli set_profile '--mssql-settings-file' $f)
+            Assert-MssqlStoreNames 'mssql-session-suite.sql' -MustExist
+            $r = Invoke-Cli set_profile '--mssql-settings' 'show'
+            Assert-ExitCode $r
+            if ($r.StdOut -notmatch 'mssql-session-suite\.sql') { throw "show should name the file. stdout: $($r.StdOut)" }
+            if ($r.StdOut -notmatch 'SQLCMDINI = ')             { throw "show should print the variable. stdout: $($r.StdOut)" }
+            if ($r.StdOut -notmatch 'suite marker')             { throw "show should print the file's text. stdout: $($r.StdOut)" }
+            if ($r.StdOut -match 'CONCAT_NULL_YIELDS_NULL')     { throw 'show must print the chosen file, not the shipped script' }
+        }
+    }
+
+    Test-Case 'set_profile.mssql_settings_file_missing_errors' {
+        Use-DefaultMssqlSession {
+            $msSettings = Join-Path $script:Bin 'settings.json'
+            $before = [IO.File]::ReadAllText($msSettings)
+            $r = Invoke-Cli set_profile '--mssql-settings-file' (Join-Path $script:Scratch 'no-such-session-file.sql')
+            if ($r.ExitCode -eq 0) { throw 'a nonexistent file must fail' }
+            if ($r.StdErr -notmatch 'no-such-session-file') { throw "stderr should name the path: $($r.StdErr)" }
+            if ((Get-MssqlStore) -ne '') { throw 'the saved SQLCMDINI must not change on a rejected file' }
+            if ([IO.File]::ReadAllText($msSettings) -ne $before) { throw 'settings.json must not change on a rejected file' }
+        }
+    }
+
+    Test-Case 'set_profile.mssql_settings_off_on_keeps_file' {
+        Use-DefaultMssqlSession {
+            $f = Join-Path $script:Scratch 'mssql-session-keep.sql'
+            Set-Content -Path $f -Value '-- keep marker' -Encoding ASCII
+            Assert-ExitCode (Invoke-Cli set_profile '--mssql-settings-file' $f)
+            $saved = Get-MssqlStore
+            Assert-ExitCode (Invoke-Cli set_profile '--mssql-settings' 'off')
+            if ((Get-MssqlStore) -ne $saved) { throw 'off must leave the saved SQLCMDINI untouched' }
+            Assert-ExitCode (Invoke-Cli set_profile '--mssql-settings' 'on')
+            if ((Get-MssqlStore) -ne $saved) { throw 'on must leave the saved SQLCMDINI untouched' }
+            $r = Invoke-Cli set_profile '--mssql-settings' 'show'
+            if ($r.StdOut -notmatch 'keep marker') { throw "show should print the chosen file again. stdout: $($r.StdOut)" }
+        }
+    }
+
+    Test-Case 'set_profile.mssql_settings_revert' {
+        Use-DefaultMssqlSession {
+            $f = Join-Path $script:Scratch 'mssql-session-revert.sql'
+            Set-Content -Path $f -Value '-- revert marker' -Encoding ASCII
+            Assert-ExitCode (Invoke-Cli set_profile '--mssql-settings-file' $f)
+            Assert-ExitCode (Invoke-Cli set_profile '--mssql-settings' 'off')
+            Assert-ExitCode (Invoke-Cli set_profile '--mssql-settings' 'revert')
+            if (-not (Test-Path $f)) { throw 'revert must not delete the chosen file' }
+            Assert-MssqlStoreNames 'SQLCMDINI.default.sql'
+            if ((Get-Settings).PSObject.Properties['MssqlSessionSettings']) { throw 'revert should clear the off setting' }
+            $r = Invoke-Cli set_profile '--mssql-settings' 'show'
+            if ($r.StdOut -notmatch 'Using: shipped defaults') { throw "show should report the shipped defaults after revert. stdout: $($r.StdOut)" }
+        }
+    }
+
+    Test-Case 'set_profile.mssql_settings_file_cannot_set_variable' {
+        Use-DefaultMssqlSession {
+            # A store in a folder that does not exist makes saving the variable fail on every OS.
+            $env:COMPILERS_SQLCMDINI_STORE = Join-Path $script:Scratch 'no-such-dir\store.txt'
+            $f = Join-Path $script:Scratch 'mssql-session-nosave.sql'
+            Set-Content -Path $f -Value '-- nosave marker' -Encoding ASCII
+            $r = Invoke-Cli set_profile '--mssql-settings-file' $f
+            if ($r.ExitCode -eq 0) { throw 'a variable that cannot be saved must fail' }
+            if ($r.StdErr -notmatch 'SetEnvironmentVariable|export SQLCMDINI') { throw "stderr should give the manual step. stderr: $($r.StdErr)" }
+            if ($r.StdErr -notmatch '--use-settings-file') { throw "stderr should hint at --use-settings-file. stderr: $($r.StdErr)" }
+            if ((Get-Settings).PSObject.Properties['MssqlSessionSettings']) { throw 'a failed set must not write settings.json' }
+        }
+    }
+
+    Test-Case 'set_profile.mssql_settings_use_settings_file' {
+        Use-DefaultMssqlSession {
+            $env:COMPILERS_SQLCMDINI_STORE = Join-Path $script:Scratch 'no-such-dir\store.txt'
+            $f = Join-Path $script:Scratch 'mssql-session-inifile.sql'
+            Set-Content -Path $f -Value '-- inifile marker' -Encoding ASCII
+            Assert-ExitCode (Invoke-Cli set_profile '--mssql-settings-file' $f '--use-settings-file')
+            $m = (Get-Settings).MssqlSessionSettings
+            if (-not $m.FILE -or (Split-Path $m.FILE -Leaf) -ne 'mssql-session-inifile.sql' -or -not (Test-Path $m.FILE)) { throw "settings.json should hold FILE. got: $($m | ConvertTo-Json -Compress)" }
+            $r = Invoke-Cli set_profile '--mssql-settings' 'show'
+            Assert-ExitCode $r
+            if ($r.StdOut -notmatch 'mssql-session-inifile\.sql') { throw "show should name the file. stdout: $($r.StdOut)" }
+            if ($r.StdOut -notmatch 'set in settings\.json')       { throw "show should say it comes from settings.json. stdout: $($r.StdOut)" }
+            if ($r.StdOut -notmatch 'inifile marker')              { throw "show should print the file's text. stdout: $($r.StdOut)" }
+            # Turning off and on leaves FILE alone.
+            Assert-ExitCode (Invoke-Cli set_profile '--mssql-settings' 'off')
+            Assert-ExitCode (Invoke-Cli set_profile '--mssql-settings' 'on')
+            if (-not (Get-Settings).MssqlSessionSettings.FILE) { throw 'off/on must keep FILE' }
+        }
+    }
+
+    Test-Case 'set_profile.mssql_settings_set_clears_settings_file' {
+        Use-DefaultMssqlSession {
+            $f = Join-Path $script:Scratch 'mssql-session-first.sql'
+            $g = Join-Path $script:Scratch 'mssql-session-second.sql'
+            Set-Content -Path $f -Value '-- first marker' -Encoding ASCII
+            Set-Content -Path $g -Value '-- second marker' -Encoding ASCII
+            Assert-ExitCode (Invoke-Cli set_profile '--mssql-settings-file' $f '--use-settings-file')
+            if (-not (Get-Settings).MssqlSessionSettings.FILE) { throw 'precondition: FILE should be set' }
+            Assert-ExitCode (Invoke-Cli set_profile '--mssql-settings-file' $g)
+            if ((Get-Settings).PSObject.Properties['MssqlSessionSettings']) { throw 'a successful set of SQLCMDINI should clear FILE' }
+            $r = Invoke-Cli set_profile '--mssql-settings' 'show'
+            if ($r.StdOut -notmatch 'second marker') { throw "show should now use the variable's file. stdout: $($r.StdOut)" }
+        }
+    }
+
+    Test-Case 'set_profile.mssql_settings_file_deleted_falls_through' {
+        Use-DefaultMssqlSession {
+            $f = Join-Path $script:Scratch 'mssql-session-gone.sql'
+            Set-Content -Path $f -Value 'SET ARITHABORT OFF' -Encoding ASCII
+            Assert-ExitCode (Invoke-Cli set_profile '--mssql-settings-file' $f)
+            Remove-Item $f -Force
+            $r = Invoke-Cli set_profile '--mssql-settings' 'show'
+            Assert-ExitCode $r
+            if ($r.StdErr -notmatch 'mssql-session-gone') { throw "stderr should warn about the missing file. stderr: $($r.StdErr)" }
+            if ($r.StdOut -notmatch 'Using: shipped defaults') { throw "show should fall through to the shipped defaults. stdout: $($r.StdOut)" }
+        }
+    }
+
+    Test-Case 'set_profile.mssql_settings_legacy_beside_settings' {
+        Use-DefaultMssqlSession {
+            $msLocal = Join-Path $script:Bin 'SQLCMDINI.sql'
+            Set-Content -Path $msLocal -Value '-- local copy marker' -Encoding ASCII
+            $r = Invoke-Cli set_profile '--mssql-settings' 'show'
+            Assert-ExitCode $r
+            if ($r.StdOut -notmatch 'found beside settings.json') { throw "show should report the file found beside settings.json. stdout: $($r.StdOut)" }
+            if ($r.StdOut -notmatch 'local copy marker') { throw "show should print the file's text. stdout: $($r.StdOut)" }
+        }
+    }
+
+    Test-Case 'set_profile.mssql_settings_process_variable_wins' {
+        Use-DefaultMssqlSession {
+            $saved = Join-Path $script:Scratch 'mssql-session-saved.sql'
+            $proc  = Join-Path $script:Scratch 'mssql-session-proc.sql'
+            Set-Content -Path $saved -Value '-- saved marker' -Encoding ASCII
+            Set-Content -Path $proc -Value '-- process marker' -Encoding ASCII
+            Assert-ExitCode (Invoke-Cli set_profile '--mssql-settings-file' $saved)
+            $env:SQLCMDINI = $proc
+            $r = Invoke-Cli set_profile '--mssql-settings' 'show'
+            Assert-ExitCode $r
+            if ($r.StdOut -notmatch 'Using: .*mssql-session-proc') { throw "show should name the process variable's file. stdout: $($r.StdOut)" }
+            if ($r.StdOut -notmatch 'process marker') { throw "show should print the process variable's file. stdout: $($r.StdOut)" }
+            if ($r.StdOut -match 'saved marker') { throw 'the saved value must lose to the process variable' }
+        }
+    }
+
+    Test-Case 'set_profile.mssql_settings_leftover_file_mode_ignored' {
+        Use-DefaultMssqlSession {
+            # An earlier dev build wrote MODE file; it must load and count as not off.
+            $msSettings = Join-Path $script:Bin 'settings.json'
+            $obj = [IO.File]::ReadAllText($msSettings) | ConvertFrom-Json
+            $obj | Add-Member -NotePropertyName 'MssqlSessionSettings' -NotePropertyValue ([pscustomobject]@{ MODE = 'file' }) -Force
+            [IO.File]::WriteAllText($msSettings, ($obj | ConvertTo-Json -Depth 20))
+            $r = Invoke-Cli set_profile '--mssql-settings' 'show'
+            Assert-ExitCode $r
+            if ($r.StdOut -notmatch 'Using: shipped defaults') { throw "a leftover MODE file should show the shipped defaults. stdout: $($r.StdOut)" }
+        }
+    }
+
+    Test-Case 'set_profile.mssql_settings_survives_edit' {
+        Use-DefaultMssqlSession {
+            Assert-ExitCode (Invoke-Cli set_profile '--mssql-settings' 'off')
+            Assert-ExitCode (Invoke-Cli set_profile '--copy' $script:TestProfile '--to' 'MSSQL_SESSION_SUITE')
+            try {
+                Assert-ExitCode (Invoke-Cli set_profile '--edit' 'MSSQL_SESSION_SUITE' '--port' '1436')
+                if ((Get-Settings).MssqlSessionSettings.MODE -ne 'off') { throw 'a profile edit dropped the MssqlSessionSettings key' }
+            } finally {
+                [void](Invoke-Cli set_profile '--delete' 'MSSQL_SESSION_SUITE' '--yes')
+            }
+        }
+    }
+
+    # A file that is held open (no sharing) exists but cannot be read.
+    Test-Case 'set_profile.mssql_settings_unreadable_file_falls_through' {
+        Use-DefaultMssqlSession {
+            $f = Join-Path $script:Scratch 'mssql-session-locked.sql'
+            Set-Content -Path $f -Value '-- locked marker' -Encoding ASCII
+            Assert-ExitCode (Invoke-Cli set_profile '--mssql-settings-file' $f)
+            $fs = [System.IO.File]::Open($f, 'Open', 'Read', 'None')
+            try { $r = Invoke-Cli set_profile '--mssql-settings' 'show' }
+            finally { $fs.Close() }
+            Assert-ExitCode $r
+            if ($r.StdErr -notmatch 'could not be read') { throw "stderr should warn that the file could not be read. stderr: $($r.StdErr)" }
+            if ($r.StdOut -notmatch 'Using: shipped defaults') { throw "show should fall through to the shipped defaults. stdout: $($r.StdOut)" }
+        }
+    }
+
+    # A bad path must never break a compiler: one warning, the next source, exit 0. Each entry sets up one bad source.
+    $badSessionPaths = @(
+        @{ Name = 'missing_variable';      Apply = { $env:SQLCMDINI = Join-Path $script:Scratch 'no-such-session.sql' } },
+        @{ Name = 'directory_variable';    Apply = { $env:SQLCMDINI = $script:Scratch } },
+        # Path.GetFullPath throws ArgumentException for a whitespace-only path and for one with a NUL character
+        # (checked on .NET 10 / PowerShell 7.6; \\?\ alone does not throw). A NUL cannot travel in an environment variable, so it goes through settings.json.
+        @{ Name = 'invalid_variable';      Apply = { $env:SQLCMDINI = ' ' } },
+        @{ Name = 'invalid_settings_file'; Apply = { Set-MssqlFileSetting "C:\bad`0path.sql" } },
+        @{ Name = 'missing_settings_file'; Apply = { Set-MssqlFileSetting (Join-Path $script:Scratch 'no-such-session-file.sql') } }
+    )
+    foreach ($bad in $badSessionPaths) {
+        Test-Case "set_profile.mssql_settings_bad_path_show_$($bad.Name)" {
+            Use-DefaultMssqlSession {
+                & $bad.Apply
+                $r = Invoke-Cli set_profile '--mssql-settings' 'show'
+                Assert-ExitCode $r
+                if ($r.StdOut -notmatch '\(not found\)') { throw "show should mark the bad path (not found). stdout: $($r.StdOut)" }
+                if ($r.StdOut -notmatch 'Using: shipped defaults') { throw "show should fall through to the shipped defaults. stdout: $($r.StdOut)" }
+                if ($r.StdErr -notmatch 'warning') { throw "stderr should carry the warning. stderr: $($r.StdErr)" }
+            }
+        }
+    }
+
+    # Live cases: read-only selects, no spaces in the SQL (Start-Process splits arguments on them).
+    $mssqlLive = Get-Profile $script:MssqlProfile
+    $mssqlSql  = "select(convert(int,sessionproperty('CONCAT_NULL_YIELDS_NULL')))"
+    if (-not $mssqlLive -or $mssqlLive.PLATFORM -ne 'MSSQL') {
+        $why = "profile $($script:MssqlProfile) is not an MSSQL profile in settings.json"
+        Skip-Case 'isqlline.mssql_session_default_concat_null' $why
+        Skip-Case 'isqlline.mssql_session_off_concat_null' $why
+        foreach ($bad in $badSessionPaths) { Skip-Case "isqlline.mssql_session_bad_path_$($bad.Name)" $why }
+        Skip-Case 'isqlline.mssql_session_unreadable_file' $why
+        Skip-Case 'isqlline.mssql_session_file_concat_null_on' $why
+    }
+    else {
+        Test-Case 'isqlline.mssql_session_default_concat_null' {
+            Use-DefaultMssqlSession {
+                $r = Invoke-Cli isqlline $mssqlSql 'master' $script:MssqlProfile
+                Assert-ExitCode $r
+                if ($r.StdOut -notmatch '(?m)^\s*0\s*$') { throw "shipped defaults should give CONCAT_NULL_YIELDS_NULL 0. stdout: $($r.StdOut)" }
+            }
+        }
+
+        Test-Case 'isqlline.mssql_session_off_concat_null' {
+            Use-DefaultMssqlSession {
+                Assert-ExitCode (Invoke-Cli set_profile '--mssql-settings' 'off')
+                $r = Invoke-Cli isqlline $mssqlSql 'master' $script:MssqlProfile
+                Assert-ExitCode $r
+                if ($r.StdOut -notmatch '(?m)^\s*1\s*$') { throw "with the settings off CONCAT_NULL_YIELDS_NULL should be 1. stdout: $($r.StdOut)" }
+            }
+        }
+
+        Test-Case 'isqlline.mssql_session_unreadable_file' {
+            Use-DefaultMssqlSession {
+                $f = Join-Path $script:Scratch 'mssql-session-locked-live.sql'
+                Set-Content -Path $f -Value 'SET CONCAT_NULL_YIELDS_NULL ON' -Encoding ASCII
+                Assert-ExitCode (Invoke-Cli set_profile '--mssql-settings-file' $f)
+                $fs = [System.IO.File]::Open($f, 'Open', 'Read', 'None')
+                try { $r = Invoke-Cli isqlline $mssqlSql 'master' $script:MssqlProfile }
+                finally { $fs.Close() }
+                Assert-ExitCode $r
+                if ($r.StdOut -notmatch '(?m)^\s*0\s*$') { throw "an unreadable file should fall through to the shipped value 0. stdout: $($r.StdOut)" }
+                if ($r.StdErr -notmatch 'could not be read') { throw "stderr should carry the warning. stderr: $($r.StdErr)" }
+            }
+        }
+
+        Test-Case 'isqlline.mssql_session_file_concat_null_on' {
+            Use-DefaultMssqlSession {
+                $f = Join-Path $script:Scratch 'mssql-session-concat-on.sql'
+                Set-Content -Path $f -Value 'SET CONCAT_NULL_YIELDS_NULL ON' -Encoding ASCII
+                Assert-ExitCode (Invoke-Cli set_profile '--mssql-settings-file' $f)
+                $r = Invoke-Cli isqlline $mssqlSql 'master' $script:MssqlProfile
+                Assert-ExitCode $r
+                if ($r.StdOut -notmatch '(?m)^\s*1\s*$') { throw "a chosen file with CONCAT_NULL_YIELDS_NULL ON should give 1. stdout: $($r.StdOut)" }
+            }
+        }
+
+        foreach ($bad in $badSessionPaths) {
+            Test-Case "isqlline.mssql_session_bad_path_$($bad.Name)" {
+                Use-DefaultMssqlSession {
+                    & $bad.Apply
+                    $r = Invoke-Cli isqlline $mssqlSql 'master' $script:MssqlProfile
+                    Assert-ExitCode $r
+                    if ($r.StdOut -notmatch '(?m)^\s*0\s*$') { throw "a bad path should fall through to the shipped value 0. stdout: $($r.StdOut)" }
+                    if ($r.StdErr -notmatch 'warning') { throw "stderr should carry the warning. stderr: $($r.StdErr)" }
+                }
+            }
+        }
+    }
+
     Test-Case 'set_profile.copy' {
         $r = Invoke-Cli set_profile '--copy' $scratchProfile '--to' "${scratchProfile}_2"
         Assert-ExitCode $r
@@ -3256,6 +3626,14 @@ function Test-BulkCopy {
         if ($r.StdOut -notmatch '<table\.\.\.>') { throw "usage should document the table list. stdout: $($r.StdOut)" }
         if ($r.StdOut -notmatch '<IN\|OUT>')     { throw "usage should document the direction. stdout: $($r.StdOut)" }
         if ($r.StdOut -notmatch '\[datafile\]')  { throw "usage should document the datafile positional. stdout: $($r.StdOut)" }
+    }
+    Test-Case 'ibcp.alias_usage' {
+        # ibcp is built from bcp_data's source; it must run and name itself.
+        $r = Invoke-Cli ibcp 'help'
+        Assert-ExitCode $r
+        if ($r.StdOut -notmatch 'Usage: ibcp <table\.\.\.> <IN\|OUT>') { throw "ibcp usage should name ibcp. stdout: $($r.StdOut)" }
+        $r = Invoke-Cli ibcp 'OUT'
+        if ($r.ExitCode -eq 0) { throw 'ibcp with no profile must fail like bcp_data' }
     }
     Test-Case 'bcp_data.truncate_flag_usage' {
         # --truncate is documented, and it is a flag rather than a positional:
@@ -4126,6 +4504,7 @@ function Test-SelfMgmt {
         if ($r.StdOut -notmatch 'Version:|Bin dir:|Platform:|Settings:|PATH:') {
             throw "expected configure status fields. stdout: $($r.StdOut)"
         }
+        if ($r.StdOut -notmatch 'SQLCMDINI:') { throw "expected the SQLCMDINI status row. stdout: $($r.StdOut)" }
     }
     Test-Case 'configure.all_binaries' {
         # Every binary supports `configure`. Smoke test that each exits 0.

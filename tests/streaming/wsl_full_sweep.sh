@@ -41,6 +41,10 @@ for c in "${ALL[@]}"; do
 done
 
 echo
+# configure also saves SQLCMDINI; keep that in a scratch store, never in the real shell profile.
+export COMPILERS_SQLCMDINI_STORE="$(mktemp)"
+trap 'rm -f "$COMPILERS_SQLCMDINI_STORE"' EXIT
+
 echo "=== Phase 2: 'configure' on all 22 compilers ==="
 for c in "${ALL[@]}"; do
   run "${c} configure" "./${c}" configure

@@ -99,11 +99,32 @@ namespace ibsCompiler.Configuration
         public SharedProfilesSettings? SharedProfiles { get; set; }
 
         /// <summary>
+        /// Overrides the shipped MSSQL session settings (set_profile, MSSQL session settings).
+        /// Null (and so omitted from the file) means the default behaviour.
+        /// </summary>
+        [JsonPropertyName("MssqlSessionSettings")]
+        [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+        public MssqlSessionConfig? MssqlSessionSettings { get; set; }
+
+        /// <summary>
         /// Top-level sections this class does not model (e.g. <c>data_transfer</c>), kept
         /// verbatim so a set_profile save never drops another tool's settings.
         /// </summary>
         [System.Text.Json.Serialization.JsonExtensionData]
         public Dictionary<string, System.Text.Json.JsonElement>? Extra { get; set; }
+    }
+
+    public class MssqlSessionConfig
+    {
+        /// <summary>"off" = apply no session settings. A leftover "file" from an earlier build is ignored.</summary>
+        [JsonPropertyName("MODE")]
+        [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+        public string? Mode { get; set; }
+
+        /// <summary>A script to use when the SQLCMDINI variable could not be set; it takes priority over the variable.</summary>
+        [JsonPropertyName("FILE")]
+        [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+        public string? FilePath { get; set; }
     }
 
     public class SharedProfilesSettings
