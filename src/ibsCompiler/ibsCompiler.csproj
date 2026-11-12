@@ -7,6 +7,12 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <EmbeddedResource Include="Database\SQLCMDINI.default.sql" LogicalName="SQLCMDINI.default.sql" />
+    <!-- Also shipped as a file beside the binaries so the user can see where the defaults live. -->
+    <Content Include="Database\SQLCMDINI.default.sql" Link="SQLCMDINI.default.sql" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
     <Reference Include="AdoNetCore.AseClient">
       <HintPath>..\AdoNetCore.AseClient.dll</HintPath>
     </Reference>

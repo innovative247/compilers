@@ -30,7 +30,8 @@ namespace ibsCompiler
             var argList = args.ToList();
             var headless = CliArgs.AnyPresent(argList,
                 new[] { "--create", "--edit", "--view", "--copy", "--delete", "--test",
-                        "--share", "--unshare", "--shared", "--fetch", "--shared-status" }
+                        "--share", "--unshare", "--shared", "--fetch", "--shared-status",
+                        "--mssql-settings", "--mssql-settings-file" }
                     .Concat(IdeRegistry.HeadlessFlags).ToArray());
 
             // Interactive runs: start the background IDE probe now so it is done (or nearly)
@@ -68,7 +69,7 @@ namespace ibsCompiler
         {
             "--raw", "--no-raw",
             "--test",
-            "--yes",
+            "--yes", "--use-settings-file",
             "--rebuild", "--rebuild-cache",
             "--shared", "--shared-status", "--refresh",
             "--accept-all", "--accept-none", "--no-password", "--dry-run",
@@ -222,7 +223,9 @@ namespace ibsCompiler
             {
                 var options = new JsonSerializerOptions { WriteIndented = true };
                 var json = JsonSerializer.Serialize(_settings, options);
-                File.WriteAllText(_settingsPath, json);
+                // Atomic, so a compile starting during a save never reads a half-written file.
+                if (!ibs_compiler_common.WriteAllTextAtomic(_settingsPath, json))
+                    throw new IOException("the file could not be written");
                 if (!quiet) PrintSuccess($"Settings saved to: {_settingsPath}");
                 return true;
             }
@@ -261,6 +264,7 @@ namespace ibsCompiler
                 else PrintMenu(3, "IDE Integration");
                 PrintMenu(4, "Open settings.json");
                 PrintMenu(5, "Shared profiles");
+                PrintMenu(6, "MSSQL session settings");
                 PrintMenu(99, "Exit");
 
                 // Interactive TTY → deferred 'Choice:' entry (no visible prompt line).
@@ -268,7 +272,7 @@ namespace ibsCompiler
                 string? input;
                 if (Console.IsInputRedirected || Console.IsOutputRedirected)
                 {
-                    ConsoleMenu.WritePrompt("\nChoose [1-5]: ");
+                    ConsoleMenu.WritePrompt("\nChoose [1-6]: ");
                     input = Console.ReadLine()?.Trim();
                     // End of piped input: leave, rather than re-printing the menu and
                     // "Invalid selection." forever against a stdin that is finished.
@@ -289,6 +293,7 @@ namespace ibsCompiler
                     case "3": IdeIntegrationMenu(); break;
                     case "4": OpenSettingsJson(); break;
                     case "5": SharedProfilesMenu(); break;
+                    case "6": MssqlSessionMenu(); break;
                     case "99":
                         Console.WriteLine("\nExiting profile setup wizard.");
                         var line = new string('=', 70);
@@ -1955,6 +1960,9 @@ namespace ibsCompiler
             var fetchName   = CliArgs.GetOption(args, "--fetch");
             var listShared  = CliArgs.HasFlag(args, "--shared");
             var sharedStatus = CliArgs.HasFlag(args, "--shared-status");
+            // MSSQL session settings: show|on|off|revert, or a file to use.
+            var mssqlAction = CliArgs.GetOption(args, "--mssql-settings");
+            var mssqlFile   = CliArgs.GetOption(args, "--mssql-settings-file");
             // IDE integrations: --install-<stem> / --remove-<stem> come from the registry.
             var ideActions = new List<(string Flag, Func<int> Run)>();
             foreach (var ide in IdeRegistry.All)
@@ -1963,6 +1971,7 @@ namespace ibsCompiler
                 if (CliArgs.HasFlag(args, IdeRegistry.RemoveFlag(ide))) ideActions.Add((IdeRegistry.RemoveFlag(ide), ide.Remove));
             }
             var flagList = "--create, --edit, --view, --copy, --delete, --test, --share, --unshare, --shared, --shared-status, --fetch, "
+                + "--mssql-settings <show|on|off|revert>, --mssql-settings-file <path> [--use-settings-file], "
                 + string.Join(", ", IdeRegistry.HeadlessFlags);
 
             int primary = 0;
@@ -1977,6 +1986,8 @@ namespace ibsCompiler
             if (fetchName != null)   primary++;
             if (listShared)          primary++;
             if (sharedStatus)        primary++;
+            if (mssqlAction != null) primary++;
+            if (mssqlFile != null)   primary++;
             primary += ideActions.Count;
             if (primary > 1)
             {
@@ -2000,6 +2011,7 @@ namespace ibsCompiler
             if (fetchName != null)   return FetchHeadless(fetchName, args);
             if (listShared)          return SharedListHeadless(args);
             if (sharedStatus)        return SharedStatusHeadless();
+            if (mssqlAction != null || mssqlFile != null) return MssqlSettingsHeadless(mssqlAction, mssqlFile, CliArgs.HasFlag(args, "--use-settings-file"));
             if (ideActions.Count == 1) return ideActions[0].Run();
             return 1;
         }

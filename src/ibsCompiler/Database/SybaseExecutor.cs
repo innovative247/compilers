@@ -323,14 +323,21 @@ namespace ibsCompiler.Database
         // ASE holds print/raiserror output in the session's network buffer until it fills or
         // the batch ends, so a long-running proc's progress arrives in bursts. flushmessage
         // makes the server send each message as it is raised - output stays real time.
-        private static void FlushMessages(AseConnection connection)
+        // The sink is muted while the option is set: a server without it reports that through InfoMessage.
+        private void FlushMessages(AseConnection connection)
         {
+            var emit = _emit;
+            _emit = null;
             try
             {
                 using var cmd = new AseCommand("set flushmessage on", connection);
                 cmd.ExecuteNonQuery();
             }
             catch (AseException) { } // a server without the option still runs, just buffered
+            finally
+            {
+                _emit = emit;
+            }
         }
 
         public ExecReturn ExecuteBatch(string batch, bool captureOutput = false, string outputFile = "")

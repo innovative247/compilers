@@ -271,19 +271,53 @@ Environment variable `IBS_CHANGELOG_STATUS` — caches whether changelog logging
 
 ## MSSQL Connection Initialization (SQLCMDINI)
 
-Set `SQLCMDINI` env var to point to a SQL file that runs before every MSSQL command:
+Every MSSQL connection runs a short session-settings script before any user SQL, as its own batch. The product ships a default script (`Database/SQLCMDINI.default.sql`, built into `ibsCompiler`), so the settings apply with no setup, including after an upgrade with an untouched `settings.json`:
 
 ```sql
 SET ARITHABORT               ON
 SET ANSI_NULL_DFLT_ON        OFF
+SET ANSI_NULL_DFLT_OFF       OFF
 SET CONCAT_NULL_YIELDS_NULL  OFF
 SET ANSI_WARNINGS            ON
 SET QUOTED_IDENTIFIER        OFF
 ```
 
-- Only applies to MSSQL (Sybase unaffected)
-- Prepended as its own batch before user SQL
-- If file missing: warning logged, execution continues
+After the script runs, the executor sets `QUOTED_IDENTIFIER` from the database's own setting, so the database decides the final value.
+
+The script that runs is the file the `SQLCMDINI` environment variable names (the mechanism native sqlcmd and the legacy compilers used). `configure` points it at a `SQLCMDINI.sql` beside `settings.json` if you have one, else at the shipped file, `SQLCMDINI.default.sql` beside the binaries, when it is not set yet, and `set_profile` changes it. `MssqlSessionSettings` (`Database/MssqlSessionSettings.cs`) is the only place that decides which script runs. The first match wins:
+
+1. `settings.json` says off: no script.
+2. `settings.json` names a file (`FILE`): that file. `set_profile` only writes it when `SQLCMDINI` could not be set (see below).
+3. The file `SQLCMDINI` names. The process value wins; otherwise the value saved for you (the Windows user environment, or an `export SQLCMDINI='...'` line under the `# IBS Compilers` marker in `~/.bashrc` / `~/.zshrc`, which is also where it is read back from).
+4. With the variable unset, a `SQLCMDINI.sql` beside `settings.json` (an older way of keeping your own script, still honoured).
+5. The shipped script (a copy built into `ibsCompiler` is used if the file has gone missing).
+
+A path that does not exist, is a folder, is not a valid path or cannot be read never breaks a command or changes its exit code: the compiler prints one warning on stderr naming the source and the path, then uses the next source. The built-in copy always ends the chain, so a connection gets a script unless the settings are turned off. The choice is made once per process.
+
+`settings.json` keeps only an optional object, absent by default:
+
+```json
+"MssqlSessionSettings": { "MODE": "off" }
+"MssqlSessionSettings": { "FILE": "C:\\path\\my-session.sql" }
+```
+
+`SQLCMDINI` is saved for you and set for the running `set_profile`, but other programs read their environment when they start: after a change, open a new terminal (restart any running tool) before expecting it to apply there.
+
+`set_profile` manages it. Main menu item `6` MSSQL session settings says that the path lives in `SQLCMDINI`, shows its value (with `(not found)` after a path that does not exist), the `settings.json` file if there is one, which source is active and the script that will run, then offers:
+
+- `1` Modify: opens the file in use in your editor (the `settings.json` file, else the one `SQLCMDINI` names, else a `SQLCMDINI.sql` found beside `settings.json`); nothing is copied. If none of those is set, `SQLCMDINI` is first set to the shipped file; an off setting is left as it is. The shipped file is replaced by every update, so when you edit it you are told to save your changes to your own file and use `2`. If the file does not exist you are asked whether to create it from the shipped settings.
+- `2` Set the path: the file must exist (else an error and nothing changes); `SQLCMDINI` is pointed at it, and off and any `settings.json` file are cleared. If the variable cannot be set (no permission), you are asked `SQLCMDINI could not be set. Use this file from set_profile instead? [Y/n]`; yes stores the path as `FILE` in `settings.json` (which also clears off), no shows the step to do by hand (Windows: `[Environment]::SetEnvironmentVariable("SQLCMDINI", "<path>", "User")`; Linux/macOS: `export SQLCMDINI="<path>"` in your shell profile).
+- `3` Turn off / Turn on: sets or clears `MODE` off in `settings.json`. `SQLCMDINI` and `FILE` are left alone, so turning on returns to whatever they name.
+- `4` Revert to shipped defaults: asks first, points `SQLCMDINI` back at the shipped file (same fallback as `2`) and clears off. No file is deleted.
+
+Headless equivalents:
+
+- `set_profile --mssql-settings show` prints the same lines and the script.
+- `set_profile --mssql-settings on` or `off` turns the settings on or off.
+- `set_profile --mssql-settings revert` points `SQLCMDINI` back at the shipped file and clears off.
+- `set_profile --mssql-settings-file <path>` is menu item 2: the path must exist, and a variable that cannot be set exits non-zero with the manual step and a hint on stderr. Add `--use-settings-file` to store the path in `settings.json` without trying the variable.
+
+To stop applying session settings use off; to go back to the shipped defaults use revert. Only MSSQL is affected (Sybase is not).
 
 ## PostgreSQL Connection Initialization (PGSQLINI)
 

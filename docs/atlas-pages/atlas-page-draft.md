@@ -133,7 +133,7 @@ The compilers internally walk path components case-insensitively, so legacy `$ir
 | `extract_msg` | Export message tables to source files (BCP OUT, round-trippable) |
 | `compile_required_fields` / `set_required_fields` | Compile `required_fields` and `required_fields_dtl` files |
 | `transfer_data` | Cross-server data transfer (interactive only — never agent-accessible) |
-| `bcp_data` | Bulk copy data IN / OUT |
+| `ibcp` / `bcp_data` | Bulk copy data IN / OUT |
 
 ## Profiles
 

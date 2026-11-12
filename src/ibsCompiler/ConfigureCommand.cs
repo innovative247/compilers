@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using ibsCompiler.Configuration;
+using ibsCompiler.Database;
 
 namespace ibsCompiler
 {
@@ -21,6 +22,21 @@ namespace ibsCompiler
             if (!inPath)
                 inPath = AddToPath(binDir);
 
+            // Point SQLCMDINI at the MSSQL session settings unless the user already chose a script: an
+            // older SQLCMDINI.sql beside settings.json if there is one, else the shipped file
+            var sqlCmdIni = SqlCmdIniVariable.Get();
+            string sqlCmdIniStatus;
+            if (!string.IsNullOrEmpty(sqlCmdIni))
+                sqlCmdIniStatus = sqlCmdIni;
+            else
+            {
+                var beside = MssqlSessionSettings.BesideSettingsPath(settingsPath);
+                var target = File.Exists(beside) ? beside : MssqlSessionSettings.ShippedFilePath;
+                sqlCmdIniStatus = SqlCmdIniVariable.Set(target, out var setError)
+                    ? $"set to {target}{(target == beside ? " (the SQLCMDINI.sql beside settings.json)" : "")} (open a new terminal to use it)"
+                    : $"FAILED — {setError}";
+            }
+
             // Fix settings.json before displaying status
             if (settingsPath == null)
             {
@@ -41,6 +57,7 @@ namespace ibsCompiler
             Console.WriteLine($"  Platform:    {rid}");
             Console.WriteLine($"  Settings:    {(settingsPath != null ? settingsPath : "NOT FOUND")}");
             Console.WriteLine($"  PATH:        {(inPath ? "OK" : "FAILED — add manually")}");
+            Console.WriteLine($"  SQLCMDINI:   {sqlCmdIniStatus}");
             Console.WriteLine();
         }
 

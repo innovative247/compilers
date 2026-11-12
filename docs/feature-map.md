@@ -301,6 +301,8 @@ Interactive main menu:
 - `2` Existing profile → submenu: View / Test / Edit / Copy / Delete
 - `3` IDE Integration → per IDE, an Add item (installs or updates the bundled `compilers.vsix`; label shows installed state) and a Remove item; `98` Back, `99` Exit. An invalid choice stays in this menu; after any action the menu is shown again. Items come from the IDE registry (`IdeIntegrations.cs`): `1` Add to VS Code, `2` Remove from VS Code
 - `4` Open settings.json (launches editor)
+- `5` Shared profiles
+- `6` MSSQL session settings → shows the `SQLCMDINI` value, the active source and the script; `1` Modify (opens the file in use), `2` Set the path, `3` Turn off / Turn on, `4` Revert to shipped defaults, `98` Back, `99` Exit
 - `99` Exit
 
 | Menu path | Outcome | Headless flag | Test ID | Status |
@@ -331,6 +333,16 @@ Interactive main menu:
 | `5` → `4` Change GitHub account | Status (git, publishing email and source, GitHub account, live access check, local copy); switch account, change email/name, disconnect. Account and email are saved in `settings.json` `SharedProfiles` only - git config and GitHub sign-in are never changed | `--shared-status` (exit 0 when access OK) | `set_profile.shared_status_reports_email_source`, `set_profile.shared_settings_email_satisfies_identity` | COVERED (menu actions: TTY-only) |
 | Headless download (new name) | Copy a shared record into `settings.json`; password and SQL source are resolved on arrival, never downloaded | `--fetch NAME [--as LOCAL] [--sql-source PATH] [--password PW \| --no-password]` | `set_profile.fetch_new` | COVERED |
 | Headless download (existing profile) | Per-field merge. TTY prompts per differing field with keep-local as the default; headless demands an explicit choice and never blind-overwrites | `--fetch NAME --as EXISTING (--accept-all \| --accept-none \| --accept FIELD[,FIELD...])` | `set_profile.fetch_existing_needs_choice` | COVERED |
+| `6` MSSQL session settings (screen) | `The script path is set in the environment variable SQLCMDINI.`, then `SQLCMDINI = <value>` or `SQLCMDINI is not set` (`(not found)` after a path that does not exist), a `settings.json file = <path>` line when `FILE` is set, then the source in plain words (`Using: shipped defaults <path>`, `Using: <path>`, `Using: <path> (found beside settings.json)`, `Using: <path> (set in settings.json because SQLCMDINI could not be set)`, `Off: no session settings are applied`), then the script that will run. With nothing set the shipped script runs on every MSSQL connection | `--mssql-settings show` | `set_profile.mssql_settings_show_default` / `.mssql_settings_bad_path_show_*` (5) / `.mssql_settings_unreadable_file_falls_through` | COVERED |
+| `6` → `3` Turn off / Turn on | Off writes `MssqlSessionSettings` `MODE` off to `settings.json` and no script runs; Turn on removes `MODE`. `SQLCMDINI` and `FILE` are left alone | `--mssql-settings off` / `on` | `set_profile.mssql_settings_off_on` / `.mssql_settings_off_on_keeps_file` / `isqlline.mssql_session_off_concat_null` | COVERED |
+| `6` → `2` Set the path | Path must exist (else an error and nothing is saved); `SQLCMDINI` is saved (user environment, or the rc files on Linux/macOS) and set for this run, the new value is printed with `Open a new terminal for other programs to pick up the change.`, and off and `FILE` are cleared | `--mssql-settings-file PATH` | `set_profile.mssql_settings_file` / `.mssql_settings_file_missing_errors` / `.mssql_settings_file_deleted_falls_through` / `.mssql_settings_process_variable_wins` / `.mssql_settings_set_clears_settings_file` | COVERED |
+| `6` → `2` Set the path (variable cannot be set) | Menu: `SQLCMDINI could not be set. Use this file from set_profile instead? [Y/n]`; yes stores `FILE` in `settings.json` and prints `Using <path> from settings.json.`, no prints the manual step (`[Environment]::SetEnvironmentVariable(...)` / `export SQLCMDINI=...`). Headless: exit non-zero with the manual step and a `--use-settings-file` hint; with `--use-settings-file` the path goes straight into `settings.json` | `--mssql-settings-file PATH [--use-settings-file]` | `set_profile.mssql_settings_file_cannot_set_variable` / `.mssql_settings_use_settings_file` | COVERED (the Y/n prompt is TTY-only) |
+| `6` → `1` Modify | Opens the file in use in the editor (the `settings.json` file, else the one `SQLCMDINI` names, else a `SQLCMDINI.sql` found beside `settings.json`; when none is set, first sets `SQLCMDINI` to the shipped file and leaves an off setting alone). No copy is made. Opening the shipped file prints `An update replaces this file. To keep your changes, save them to your own file and choose "Set the path".`; a file that does not exist asks `<path> does not exist. Create it from the shipped settings? [Y/n]` | (editor launch - TTY-only) | `tests/manual/profile-editor.md` | SKIP |
+| `6` → `4` Revert to shipped defaults | Asks first; points `SQLCMDINI` at the shipped file (same fallback as Set the path) and clears off and `FILE`; no file is deleted | `--mssql-settings revert` | `set_profile.mssql_settings_revert` | COVERED |
+| `6` (older settings) | A `SQLCMDINI.sql` beside `settings.json` with `SQLCMDINI` unset is still used (shown as found beside `settings.json`); a leftover `MODE` file in `settings.json` from an earlier build is ignored; the `MssqlSessionSettings` key survives profile saves | `--mssql-settings show`, `--edit NAME ...` | `set_profile.mssql_settings_legacy_beside_settings` / `.mssql_settings_leftover_file_mode_ignored` / `.mssql_settings_survives_edit` | COVERED |
+| `6` (bad paths never break a command) | `SQLCMDINI` or `FILE` naming a missing file, a folder, an unreadable file (held open) or an invalid path (whitespace only; a NUL character): one stderr warning, the next source is used, exit code unchanged | `isqlline "select(convert(int,sessionproperty('CONCAT_NULL_YIELDS_NULL')))" master <profile>` | `isqlline.mssql_session_bad_path_*` (5) / `isqlline.mssql_session_unreadable_file` / `isqlline.mssql_session_file_concat_null_on` | COVERED (live MSSQL) |
+| `configure` (SQLCMDINI step) | When `SQLCMDINI` is not set, `configure` points it at a `SQLCMDINI.sql` beside `settings.json` if there is one, else at the shipped `SQLCMDINI.default.sql`, and says so; when it is set, leaves it and prints it. Other programs see it after a restart | `<any command> configure` | `configure.basic` (checks the SQLCMDINI row) / `configure.all_binaries` | COVERED (the suite sets `COMPILERS_SQLCMDINI_STORE` to a scratch file for the whole run, so the real environment is never written) |
+| `6` (reaches the server) | Default session has CONCAT_NULL_YIELDS_NULL off; with the settings off it is the driver default (on) | `isqlline "select(sessionproperty('CONCAT_NULL_YIELDS_NULL'))" master <profile>` | `isqlline.mssql_session_default_concat_null` / `isqlline.mssql_session_off_concat_null` | COVERED (live MSSQL) |
 | `99` Exit | exit 0 | (default with no flags + no positional) | — | COVERED |
 
 **Validation surfaces (still enforced in headless):**
@@ -346,7 +358,7 @@ Interactive main menu:
   every publish, which FAILS rather than scrubbing them. `--accept` only recognizes
   shareable fields. A fetched raw target skips the SQL-source step — it has no
   source tree to point at.
-- `--share`, `--unshare`, `--shared`, `--shared-status`, `--fetch`, `--install-vscode` and `--remove-vscode` are mutually exclusive with each
+- `--share`, `--unshare`, `--shared`, `--shared-status`, `--fetch`, `--mssql-settings`, `--mssql-settings-file`, `--install-vscode` and `--remove-vscode` are mutually exclusive with each
   other and with `--create`/`--edit`/`--view`/`--copy`/`--delete`/`--test`.
 - No git, no network, or no access to the private store: the shared actions report
   one line and do nothing. Every local profile operation still works.
@@ -360,7 +372,7 @@ Interactive main menu:
 
 ## 6. Bulk data copy
 
-### `bcp_data` — bulk copy individual tables in or out
+### `bcp_data` (alias `ibcp`) — bulk copy individual tables in or out
 
 Never had a menu — the managed port of the Unix `export_sql_table_data` /
 `import_sql_table_data` pair. One data file per table, named after the table

@@ -2,8 +2,10 @@ using ibsCompiler;
 using ibsCompiler.Configuration;
 using ibsCompiler.Database;
 
-const string Usage = "Usage: bcp_data <table...> <IN|OUT> [datafile] <server/profile> [-t field_terminator] [-b batchsize] [--truncate] [-U user] [-P pass] [-O outfile] [-MSSQL|-SYBASE|-POSTGRES]";
-if (!VersionCheck.CheckForUpdates("bcp_data", args, Usage)) return 0;
+// The same source builds bcp_data and its alias ibcp; each reports its own name.
+var command = System.Reflection.Assembly.GetEntryAssembly()?.GetName().Name ?? "bcp_data";
+var Usage = $"Usage: {command} <table...> <IN|OUT> [datafile] <server/profile> [-t field_terminator] [-b batchsize] [--truncate] [-U user] [-P pass] [-O outfile] [-MSSQL|-SYBASE|-POSTGRES]";
+if (!VersionCheck.CheckForUpdates(command, args, Usage)) return 0;
 
 var arguments = args.ToList();
 var profileMgr = new ProfileManager();
