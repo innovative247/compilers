@@ -31,6 +31,8 @@ Check mode with `--consumer` and `--release` instead of `--declaration` download
 
 The connection is explicit FTPS: `AUTH TLS` on the control connection before any login, TLS 1.2 only, the server certificate validated by the system, then `PBSZ 0`, `PROT P`, `TYPE I` and a passive (`EPSV`, else `PASV`) TLS data connection to the same host. There is no plaintext fallback: a server that refuses `AUTH TLS` fails the run before the login is sent. The download times out after 60 seconds and is capped at 16 MiB.
 
+On macOS the download runs through the system curl (`/usr/bin/curl`) instead, because .NET on macOS cannot resume the control connection's TLS session, which the release server requires for the data connection. The guarantees are the same: `--ssl-reqd` explicit FTPS with TLS 1.2 only and system certificate validation, passive mode with the `PASV` address ignored, binary transfer, the 60-second timeout and the 16 MiB cap. The credentials reach curl on standard input, never on its command line, and `~/.curlrc` is not read.
+
 ## Credentials
 
 `SBN_USERNAME` and `SBN_PASSWORD` from the environment only: the developer's own engine login. No flags, no prompts. Missing either is a usage error (exit 2).
