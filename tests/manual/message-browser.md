@@ -54,8 +54,7 @@ compile_msg  MYPROFILE        # no flags -> legacy Import/Export/Add menu (regre
       the group name.
 - [ ] `N` (or legacy `C`) -> create-group prompts (group <=6 / start default 0 / description);
       a green confirmation appears and the new group shows in the refreshed table.
-- [ ] `I` -> Install to profile: on a **non-GONZO** profile it confirms then runs the compile;
-      on **GONZO** it is blocked with the canonical-source / export-only message.
+- [ ] `I` -> Install to profile: it confirms then runs the compile.
 
 ## Group actions menu
 

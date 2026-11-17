@@ -1873,8 +1873,7 @@ namespace ibsCompiler
         /// Interactive menu for compile_msg/set_messages.
         /// Matches Python set_messages.py main():
         ///   1. Mode selection: Import or Export
-        ///   2. GONZO protection for imports
-        ///   3. Run compile_msg or export
+        ///   2. Run compile_msg or export
         /// When ANY headless action flag is present (--import or --export) the
         /// menu is bypassed entirely and the requested action is performed
         /// unattended. Without flags the menu UX is unchanged byte-for-byte.
@@ -1905,31 +1904,13 @@ namespace ibsCompiler
         }
 
         /// <summary>
-        /// The legacy compile_msg interactive menu: GONZO export-only branch plus the
-        /// non-GONZO Import / Export / Add numbered menu. Extracted verbatim from the old
+        /// The legacy compile_msg interactive menu: the Import / Export / Add numbered
+        /// menu. Extracted from the old
         /// <see cref="RunSetMessages"/> body so <c>compile_msg</c>'s behavior is unchanged
         /// while <c>set_messages</c> moves to the file-first browser.
         /// </summary>
         private static int RunLegacyImportExportMenu(CommandVariables cmdvars, ResolvedProfile profile, ISqlExecutor executor)
         {
-            var profileName = profile.IsProfile ? profile.ProfileName : cmdvars.ServerNameOnly;
-            var isGonzo = IsGonzoProfile(profileName);
-
-            if (isGonzo)
-            {
-                // GONZO: export only — importing messages into GONZO is not allowed
-                Console.WriteLine();
-                Console.WriteLine("GONZO is the canonical message source.");
-                Console.WriteLine("Only export is available for this server.");
-                Console.WriteLine();
-
-                Console.WriteLine("Exporting messages from GONZO...");
-                RunMessageExport(cmdvars, profile, executor);
-                Console.WriteLine("compile_msg DONE.");
-                return 0;
-            }
-
-            // Non-GONZO: standard import/export menu
             Console.WriteLine();
             Console.WriteLine("Select operation:");
             Console.WriteLine("1) Import messages from the files into the database");
@@ -1966,7 +1947,7 @@ namespace ibsCompiler
                 return 0;
             }
 
-            // Import mode (non-GONZO only)
+            // Import mode
             var mainDir = ibs_compiler_common.GetPath_Setup(profile);
             var mainMes = Path.Combine(mainDir, "css");
             if (!File.Exists(mainMes + ".ibs_msg"))
@@ -1979,11 +1960,6 @@ namespace ibsCompiler
             Console.WriteLine("Compiling messages...");
             compile_msg_main.Run(cmdvars, profile, executor);
             return 0;
-        }
-
-        private static bool IsGonzoProfile(string profileName)
-        {
-            return profileName.ToUpper() == "GONZO" || profileName.ToUpper() == "G";
         }
 
         /// <summary>
@@ -2038,7 +2014,6 @@ namespace ibsCompiler
         /// via command-line flags. Composable:
         ///   set_messages PROFILE --import [--on-saved keep|discard|cancel]
         ///   set_messages PROFILE --export [--yes]
-        /// Honors the same GONZO production-safety guards as the interactive flow.
         /// </summary>
         private static int RunSetMessagesHeadless(
             List<string> args,
@@ -2046,7 +2021,7 @@ namespace ibsCompiler
         {
             // The file-first actions (--add, --new-group, --find, --edit-msg,
             // --delete-msg) are pure file operations (no DB, no import/export
-            // mutex, no GONZO guard). Dispatch them before any of that machinery.
+            // mutex). Dispatch them before any of that machinery.
             if (CliArgs.HasFlag(args, "--add"))
                 return RunAddMessageHeadless(args, profile);
             if (CliArgs.HasFlag(args, "--translate"))
@@ -2078,20 +2053,9 @@ namespace ibsCompiler
             }
 
             var profileName = profile.IsProfile ? profile.ProfileName : cmdvars.ServerNameOnly;
-            var isGonzo = profileName.Equals("GONZO", StringComparison.OrdinalIgnoreCase)
-                       || profileName.Equals("G", StringComparison.OrdinalIgnoreCase);
 
             if (doImport)
             {
-                // GONZO production-safety: importing into GONZO is forbidden.
-                // (compile_msg_main.Run also enforces this on the SBN side, but
-                // we surface the rejection here for a cleaner agent error.)
-                if (isGonzo)
-                {
-                    Console.Error.WriteLine($"ERROR: --import is not allowed against {profileName} (GONZO is the canonical message source; export-only).");
-                    return 1;
-                }
-
                 // Parse --on-saved (only meaningful with --import).
                 OnSavedTranslations onSaved;
                 if (string.IsNullOrEmpty(onSavedRaw))
@@ -2126,8 +2090,8 @@ namespace ibsCompiler
             }
 
             // --export
-            // Non-GONZO export overwrites local files - require --yes to confirm.
-            if (!isGonzo && !doYes)
+            // Export overwrites local files - require --yes to confirm.
+            if (!doYes)
             {
                 Console.Error.WriteLine($"ERROR: --export against {profileName} will overwrite local message files. Pass --yes to confirm.");
                 return 1;

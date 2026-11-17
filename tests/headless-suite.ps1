@@ -1646,18 +1646,6 @@ function Test-Messages {
             throw '--yes should bypass the export confirmation prompt'
         }
     }
-    Test-Case 'set_messages.gonzo_import_blocked' {
-        # GONZO --import must be rejected BEFORE any DB call. Uses real GONZO
-        # profile (name-based detection); no Sybase connection happens because
-        # the rejection fires at the headless-dispatch validation step.
-        $r = Invoke-Cli set_messages '--import' 'GONZO'
-        if ($r.ExitCode -eq 0) { throw '--import against GONZO must be rejected' }
-        $combined = "$($r.StdOut)`n$($r.StdErr)"
-        if ($combined -notmatch 'GONZO|not allowed|canonical') {
-            throw "stderr should explain GONZO rejection. output: $combined"
-        }
-    }
-    Skip-Case 'set_messages.gonzo_export' 'cannot run safely - would BCP-OUT all message tables from real GONZO and overwrite the canonical CSS/Setup/css.*_msg* files on disk; manual verification only'
 
     # Bonus error-path tests (every validation surface in RunSetMessagesHeadless)
     Test-Case 'set_messages.error_mutex' {
@@ -1696,11 +1684,6 @@ function Test-Messages {
             throw "compile_msg --import codepath not reached. stdout: $($r.StdOut)"
         }
     }
-    Test-Case 'compile_msg.gonzo_import_blocked' {
-        $r = Invoke-Cli compile_msg '--import' 'GONZO'
-        if ($r.ExitCode -eq 0) { throw 'compile_msg --import GONZO must be rejected' }
-    }
-
     # ===== set_messages --add (write a row straight into css.<type>_msg) =====
     # Hermetic per-test fixtures written LF-only, UTF-8 no BOM, trailing newline
     # into TEST_LOCAL's scratch CSS\Setup. Each add test rewrites the fixture so
@@ -3749,16 +3732,6 @@ function Test-BulkCopy {
         $combined = "$($r.StdOut)`n$($r.StdErr)"
         if ($combined -notmatch 'Data file not found') { throw "expected the missing-data-file diagnostic. output: $combined" }
         if ($combined -match 'Unknown server type') { throw "POSTGRES must be a supported bcp_data platform. output: $combined" }
-    }
-    Test-Case 'bcp_data.gonzo_in_blocked' {
-        # GONZO IN must be rejected BEFORE any DB call. Uses the real GONZO
-        # profile (name-based detection), same rule set_messages --import enforces.
-        $r = Invoke-Cli bcp_data 'ba_options' 'IN' 'GONZO'
-        if ($r.ExitCode -eq 0) { throw 'IN against GONZO must be rejected' }
-        $combined = "$($r.StdOut)`n$($r.StdErr)"
-        if ($combined -notmatch 'GONZO|not allowed|canonical') {
-            throw "stderr should explain the GONZO rejection. output: $combined"
-        }
     }
     Skip-Case 'bcp_data.out' 'needs an SBN table on the test target - Atlas/SRM_LOCAL has no CSS tables to BCP OUT; manual verification only'
     Skip-Case 'bcp_data.in'  'needs an SBN table on the test target plus a real data file; would truncate it - manual verification only'

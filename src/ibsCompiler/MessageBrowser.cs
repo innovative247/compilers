@@ -11,7 +11,7 @@ namespace ibsCompiler
     /// find / edit / delete individual messages — all as byte-faithful edits to the
     /// flat <c>css.&lt;type&gt;_msg</c> / <c>css.&lt;type&gt;_msgrp</c> files. No database
     /// round-trip except the explicit "Install messages to &lt;profile&gt;" action, which
-    /// runs the legacy <see cref="compile_msg_main.Run"/> import and is blocked on GONZO.
+    /// runs the legacy <see cref="compile_msg_main.Run"/> import.
     ///
     /// TTY only. Every reachable code path uses <c>Console.ReadKey</c> or absolute-row
     /// rendering, so the entry point refuses to run on a redirected console and points
@@ -108,8 +108,6 @@ namespace ibsCompiler
             }
 
             var profileName = profile.IsProfile ? profile.ProfileName : cmdvars.ServerNameOnly;
-            bool isGonzo = profileName.Equals("GONZO", StringComparison.OrdinalIgnoreCase)
-                        || profileName.Equals("G", StringComparison.OrdinalIgnoreCase);
 
             try
             {
@@ -132,7 +130,7 @@ namespace ibsCompiler
                     if (extra == "again") continue;      // bad number on the fallback list
                     if (extra == "exit" || selected < 0) return 0;
 
-                    var nav = GroupScreen(cmdvars, profile, executor, types[selected], profileName, isGonzo, setupDir);
+                    var nav = GroupScreen(cmdvars, profile, executor, types[selected], profileName, setupDir);
                     if (nav == Nav.Exit) return 0;
                     // Nav.Back → re-loop to the type screen.
                 }
@@ -145,7 +143,7 @@ namespace ibsCompiler
         // ================================================================
         private static Nav GroupScreen(
             CommandVariables cmdvars, ResolvedProfile profile, ISqlExecutor executor,
-            MessageFileEditor.LiveType lt, string profileName, bool isGonzo, string setupDir)
+            MessageFileEditor.LiveType lt, string profileName, string setupDir)
         {
             while (true)
             {
@@ -170,7 +168,7 @@ namespace ibsCompiler
                 }
                 if (extra == "install")
                 {
-                    InstallToProfile(cmdvars, profile, executor, profileName, isGonzo);
+                    InstallToProfile(cmdvars, profile, executor, profileName);
                     continue;
                 }
                 if (selected >= 0 && selected < groups.Count)
@@ -694,20 +692,13 @@ namespace ibsCompiler
         }
 
         // ================================================================
-        // Install messages to the profile (legacy compile_msg import; GONZO blocked)
+        // Install messages to the profile (legacy compile_msg import)
         // ================================================================
         private static void InstallToProfile(
             CommandVariables cmdvars, ResolvedProfile profile, ISqlExecutor executor,
-            string profileName, bool isGonzo)
+            string profileName)
         {
             Console.WriteLine();
-            if (isGonzo)
-            {
-                Red($"  Install is not allowed against {profileName} "
-                    + "(GONZO is the canonical message source; export-only).");
-                return;
-            }
-
             Console.WriteLine($"  Install compiles the local message files into {profileName}'s database.");
             Console.Write("  Proceed? (y/N): ");
             var ans = (Console.ReadLine() ?? "").Trim().ToLowerInvariant();

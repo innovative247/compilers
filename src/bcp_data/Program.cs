@@ -63,18 +63,8 @@ if (!string.IsNullOrEmpty(cmdvars.DataFile) && tables.Count != 1)
 if (!profileMgr.ValidateProfile(cmdvars.Server)) return 1;
 var profile = profileMgr.Resolve(cmdvars);
 
-// Production safety guard — never bulk-load into GONZO. Same name-based rule
-// set_messages --import enforces (GONZO is the canonical source; export-only).
-// Fires before the executor exists so nothing touches the server.
 var profileName = profile.IsProfile ? profile.ProfileName : cmdvars.ServerNameOnly;
 var direction = cmdvars.Bcp == "IN" ? BcpDirection.IN : BcpDirection.OUT;
-if (direction == BcpDirection.IN &&
-    (profileName.Equals("GONZO", StringComparison.OrdinalIgnoreCase) ||
-     profileName.Equals("G", StringComparison.OrdinalIgnoreCase)))
-{
-    Console.Error.WriteLine($"ERROR: IN is not allowed against {profileName} (GONZO is the canonical source; OUT only).");
-    return 1;
-}
 
 using var executor = SqlExecutorFactory.Create(profile);
 

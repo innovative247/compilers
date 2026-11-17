@@ -7,8 +7,7 @@ namespace ibsCompiler
     /// Appends a single message row directly into the flat CSS message files
     /// (<c>css.&lt;type&gt;_msg</c>) under a profile's SQL source, picking the next
     /// free s#msgno for the target group. No database round-trip and no
-    /// <c>ISqlExecutor</c> dependency — this is a pure file operation, which is
-    /// why it is allowed even against the canonical GONZO profile.
+    /// <c>ISqlExecutor</c> dependency — this is a pure file operation.
     ///
     /// File shape (7 tab-delimited columns, no header, LF line endings, UTF-8
     /// no BOM, trailing newline):
