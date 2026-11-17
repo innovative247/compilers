@@ -241,8 +241,6 @@ in when any of `--import`, `--export`, `--on-saved`, or `--yes` is present;
 otherwise the interactive menu is byte-for-byte unchanged.
 
 Interactive flow:
-- If profile is `GONZO` (or alias `G`): forced export-only, no menu.
-- Otherwise:
   1. Mode prompt: `1` import, `2` export, `99` cancel
   2. If export: "WARNING: …overrides local message files. Are you sure?" Y/N
   3. If import: runs `compile_msg_main.Run`. If `<gui_messages_save>` has
@@ -254,11 +252,9 @@ Interactive flow:
 | `1` Import → saved rows → keep | Skip save step, restore at end | `set_messages --import --on-saved keep` (default) | `set_messages.import_keep_saved` | COVERED |
 | `1` Import → saved rows → discard | `DELETE <gui_messages_save>`, then save again | `set_messages --import --on-saved discard` | `set_messages.import_discard_saved` | COVERED |
 | `1` Import → saved rows → cancel | exit 0, no changes | `set_messages --import --on-saved cancel` | `set_messages.import_cancel_saved` | COVERED |
-| `2` Export → confirm | BCP OUT every message table → flat files | `set_messages --export --yes` (required for non-GONZO; replaces "Are you sure?" prompt) | `set_messages.export` | COVERED |
+| `2` Export → confirm | BCP OUT every message table → flat files | `set_messages --export --yes` (required; replaces "Are you sure?" prompt) | `set_messages.export` | COVERED |
 | `2` Export → no | exit 0 | (no flag — just omit `--export`) | — | COVERED |
 | `99` Cancel | exit 0 | (no flag — no action) | — | COVERED |
-| GONZO + `--export` | Forced export (no `--yes` required) | name-based auto-detect (`GONZO`/`G`) | `set_messages.gonzo_export` | SKIP (cannot run safely — would mutate canonical GONZO message files on disk; manual verification only) |
-| GONZO + `--import` | refuse and exit 1 (production safety) | (no flag; replicates `CompileMsg.cs:32` guard at the headless dispatch step) | `set_messages.gonzo_import_blocked` | COVERED |
 | (error) | Every validation surface — mutex, no primary action, missing `--yes`, bad `--on-saved` value, unknown profile | (n/a) | `set_messages.error_*` (5 tests) + `compile_msg.*` (2 tests) | COVERED |
 
 **CLI surface:**
@@ -267,7 +263,7 @@ Interactive flow:
 set_messages PROFILE
   ( --import | --export )           # mutually exclusive primary action
   [--on-saved keep|discard|cancel]  # only meaningful with --import; default keep
-  [--yes]                           # required for --export on non-GONZO
+  [--yes]                           # required for --export
                                     # (replaces the "Are you sure?" prompt)
 ```
 
@@ -398,7 +394,6 @@ append by default, `-t` for the field terminator, datafile after the direction.
 | Credentials / platform override | `-U user` / `-P pass` / `-MSSQL` / `-SYBASE` / `-POSTGRES` | — | COVERED (shared `DefaultCommandVariables` plumbing) |
 | Print usage | `bcp_data help` | `bcp_data.usage` | COVERED |
 | Multiple tables: keep going after a per-table failure, exit 1 if any failed | (legacy loop behavior) | `bcp_data.error_missing_data_file` | COVERED |
-| GONZO + `IN` → refuse and exit 1 before any connection (production safety) | (no flag; name-based auto-detect `GONZO`/`G`, same rule as `set_messages --import`) | `bcp_data.gonzo_in_blocked` | COVERED |
 | (error) Every validation surface — missing server, bad direction, no tables, unknown profile, missing data file, unresolvable table | (n/a) | `bcp_data.error_*` (6 tests) | COVERED |
 
 **CLI surface:**
@@ -431,7 +426,6 @@ data file, third-to-last means the token between it and the profile is one.
 - A data file with more than one table (`a data file requires exactly one
   table`) — plus usage.
 - Unknown profile (`ProfileManager.ValidateProfile`).
-- `IN` against `GONZO`/`G` — refused before the executor is created.
 
 **Per-table failures (message on the run log, loop continues, exit 1 at the end):**
 - `IN` with no data file — `<table>.bcp` in the current directory, or the one
@@ -618,15 +612,12 @@ The skips:
 - `iwho.timer` — polling blocks indefinitely.
 - `version.update_dryrun` — would trigger real GitHub self-update.
 - `runcreate.bg` — `-bg` is a wrapper concept, not a source-level flag.
-- `set_messages.gonzo_export` — would mutate canonical GONZO message files
-  on disk (CLI behavior is proven equivalent to non-GONZO export via the
-  `gonzo_import_blocked` test; export round-trip itself is manual only).
 - `runcreate.platform_lines_postgres` — `#NT`/`#UNIX` create-file prefixes are OS
   dispatch lines, not DB-platform lines; there is no Postgres-specific create-file
   directive to mirror.
 - `bcp_data.out` / `bcp_data.in` — need a real SBN table on the test target
   (Atlas/SRM_LOCAL has no CSS tables), and `in` would truncate it. Every
-  `bcp_data` validation surface, the GONZO guard, the POSTGRES platform path,
+  `bcp_data` validation surface, the POSTGRES platform path,
   and table resolution are covered offline; the BCP round-trip itself is
   manual only.
 

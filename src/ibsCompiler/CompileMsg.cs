@@ -38,14 +38,7 @@ namespace ibsCompiler
 
             ibs_compiler_common.WriteLine("Starting compile_msg...", cmdvars.OutFile);
 
-            // Production safety guard — prevent message import into GONZO
             var serverName = profile.IsProfile ? profile.ProfileName : cmdvars.ServerNameOnly;
-            if (profile.Company == "101" &&
-                serverName.Equals("GONZO", StringComparison.OrdinalIgnoreCase))
-            {
-                ibs_compiler_common.WriteLine($"Cannot install messages on {serverName}", cmdvars.OutFile);
-                return;
-            }
 
             var mainDir = ibs_compiler_common.GetPath_Setup(profile);
             var mainMes = Path.Combine(mainDir, "css");
