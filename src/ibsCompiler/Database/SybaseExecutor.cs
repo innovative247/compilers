@@ -7,7 +7,7 @@ using ibsCompiler.Configuration;
 
 namespace ibsCompiler.Database
 {
-    public class SybaseExecutor : ISqlExecutor
+    public class SybaseExecutor : ISqlExecutor, ISqlRowReader
     {
         private readonly ResolvedProfile _profile;
         private static readonly Regex GoRegex = new(@"^\s*go\s*$", RegexOptions.IgnoreCase | RegexOptions.Multiline);
@@ -90,7 +90,7 @@ namespace ibsCompiler.Database
                 && _dataEnc.CodePage != _serverEnc.CodePage;
         }
 
-        private static Encoding? CharsetToEncoding(string name)
+        public static Encoding? CharsetToEncoding(string name)
         {
             switch (name.Trim().ToLowerInvariant())
             {
@@ -197,18 +197,32 @@ namespace ibsCompiler.Database
         }
 
         // Raw bytes (re-encode to server charset) reinterpreted as the real data charset.
-        private string FromServer(string s)
-        {
-            EnsureCharsets();
-            return _reinterpret ? _dataEnc!.GetString(_serverEnc!.GetBytes(s)) : s;
-        }
+        public static string FromServer(string s, Encoding serverEnc, Encoding dataEnc) => dataEnc.GetString(serverEnc.GetBytes(s));
 
         // True text encoded to the real data charset, expressed as the server-charset
         // string AseClient will faithfully store as those bytes.
+        public static string ToServer(string s, Encoding serverEnc, Encoding dataEnc) => serverEnc.GetString(dataEnc.GetBytes(s));
+
+        private string FromServer(string s)
+        {
+            EnsureCharsets();
+            return _reinterpret ? FromServer(s, _serverEnc!, _dataEnc!) : s;
+        }
+
         private string ToServer(string s)
         {
             EnsureCharsets();
-            return _reinterpret ? _serverEnc!.GetString(_dataEnc!.GetBytes(s)) : s;
+            return _reinterpret ? ToServer(s, _serverEnc!, _dataEnc!) : s;
+        }
+
+        /// <summary>
+        /// The DATA_CHARSET transform for text sent in SQL on a server-charset session (ExecuteSql),
+        /// so a literal stores the bytes the bulk copy stores; null when no reinterpretation applies.
+        /// </summary>
+        public Func<string, string>? DataCharsetTransform()
+        {
+            EnsureCharsets();
+            return _reinterpret ? new Func<string, string>(ToServer) : null;
         }
 
         // CHARSET POLICY — do NOT hardcode a charset (e.g. "utf8") in the connection string.
@@ -235,6 +249,27 @@ namespace ibsCompiler.Database
             if (streaming) sb.Append(";StreamingResults=true");
             if (!string.IsNullOrEmpty(charset)) sb.Append($";Charset={charset}");
             return sb.ToString();
+        }
+
+        public List<object?[]> QueryRows(string sql, string database)
+        {
+            using var conn = new AseConnection(BuildConnectionString(database));
+            conn.Open();
+            var rows = new List<object?[]>();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = sql;
+            using var r = cmd.ExecuteReader();
+            while (r.Read())
+            {
+                var row = new object?[r.FieldCount];
+                for (int i = 0; i < row.Length; i++)
+                {
+                    var v = r.IsDBNull(i) ? null : r.GetValue(i);
+                    row[i] = v is string sv ? FromServer(sv) : v;
+                }
+                rows.Add(row);
+            }
+            return rows;
         }
 
         public ExecReturn ExecuteSql(string sqlText, string database, bool captureOutput = false, string outputFile = "")

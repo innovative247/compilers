@@ -2,7 +2,7 @@ using ibsCompiler;
 using ibsCompiler.Configuration;
 using ibsCompiler.Database;
 
-const string Usage = "Usage: set_options <server/profile> [-U user] [-P pass] [-O outfile] [-MSSQL|-SYBASE]";
+const string Usage = "Usage: set_options <server/profile> [-U user] [-P pass] [-O outfile] [-MSSQL|-SYBASE] [--import " + LiveCompile.FlagsUsage + "]";
 if (!VersionCheck.CheckForUpdates("set_options", args, Usage)) return 0;
 
 var arguments = args.ToList();

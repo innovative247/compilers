@@ -9,6 +9,10 @@ namespace ibsCompiler
     /// </summary>
     public class runcreate_main
     {
+        /// <summary>Postgres has no live path (per-statement commits), so it reloads; elsewhere the live default.</summary>
+        public static LiveSettings ImportSettings(ResolvedProfile profile) =>
+            new() { Mode = profile.ServerType == SQLServerTypes.POSTGRES ? LiveMode.Reload : LiveCompile.DefaultMode };
+
         public bool Run(CommandVariables cmdvars, ResolvedProfile profile, ISqlExecutor executor, bool logFile = true,
                         Options? existingOptions = null)
         {
@@ -166,7 +170,8 @@ namespace ibsCompiler
                 }
                 else if (strType == "import_options")
                 {
-                    if (!profile.RawMode) compile_options_main.Run(cmdvars, profile, executor);
+                    if (!profile.RawMode && !compile_options_main.Run(cmdvars, profile, executor, ImportSettings(profile)).Returncode)
+                        ibs_compiler_common.WriteLine("Error: import_options failed; continuing runcreate.", cmdvars.OutFile);
                 }
                 else if (strType == "create_tbl_locations")
                 {
@@ -174,11 +179,14 @@ namespace ibsCompiler
                 }
                 else if (strType == "install_msg")
                 {
-                    if (!profile.RawMode) compile_msg_main.Run(newVars, profile, executor, batch: true);
+                    // A failure is logged and the script goes on.
+                    if (!profile.RawMode && compile_msg_main.Run(newVars, profile, executor, batch: true, live: ImportSettings(profile)) != 0)
+                        ibs_compiler_common.WriteLine("Error: install_msg failed (compile_msg returned non-zero); continuing runcreate.", cmdvars.OutFile);
                 }
                 else if (strType == "compile_actions")
                 {
-                    if (!profile.RawMode) compile_actions_main.Run(cmdvars, profile, executor);
+                    if (!profile.RawMode && compile_actions_main.Run(cmdvars, profile, executor, ImportSettings(profile)) != 0)
+                        ibs_compiler_common.WriteLine("Error: compile_actions failed; continuing runcreate.", cmdvars.OutFile);
                 }
                 else if (strType == "install_required_fields")
                 {

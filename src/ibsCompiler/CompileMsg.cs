@@ -1,3 +1,4 @@
+using System.Globalization;
 using ibsCompiler.Configuration;
 using ibsCompiler.Database;
 
@@ -18,23 +19,35 @@ namespace ibsCompiler
     /// </summary>
     public static class compile_msg_main
     {
-        public static void Run(CommandVariables cmdvars, ResolvedProfile profile, ISqlExecutor executor,
-                               bool batch = false,
-                               OnSavedTranslations onSaved = OnSavedTranslations.Prompt)
+        /// <param name="live">Null takes the defaults (LiveCompile.DefaultMode). Returns 0 on success
+        /// (or cancel), 1 on failure; on the live path 0 only when the readback matched.</param>
+        public static int Run(CommandVariables cmdvars, ResolvedProfile profile, ISqlExecutor executor,
+                              bool batch = false,
+                              OnSavedTranslations onSaved = OnSavedTranslations.Prompt,
+                              LiveSettings? live = null)
         {
+            live ??= new LiveSettings();
             var myOptions = new Options(cmdvars, profile, true);
-            if (!myOptions.GenerateOptionFiles()) return;
+            if (!myOptions.GenerateOptionFiles()) return 1;
+            var d = profile.ServerType;
 
-            // Changelog entry
-            var chgDb = myOptions.ReplaceOptions("&dbpro&");
-            if (chgDb != "&dbpro&")
+            void ChangeLog()
             {
+                var chgDb = myOptions.ReplaceOptions("&dbpro&");
+                if (chgDb == "&dbpro&") return;
                 var chgLines = new List<string>();
-                foreach (var l in change_log.compileLines("MESSAGES", "updated messages", profile.ServerType))
+                foreach (var l in change_log.compileLines("MESSAGES", "updated messages", d))
                     chgLines.Add(myOptions.ReplaceOptions(l));
                 chgLines.Add("go");
+                // The live path skips i_compile_gui_messages and i_compile_sql_messages, which write these rows themselves.
+                if (live.Mode == LiveMode.Live)
+                {
+                    chgLines.AddRange(LiveChangeLog.MsgGuiLines("updated messages GUI").Select(myOptions.ReplaceOptions));
+                    chgLines.AddRange(LiveChangeLog.MsgGuiLines("updated messages SQL", "MSG_SQL").Select(myOptions.ReplaceOptions));
+                }
                 executor.ExecuteSql(string.Join(Environment.NewLine, chgLines), chgDb, false, cmdvars.OutFile);
             }
+            if (live.Mode == LiveMode.Reload) ChangeLog();
 
             ibs_compiler_common.WriteLine("Starting compile_msg...", cmdvars.OutFile);
 
@@ -53,7 +66,7 @@ namespace ibsCompiler
                 if (!File.Exists(mainMes + extensions[i]))
                 {
                     ibs_compiler_common.WriteLine($"{labels[i]} file is missing ({mainMes}{extensions[i]})", cmdvars.OutFile);
-                    return;
+                    return 1;
                 }
             }
             ibs_compiler_common.WriteLine("All source files found.", cmdvars.OutFile);
@@ -64,82 +77,49 @@ namespace ibsCompiler
                 cmdvars.Database = resolvedWorkTable.Split(new[] { ".." }, 2, StringSplitOptions.None)[0];
             ibs_compiler_common.WriteLine($"Work database: {cmdvars.Database}", cmdvars.OutFile);
 
+            var saveTable = myOptions.ReplaceOptions("&gui_messages_save&");
+            if (live.Mode == LiveMode.Live)
+                return RunLive(cmdvars, profile, executor, myOptions, mainMes, extensions, saveTable,
+                               batch, onSaved, live, ChangeLog);
+
             // Check for prior failed compile — saved translations may exist
             bool skipSave = false;
-            var saveTable = myOptions.ReplaceOptions("&gui_messages_save&");
             var countSql = $"SELECT COUNT(*) FROM {saveTable}";
             ibs_compiler_common.WriteLine($"Checking for saved translations in {saveTable}...", cmdvars.OutFile);
             var countResult = executor.ExecuteSql(countSql, cmdvars.Database, captureOutput: true);
-            int savedCount = 0;
+            int? parsedCount = null;
             if (countResult.Returncode && !string.IsNullOrEmpty(countResult.Output))
             {
                 foreach (var line in countResult.Output.Split('\n'))
                 {
                     if (int.TryParse(line.Trim(), out var n))
                     {
-                        savedCount = n;
+                        parsedCount = n;
                         break;
                     }
                 }
             }
-
-            if (savedCount == 0)
+            // An unreadable save table must not read as empty: the destructive steps below would run blind.
+            if (parsedCount == null)
             {
-                ibs_compiler_common.WriteLine("No saved translations found.", cmdvars.OutFile);
+                Console.Error.WriteLine($"Error: could not read {saveTable}; nothing was changed. Server said: "
+                    + (string.IsNullOrWhiteSpace(countResult.Output) ? "(no output)" : countResult.Output.Trim()));
+                return 1;
             }
-            else
+            int savedCount = parsedCount.Value;
+
+            switch (ResolveSaved(savedCount, saveTable, batch, onSaved, cmdvars.OutFile))
             {
-                // Resolve the choice. batch:true is a legacy shortcut for Keep;
-                // headless callers pass onSaved directly. Both bypass the prompt.
-                var resolved = batch ? OnSavedTranslations.Keep : onSaved;
-                if (resolved == OnSavedTranslations.Prompt)
-                {
-                    Console.WriteLine();
-                    Console.WriteLine($"WARNING: {saveTable} contains {savedCount} rows.");
-                    Console.WriteLine("This means a previous message compile did not complete successfully.");
-                    Console.WriteLine("Translated messages were saved but never restored.");
-                    Console.WriteLine();
-                    Console.WriteLine("How do you want to proceed?");
-                    Console.WriteLine("  1) Continue, keep saved translations (compile will restore them at the end)");
-                    Console.WriteLine("  2) Discard saved translations, re-save from current database");
-                    Console.WriteLine("  3) Cancel (investigate and fix manually)");
-                    Console.WriteLine();
-
-                    while (true)
-                    {
-                        Console.Write("Enter choice (1, 2, or 3): ");
-                        var choice = Console.ReadLine()?.Trim() ?? "";
-                        if (choice == "1") { resolved = OnSavedTranslations.Keep;    break; }
-                        if (choice == "2") { resolved = OnSavedTranslations.Discard; break; }
-                        if (choice == "3") { resolved = OnSavedTranslations.Cancel;  break; }
-                        Console.WriteLine("Invalid choice. Please enter 1, 2, or 3.");
-                    }
-                }
-                else
-                {
-                    // Headless: announce the saved-translation state once so the agent
-                    // sees a deterministic marker in the output.
-                    ibs_compiler_common.WriteLine(
-                        $"WARNING: {saveTable} contains {savedCount} rows from a prior failed compile.",
-                        cmdvars.OutFile);
-                }
-
-                switch (resolved)
-                {
-                    case OnSavedTranslations.Keep:
-                        ibs_compiler_common.WriteLine("Keeping existing saved translations, skipping save step.", cmdvars.OutFile);
-                        skipSave = true;
-                        break;
-                    case OnSavedTranslations.Discard:
-                        ibs_compiler_common.WriteLine("Discarding saved translations...", cmdvars.OutFile);
-                        var deleteSql = $"DELETE {saveTable}";
-                        ibs_compiler_common.WriteLine($"Executing {deleteSql}", cmdvars.OutFile);
-                        executor.ExecuteSql(deleteSql, cmdvars.Database);
-                        break;
-                    case OnSavedTranslations.Cancel:
-                        ibs_compiler_common.WriteLine("Cancelled.", cmdvars.OutFile);
-                        return;
-                }
+                case OnSavedTranslations.Keep:
+                    skipSave = true;
+                    break;
+                case OnSavedTranslations.Discard:
+                    var deleteSql = $"DELETE {saveTable}";
+                    ibs_compiler_common.WriteLine($"Executing {deleteSql}", cmdvars.OutFile);
+                    executor.ExecuteSql(deleteSql, cmdvars.Database);
+                    break;
+                case OnSavedTranslations.Cancel:
+                    return 0;
             }
 
             // Preserve translated messages
@@ -186,7 +166,7 @@ namespace ibsCompiler
                 var tempFile = CreateTempMessageFile(mainMes + "." + msgTypes[i], cmdvars.OutFile);
                 var result = executor.BulkCopy(myOptions.ReplaceOptions(destTables[i]), BcpDirection.IN, tempFile);
                 try { File.Delete(tempFile); } catch { }
-                if (!result.Returncode) return;
+                if (!result.Returncode) return 1;
             }
 
             // Update statistics on final message tables before compile
@@ -217,6 +197,168 @@ namespace ibsCompiler
             isqlline_main.Run(cmdvars, profile, executor, myOptions);
 
             ibs_compiler_common.WriteLine("compile_msg DONE.", cmdvars.OutFile);
+            return 0;
+        }
+
+        /// <summary>
+        /// The choice for rows left in the save table by a prior failed compile: Keep, Discard or
+        /// Cancel; null when the table is empty. batch:true is the legacy shortcut for Keep.
+        /// </summary>
+        private static OnSavedTranslations? ResolveSaved(int savedCount, string saveTable, bool batch,
+                                                         OnSavedTranslations onSaved, string outFile)
+        {
+            if (savedCount == 0)
+            {
+                ibs_compiler_common.WriteLine("No saved translations found.", outFile);
+                return null;
+            }
+            var resolved = batch ? OnSavedTranslations.Keep : onSaved;
+            if (resolved == OnSavedTranslations.Prompt)
+            {
+                Console.WriteLine();
+                Console.WriteLine($"WARNING: {saveTable} contains {savedCount} rows.");
+                Console.WriteLine("This means a previous message compile did not complete successfully.");
+                Console.WriteLine("Translated messages were saved but never restored.");
+                Console.WriteLine();
+                Console.WriteLine("How do you want to proceed?");
+                Console.WriteLine("  1) Continue, keep saved translations (compile will restore them at the end)");
+                Console.WriteLine("  2) Discard saved translations, re-save from current database");
+                Console.WriteLine("  3) Cancel (investigate and fix manually)");
+                Console.WriteLine();
+
+                while (true)
+                {
+                    Console.Write("Enter choice (1, 2, or 3): ");
+                    var choice = Console.ReadLine()?.Trim() ?? "";
+                    if (choice == "1") { resolved = OnSavedTranslations.Keep;    break; }
+                    if (choice == "2") { resolved = OnSavedTranslations.Discard; break; }
+                    if (choice == "3") { resolved = OnSavedTranslations.Cancel;  break; }
+                    Console.WriteLine("Invalid choice. Please enter 1, 2, or 3.");
+                }
+            }
+            else
+            {
+                // Deterministic marker for headless callers.
+                ibs_compiler_common.WriteLine(
+                    $"WARNING: {saveTable} contains {savedCount} rows from a prior failed compile.", outFile);
+            }
+
+            ibs_compiler_common.WriteLine(resolved switch
+            {
+                OnSavedTranslations.Keep => "Keeping existing saved translations, skipping save step.",
+                OnSavedTranslations.Discard => "Discarding saved translations...",
+                _ => "Cancelled.",
+            }, outFile);
+            return resolved;
+        }
+
+        /// <summary>The live targets for a saved-translation choice (null: none saved); null on cancel.</summary>
+        public static List<LiveTarget>? LiveTargets(IReadOnlyDictionary<string, List<string?[]>> files, int language, int company,
+                                                    IReadOnlyList<string?[]> saved, int dbOwn, OnSavedTranslations? choice)
+        {
+            if (choice == OnSavedTranslations.Cancel) return null;
+            // Keep skips the save step, so the database's own rows are not saved; discard re-saves them.
+            var keep = choice == OnSavedTranslations.Keep;
+            return LiveMessages.Targets(files, language, company, keep ? saved : null, !keep && dbOwn > 0);
+        }
+
+        private static int RunLive(CommandVariables cmdvars, ResolvedProfile profile, ISqlExecutor executor, Options myOptions,
+                                   string mainMes, string[] extensions, string saveTable, bool batch,
+                                   OnSavedTranslations onSaved, LiveSettings live, Action changeLog)
+        {
+            var d = profile.ServerType;
+            if (d == SQLServerTypes.POSTGRES) { Console.Error.WriteLine("Error: " + LiveCompile.PostgresRefused); return 1; }
+            const string db = "master";
+            string Resolve(string s) => myOptions.ReplaceOptions(s);
+            if (executor is not ISqlRowReader reader)
+            { Console.Error.WriteLine("Error: this executor cannot read rows, so the live path cannot diff"); return 1; }
+
+            var errors = new List<string>();
+            var files = new Dictionary<string, List<string?[]>>();
+            foreach (var ext in extensions)
+            {
+                var name = ext.TrimStart('.');
+                files[name] = LiveMessages.ParseFile(mainMes + ext, ibs_compiler_common.BuildArrayFromDisk(mainMes + ext),
+                                                     name.EndsWith("msgrp", StringComparison.Ordinal), d, errors);
+            }
+            foreach (var w in LiveMessages.SqrCapWarnings(files["sqr_msg"]))
+                ibs_compiler_common.WriteLine("Warning: " + w, cmdvars.OutFile);
+            if (errors.Count > 0)
+            {
+                foreach (var e in errors.Take(LiveCompile.ReportCap)) Console.Error.WriteLine("Error: " + e);
+                if (errors.Count > LiveCompile.ReportCap) Console.Error.WriteLine($"... and {errors.Count - LiveCompile.ReportCap} more");
+                return 1;
+            }
+
+            int company, language;
+            List<string?[]> saved;
+            int dbOwn;
+            try
+            {
+                var sv = reader.QueryRows(Resolve("select company, language from &sysvalues&"), db);
+                if (sv.Count == 0) { Console.Error.WriteLine("Error: &sysvalues& has no row"); return 1; }
+                company = Convert.ToInt32(sv[0][0], CultureInfo.InvariantCulture);
+                language = Convert.ToInt32(sv[0][1], CultureInfo.InvariantCulture);
+                ibs_compiler_common.WriteLine($"Company {company}, language {language}", cmdvars.OutFile);
+                ibs_compiler_common.WriteLine($"Checking for saved translations in {saveTable}...", cmdvars.OutFile);
+                saved = LiveCompile.ReadCurrent(new LiveTarget { Table = LiveMessages.GuiMessagesSave }, reader, db, d, Resolve);
+                var own = reader.QueryRows(Resolve($"select count(*) from &gui_messages& where cmpy = {company}"), db);
+                dbOwn = own.Count == 0 ? 0 : Convert.ToInt32(own[0][0], CultureInfo.InvariantCulture);
+            }
+            catch (Exception ex) { Console.Error.WriteLine("Error: reading the current messages failed: " + ex.Message); return 1; }
+
+            var targets = LiveTargets(files, language, company, saved, dbOwn,
+                                      ResolveSaved(saved.Count, saveTable, batch, onSaved, cmdvars.OutFile));
+            if (targets == null) return 0;
+            LiveTarget msgTarget = targets.Single(x => x.Table == LiveMessages.Messages);
+
+            var serverName = profile.IsProfile ? profile.ProfileName : cmdvars.ServerNameOnly;
+            bool applied = false, afterFailed = false;
+            // Only after gui_messages read back, so a failed run leaves the saved translations in place.
+            int EmptySave() => LiveCompile.Run("gui_messages_save", new[] { LiveMessages.SaveTarget() }, live, executor, d, db,
+                                               Resolve, cmdvars.OutFile, $"messages_save.{serverName}.{profile.Company}");
+            void Derive(IReadOnlyList<LiveDiff> diffs)
+            {
+                var procs = LiveMessages.ProcsFor(diffs);
+                if (procs.Count == 0) ibs_compiler_common.WriteLine("No message type changed; no type proc to run.", cmdvars.OutFile);
+                for (int i = 0; i < procs.Count; i++)
+                {
+                    cmdvars.Command = Resolve($"&dbpro&..{procs[i]}");
+                    ibs_compiler_common.WriteLine($"Executing {cmdvars.Command}...", cmdvars.OutFile);
+                    if (isqlline_main.Run(cmdvars, profile, executor, myOptions).Returncode) continue;
+                    // The tables now read as current, so the next live run would not run these again.
+                    Console.Error.WriteLine($"Error: {procs[i]} failed. Still to run: {string.Join(", ", procs.Skip(i))} " +
+                                            "(or run compile_msg --reload).");
+                    afterFailed = true;
+                    return;
+                }
+                if (procs.Count == 0) return;
+                try
+                {
+                    var check = LiveCompile.DiffAll(new LiveTarget[] { msgTarget }, reader, db, d, Resolve);
+                    if (check.All(x => x.IsEmpty)) return;
+                    Console.Error.WriteLine("Error: &messages& after the type procs differs from the target:");
+                    foreach (var l in LiveCompile.Describe(check)) Console.Error.WriteLine("  " + l);
+                }
+                catch (Exception ex) { Console.Error.WriteLine("Error: reading &messages& back failed: " + ex.Message); }
+                afterFailed = true;
+            }
+            void AfterApply(IReadOnlyList<LiveDiff> diffs)
+            {
+                applied = true;
+                if (EmptySave() != 0) afterFailed = true;
+                Derive(diffs);
+            }
+
+            var rc = LiveCompile.Run("messages", targets, live, executor, d, db, Resolve, cmdvars.OutFile,
+                                     $"messages.{serverName}.{profile.Company}", changeLog, AfterApply);
+            // Already current: the readback match is the empty diff, so the save table still goes.
+            if (rc == 0 && !applied && !live.DryRun && saved.Count > 0 && EmptySave() != 0) rc = 1;
+            if (rc == 0 && live.DryRun && saved.Count > 0)
+                ibs_compiler_common.WriteLine($"would empty {saveTable} ({saved.Count} rows)", cmdvars.OutFile);
+            if (afterFailed) rc = 1;
+            ibs_compiler_common.WriteLine(rc == 0 ? "compile_msg DONE." : "compile_msg FAILED.", cmdvars.OutFile);
+            return rc;
         }
 
         private static string CreateTempMessageFile(string sourceFile, string? outFile = null)

@@ -112,7 +112,7 @@ they still work end-to-end.
 | Background + log file | `runcreate <script> <profile> <log> -bg` (NB: `-bg` is a wrapper concept, not in source) | `runcreate.bg` | COVERED |
 | Outfile (named or `-O`) | `runcreate <script> <profile> <file>` / `-O <file>` | `runcreate.outfile` | COVERED |
 | Comments + `#NT`/`#UNIX` platform lines | (file format, not a flag) | `runcreate.platform_lines` | COVERED |
-| Dispatches `runsql`/`import_options`/`compile_actions`/`install_msg`/`install_required_fields`/`create_tbl_locations`/`i_run_upgrade` from inside the file | (file format) | `runcreate.dispatch_*` | COVERED |
+| Dispatches `runsql`/`import_options`/`compile_actions`/`install_msg`/`install_required_fields`/`create_tbl_locations`/`i_run_upgrade` from inside the file | (file format; import steps reload on Postgres, else live, see architecture.md § Live import path) | `runcreate.dispatch_*` | COVERED |
 
 ### `i_run_upgrade` — versioned upgrade scripts
 
@@ -152,6 +152,7 @@ Interactive flow:
 | Prompt 2 = Y | Launch editor on detail file | `--edit-detail` | `set_actions.edit_detail` | SKIP-AGENT |
 | Prompt 2 = N | Skip detail editor | `--no-edit-detail` or `--skip-edit` | `set_actions.no_edit_detail` | COVERED |
 | Prompt 3 = Y | Run `compile_actions_main.Run` | `--compile` | `set_actions.compile_smoke` | COVERED |
+| Prompt 3 = Y, live (default) or reload | Live keyed diff of the actions tables, or the legacy `ba_compile_actions` reload; live needs table DML grants, see architecture.md § Live import path | `--compile [--live\|--reload] [--batch-size N] [--pause-ms N] [--dry-run [--plan-file F]]` | `ActionsDispatchTests.*` / `ActionsTargetTests.*` (see Live import below) | COVERED |
 | Prompt 3 = N | Print "Finished." and exit 0 | `--no-compile` | `set_actions.no_compile` | COVERED |
 | (composite) | Skip both edits + compile only | `--skip-edit` | `set_actions.skip_edit` | COVERED |
 | (error) | Source files missing → exit non-zero | (n/a) | `set_actions.error_header_missing` / `.error_detail_missing` / `.error_profile_missing` | COVERED |
@@ -208,7 +209,8 @@ Interactive flow (dynamic menu, redrawn each loop):
 | Dynamic `4..N` Edit options.{X} | Launch editor on the picked file | (agent writes the file directly — no flag) | — | SKIP-AGENT |
 | Dynamic `N+1..M` Copy options.{X} | Copy file to new name | `--copy options.SRC --to options.DST` | `set_options.copy` | COVERED |
 | (n/a — flag only) | Clear + re-merge the resolved options cache, print its path, exit 0. Combined with another action (e.g. `--import`) it runs first. | `--rebuild` (alias `--rebuild-cache`) | `set_options.shows_cache_path` (+ shared with `set_table_locations.rebuild`) | COVERED |
-| Post-action "Import to DB?" Y | Run `compile_options_main.Run` (also recompiles `table_locations`) | `--import` (composable with any other action) | `set_options.import_smoke` / `set_options.add_then_import_smoke` | COVERED |
+| Post-action "Import to DB?" Y | Run `compile_options_main.Run` (recompiles `table_locations` with `--reload` only) | `--import` (composable with any other action) | `set_options.import_smoke` / `set_options.add_then_import_smoke` | COVERED |
+| Import, live (default) or reload | Live keyed diff of `options`, or the legacy `i_import_options` reload; live needs table DML grants, see architecture.md § Live import path | `--import [--live\|--reload] [--batch-size N] [--pause-ms N] [--dry-run [--plan-file F]]` | `OptionsDispatchTests.*` / `OptionsTargetTests.*` (see Live import below) | COVERED |
 | `--customize NAME=VALUE` | Override default during merge/sync (value or onoff) | `--customize K=V` (repeatable) | `set_options.customize_value` / `set_options.customize_onoff` | COVERED |
 | (error) | Every validation surface (missing flags, bad combos, name length, duplicates, missing MOD info, bad copy target, mutex actions, malformed customize) | (n/a) | `set_options.error_*` (16 tests) | COVERED |
 | `99` Exit | exit 0 | (default when no action flags) | — | COVERED |
@@ -221,6 +223,49 @@ Interactive flow (dynamic menu, redrawn each loop):
   `--mod-reason`.
 - `--customize NAME=VALUE` overrides per-option defaults during merge/sync.
   Onoff customizations must be `on`/`off` (or `+`/`-`).
+
+### Live import (`set_options --import`, `set_actions --compile`, `set_messages --import`)
+
+The three imports take the live path by default (`LiveCompile.DefaultMode`): the
+target rows are computed from the source files, diffed against the database by
+key, and only the differing rows are written. `--reload` keeps the legacy bulk
+copy and proc reload (`i_import_options`, `i_compile_*messages`,
+`ba_compile_actions`). On a Postgres profile the live path exits 1 with "live import not
+supported on Postgres; use --reload" before any read. Tests are xUnit, `tests/LiveCompile.Tests`.
+
+| Path | Outcome | Headless flag(s) | Test ID | Status |
+|---|---|---|---|---|
+| Live (default) | Keyed delete/update/insert of the differing rows; no truncate, no whole-table delete | (default) or `--live` | `EngineTests.Diff_*` / `ArgsTests.Default_IsTheNamedConstant_Live` | COVERED |
+| Legacy reload | Bulk copy and proc reload, as before 3.5.82 | `--reload` (excludes `--live`, `--dry-run`, `--batch-size`, `--pause-ms`) | `ArgsTests.Flags_Rejected` | COVERED |
+| Batching | One transaction per batch, each in its own `go`; default 50 statements, max 1000 | `--batch-size N` | `EngineTests.Batches_SizeBoundaries_OrderAndOwnTransaction` | COVERED |
+| Pause | Client-side sleep between batches; default 0, max 60000 | `--pause-ms N` | `ArgsTests.Flags_SelectMode_AndValues` | COVERED |
+| Dry run | Writes the planned SQL (default `<temp>/<name>.plan.sql`) and touches no table | `--dry-run [--plan-file F]` | `EngineTests.Run_DryRun_WritesPlanOnly` | COVERED |
+| Readback | Re-diff after the batches; exit 1 and the differing keys when not empty | (always on the live path) | `EngineTests.Run_ReadbackEmpty_Succeeds_NonEmpty_FailsWithKeys` | COVERED |
+| (error) | A failed batch rolls back and stops the run | (n/a) | `EngineTests.Run_StopsAtFirstFailedBatch` | COVERED |
+
+**Rules enforced:**
+- Every delete and update is keyed on the table's whole unique key.
+  `EngineTests.Batches_EveryDeleteAndUpdateIsKeyedOnTheWholeKey`.
+- Per-row results equal the legacy reload: dynamic options keep their database value,
+  a site's own-company gui_messages translations are kept, action text, menus, shix
+  and profile details follow `ba_compile_actions`. `OptionsTargetTests.*` /
+  `MessagesTargetTests.*` / `ActionsTargetTests.*` (golden `Golden_2147_AsOnGonzo`) /
+  `ActionModelTests.*`.
+- Row triggers on the target tables write one `ba_gen_chg_log` row per statement inside
+  the batch's transaction; that cost is why the batch is capped at 1000. The live path
+  writes its own change-log rows (`LiveChangeLog`) in place of the procs' ones.
+  `ChangeLogTests.MsgGuiRow_AndDescriptionFits`.
+- Trigger side effects: deleting an `actions` row fires `actions_del`, which removes that
+  (`s#act`, `ix`) from every profile; `action_profile_details_iud` writes a log row per
+  profile-row change; the `gui_messages` trigger writes log rows only when option `gclog2` is on.
+  `ActionsTargetTests.Reset_MessagelessActionDropsOtherProfiles_StaleRowLeftToTrigger`.
+- Messages: for each message type whose rows changed, the legacy proc
+  (`i_compile_ibs_messages`, `i_compile_jam_messages`, `i_compile_sqr_messages` +
+  `i_compile_jrw_messages`) runs after the readback matches, because it rebuilds the
+  derived tables; unchanged types run no proc. `MessagesTargetTests.ProcsFor_OnlyChangedTypes`.
+- Sybase profiles with `DATA_CHARSET`: string literals are converted so the stored bytes
+  equal what the bulk copy stores, and the readback converts back.
+  `EngineTests.Charset_TransformOnlyStringLiterals` / `CharsetTests.ToServer_StoresDataBytes_AndReadbackRoundTrips`.
 
 ---
 
@@ -249,6 +294,7 @@ Interactive flow:
 | Menu path | Outcome | Headless flag | Test ID | Status |
 |---|---|---|---|---|
 | `1` Import → no saved rows | BCP IN every message file, run `i_compile_messages` / `i_compile_jam_messages` / `i_compile_jrw_messages` | `set_messages --import` | `set_messages.import` | COVERED |
+| `1` Import, live (default) or reload | Live keyed diff of the message tables, then the proc of each changed type; or the legacy BCP IN reload; live needs table DML grants, see architecture.md § Live import path | `set_messages --import [--live\|--reload] [--batch-size N] [--pause-ms N] [--dry-run [--plan-file F]]` | `MessagesDispatchTests.*` / `MessagesTargetTests.*` (see Live import below) | COVERED |
 | `1` Import → saved rows → keep | Skip save step, restore at end | `set_messages --import --on-saved keep` (default) | `set_messages.import_keep_saved` | COVERED |
 | `1` Import → saved rows → discard | `DELETE <gui_messages_save>`, then save again | `set_messages --import --on-saved discard` | `set_messages.import_discard_saved` | COVERED |
 | `1` Import → saved rows → cancel | exit 0, no changes | `set_messages --import --on-saved cancel` | `set_messages.import_cancel_saved` | COVERED |
