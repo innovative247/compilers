@@ -21,7 +21,7 @@ namespace ibsCompiler.Database
     ///     transaction — Sybase/MSSQL autocommit-per-statement parity — using a PG-aware splitter
     ///     that respects quotes, comments, and dollar-quoted bodies.
     /// </summary>
-    public class PostgresExecutor : ISqlExecutor
+    public class PostgresExecutor : ISqlExecutor, ISqlRowReader
     {
         private readonly ResolvedProfile _profile;
         private static readonly Regex GoRegex = new(@"^\s*go\s*$", RegexOptions.IgnoreCase | RegexOptions.Multiline);
@@ -135,6 +135,25 @@ namespace ibsCompiler.Database
             _statistics = false;
             _noexec = false;
             _nocount = false;
+        }
+
+        public List<object?[]> QueryRows(string sql, string database)
+        {
+            var (db, searchPath) = ResolveTarget(database);
+            using var conn = NewConnection(db);
+            conn.Open();
+            InitSession(conn, searchPath);
+            var rows = new List<object?[]>();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = sql;
+            using var r = cmd.ExecuteReader();
+            while (r.Read())
+            {
+                var row = new object?[r.FieldCount];
+                for (int i = 0; i < row.Length; i++) row[i] = r.IsDBNull(i) ? null : r.GetValue(i);
+                rows.Add(row);
+            }
+            return rows;
         }
 
         public ExecReturn ExecuteSql(string sqlText, string database, bool captureOutput = false, string outputFile = "")

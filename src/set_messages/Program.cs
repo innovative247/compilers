@@ -2,7 +2,7 @@ using ibsCompiler;
 using ibsCompiler.Configuration;
 using ibsCompiler.Database;
 
-const string Usage = "Usage: set_messages <server/profile> [-U user] [-P pass] [-O outfile] [-MSSQL|-SYBASE|-POSTGRES]\n"
+const string Usage = "Usage: set_messages <server/profile> [-U user] [-P pass] [-O outfile] [-MSSQL|-SYBASE|-POSTGRES] [--import [--on-saved keep|discard|cancel] " + LiveCompile.FlagsUsage + "]\n"
     + "       set_messages <server/profile> --add --type <ibs|gui|sql|sqr|jam> --group <grp> --text <msg> [--dry-run]\n"
     + "       set_messages <server/profile> --translate --type <t> --msgno N [--lang L] [--cmpy C] --text <msg> [--dry-run]\n"
     + "       set_messages <server/profile> --new-group --type <t> --group <grp> --desc <text> [--start N] [--dry-run]\n"

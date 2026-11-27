@@ -349,6 +349,17 @@ Because a non-holdable cursor only lives to the end of the transaction that open
 
 ---
 
+## Live import path (vs the reload procs)
+
+`set_options --import`, `set_actions --compile` and `set_messages --import` default to the live path (`LiveCompile.Run`); `--reload` keeps the bulk copy and proc reload. The live path writes only the rows that differ, so a live or replicated server is not blocked by a truncate, a whole-table delete or one large transaction. The live path refuses Postgres profiles (`PostgresExecutor` commits each statement separately) and points to `--reload`. The live path writes the tables directly, so the login needs SELECT/INSERT/UPDATE/DELETE on the target tables (options, the messages family, the actions tables), where `--reload` only needs exec on the legacy procs; a missing grant fails the batch, which rolls back, and the readback names the keys. `runcreate` (`import_options`, `install_msg`, `compile_actions`) reloads on Postgres and runs live elsewhere (`runcreate_main.ImportSettings`); a failed step is logged and the script continues.
+
+- **Target.** `LiveOptions`, `LiveMessages` and `LiveActions` compute, from the source files and the current database state, the rows the legacy proc would leave (`ActionModel` holds the `ba_compile_actions` line model). Keep rules (`LiveKeep`) leave dynamic options and a site's own-company translations as they are.
+- **Diff.** `ISqlRowReader` (implemented by the three executors) reads the current rows; `LiveCompile.Diff` compares them with the target by the table's unique key and yields keyed deletes, updates of the changed columns, and inserts.
+- **Keyed batches.** One transaction per batch (`--batch-size`, default 50, max 1000), each in its own `go`, with an optional `--pause-ms` between batches. Every delete and update is keyed on the whole key. Row triggers write one `ba_gen_chg_log` row per statement inside the transaction, which bounds the batch size. `--dry-run` writes the plan to `--plan-file` and touches nothing. On Sybase `DATA_CHARSET` profiles, string literals go through `SybaseExecutor.DataCharsetTransform` so the stored bytes equal the bulk copy's.
+  Trigger side effects: deleting an `actions` row fires `actions_del`, which removes that (`s#act`, `ix`) from every profile; `action_profile_details_iud` writes a log row per profile-row change; the `gui_messages` trigger writes log rows only when option `gclog2` is on.
+- **Readback.** The diff is run again after the batches; a non-empty result is an error (exit 1, differing keys listed).
+- **After apply.** The change-log rows (`LiveChangeLog`) follow; the live options import leaves `table_locations` alone (only `--reload` recompiles it). For messages, the legacy proc of each message type whose rows changed (`i_compile_ibs_messages`, `i_compile_jam_messages`, `i_compile_sqr_messages` + `i_compile_jrw_messages`) runs after the readback matches, because those procs rebuild the derived message tables; unchanged types run no proc.
+
 ## Command Architecture
 
 All commands follow the same pattern: thin `Program.cs` wrapper → shared library logic.

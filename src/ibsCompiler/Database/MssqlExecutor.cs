@@ -6,7 +6,7 @@ using ibsCompiler.Configuration;
 
 namespace ibsCompiler.Database
 {
-    public class MssqlExecutor : ISqlExecutor
+    public class MssqlExecutor : ISqlExecutor, ISqlRowReader
     {
         private readonly ResolvedProfile _profile;
         private static readonly Regex GoRegex = new(@"^\s*go\s*$", RegexOptions.IgnoreCase | RegexOptions.Multiline);
@@ -97,6 +97,24 @@ namespace ibsCompiler.Database
             if (!string.IsNullOrEmpty(database))
                 sb.InitialCatalog = database;
             return sb.ConnectionString;
+        }
+
+        public List<object?[]> QueryRows(string sql, string database)
+        {
+            using var conn = new SqlConnection(BuildConnectionString(database));
+            conn.Open();
+            ExecuteInitScript(conn);
+            var rows = new List<object?[]>();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = sql;
+            using var r = cmd.ExecuteReader();
+            while (r.Read())
+            {
+                var row = new object?[r.FieldCount];
+                for (int i = 0; i < row.Length; i++) row[i] = r.IsDBNull(i) ? null : r.GetValue(i);
+                rows.Add(row);
+            }
+            return rows;
         }
 
         public ExecReturn ExecuteSql(string sqlText, string database, bool captureOutput = false, string outputFile = "")

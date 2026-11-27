@@ -2,7 +2,7 @@ using ibsCompiler;
 using ibsCompiler.Configuration;
 using ibsCompiler.Database;
 
-const string Usage = "Usage: eopt <server/profile> [-U user] [-P pass] [-O outfile] [-MSSQL|-SYBASE]";
+const string Usage = "Usage: eopt <server/profile> [-U user] [-P pass] [-O outfile] [-MSSQL|-SYBASE] [--import " + LiveCompile.FlagsUsage + "]";
 if (!VersionCheck.CheckForUpdates("eopt", args, Usage)) return 0;
 
 var arguments = args.ToList();

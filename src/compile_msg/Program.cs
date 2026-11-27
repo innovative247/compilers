@@ -2,7 +2,7 @@ using ibsCompiler;
 using ibsCompiler.Configuration;
 using ibsCompiler.Database;
 
-const string Usage = "Usage: compile_msg <server/profile> [-U user] [-P pass] [-O outfile] [-MSSQL|-SYBASE]";
+const string Usage = "Usage: compile_msg <server/profile> [-U user] [-P pass] [-O outfile] [-MSSQL|-SYBASE] [--import [--on-saved keep|discard|cancel] " + LiveCompile.FlagsUsage + "]";
 if (!VersionCheck.CheckForUpdates("compile_msg", args, Usage)) return 0;
 
 var arguments = args.ToList();

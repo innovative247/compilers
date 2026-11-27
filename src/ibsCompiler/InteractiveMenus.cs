@@ -200,6 +200,11 @@ namespace ibsCompiler
             var cliHeader  = CliArgs.ResolveBool(args, EditCompileTrueHeader, EditCompileFalseHeader);
             var cliDetail  = CliArgs.ResolveBool(args, EditCompileTrueDetail, EditCompileFalseDetail);
             var cliCompile = CliArgs.ResolveBool(args, new[] { "--compile" }, new[] { "--no-compile" });
+            if (!LiveCompile.ParseArgs(args, out var live, out var liveError))
+            {
+                Console.Error.WriteLine("ERROR: " + liveError);
+                return 1;
+            }
 
             // Prompt to edit actions file (default: Yes)
             if (cliHeader ?? ConsoleYesNo($"Edit {actionsFile}?"))
@@ -218,8 +223,7 @@ namespace ibsCompiler
 
             // Compile
             Console.WriteLine("Compiling actions...");
-            compile_actions_main.Run(cmdvars, profile, executor);
-            return 0;
+            return compile_actions_main.Run(cmdvars, profile, executor, live);
         }
 
         // Shared edit/compile flag vocabulary used by set_actions, set_required_fields,
@@ -243,6 +247,8 @@ namespace ibsCompiler
             "--skip-edit",
             "--rebuild",     "--rebuild-cache",
         };
+
+        public static readonly string[] SetActionsBoolFlagNames = EditCompileBoolFlagNames.Concat(LiveCompile.BoolFlagNames).ToArray();
 
         #endregion
 
@@ -376,7 +382,7 @@ namespace ibsCompiler
             "--import", "--sync",
             "--all-adds", "--all-removes",
             "--rebuild", "--rebuild-cache",
-        };
+        }.Concat(LiveCompile.BoolFlagNames).ToArray();
 
         /// <summary>
         /// Interactive menu for eopt/set_options.
@@ -1379,6 +1385,11 @@ namespace ibsCompiler
             var removeRaw    = CliArgs.GetOption(args, "--remove");
 
             var doImport     = CliArgs.HasFlag(args, "--import");
+            if (!LiveCompile.ParseArgs(args, out var live, out var liveError))
+            {
+                Console.Error.WriteLine("ERROR: " + liveError);
+                return 1;
+            }
 
             // ---- Validate mutually exclusive primary actions ----
             int primary = 0;
@@ -1505,7 +1516,8 @@ namespace ibsCompiler
             if (doImport)
             {
                 Console.WriteLine("Compiling options...");
-                compile_options_main.Run(cmdvars, profile, executor);
+                var imported = compile_options_main.Run(cmdvars, profile, executor, live);
+                if (!imported.Returncode) return 1;
             }
 
             return 0;
@@ -1859,15 +1871,13 @@ namespace ibsCompiler
         /// </summary>
         public static readonly string[] SetMessagesBoolFlagNames = new[]
         {
-            "--import", "--export", "--yes", "--add", "--translate", "--dry-run",
+            "--import", "--export", "--yes", "--add", "--translate",
             // Wave-1 file-first action markers. These take NO operand of their own
             // (their data comes from --type/--group/--msgno/etc.), so they are bool
             // flags — StripLongFlags must not swallow the token that follows them.
             "--new-group", "--edit-msg", "--delete-msg",
-            // NB: --find is deliberately NOT here. It carries a value term
-            // (--find <term>), so it must strip like --type/--group so the term is
-            // consumed and never falls through to the positional server fallback.
-        };
+            // Not --find: it takes a value term, which must be stripped with it.
+        }.Concat(LiveCompile.BoolFlagNames).ToArray();
 
         /// <summary>
         /// Interactive menu for compile_msg/set_messages.
@@ -1889,7 +1899,7 @@ namespace ibsCompiler
             // This runs first for BOTH entry points (set_messages and compile_msg),
             // so every scripted/suite case routes here regardless of the split below.
             if (args != null && CliArgs.AnyPresent(args, "--import", "--export", "--on-saved", "--yes", "--add", "--translate", "--dry-run",
-                                                          "--new-group", "--find", "--edit-msg", "--delete-msg"))
+                                                          "--new-group", "--find", "--edit-msg", "--delete-msg", "--live", "--reload"))
                 return RunSetMessagesHeadless(args, cmdvars, profile, executor);
 
             // Entry-point split for the interactive (TTY) path:
@@ -1958,8 +1968,7 @@ namespace ibsCompiler
             }
 
             Console.WriteLine("Compiling messages...");
-            compile_msg_main.Run(cmdvars, profile, executor);
-            return 0;
+            return compile_msg_main.Run(cmdvars, profile, executor);
         }
 
         /// <summary>
@@ -2039,6 +2048,12 @@ namespace ibsCompiler
             var doExport = CliArgs.HasFlag(args, "--export");
             var onSavedRaw = CliArgs.GetOption(args, "--on-saved");
             var doYes = CliArgs.HasFlag(args, "--yes");
+            // After the file-first actions, so their own --dry-run never reaches this.
+            if (!LiveCompile.ParseArgs(args, out var live, out var liveError))
+            {
+                Console.Error.WriteLine("ERROR: " + liveError);
+                return 1;
+            }
 
             // Mutex: exactly one primary action.
             if (doImport && doExport)
@@ -2085,8 +2100,7 @@ namespace ibsCompiler
                 }
 
                 Console.WriteLine("Compiling messages...");
-                compile_msg_main.Run(cmdvars, profile, executor, batch: false, onSaved: onSaved);
-                return 0;
+                return compile_msg_main.Run(cmdvars, profile, executor, batch: false, onSaved: onSaved, live: live);
             }
 
             // --export

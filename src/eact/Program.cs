@@ -2,14 +2,14 @@ using ibsCompiler;
 using ibsCompiler.Configuration;
 using ibsCompiler.Database;
 
-const string Usage = "Usage: eact <server/profile> [-U user] [-P pass] [-O outfile] [-MSSQL|-SYBASE]";
+const string Usage = "Usage: eact <server/profile> [-U user] [-P pass] [-O outfile] [-MSSQL|-SYBASE] " + LiveCompile.FlagsUsage;
 if (!VersionCheck.CheckForUpdates("eact", args, Usage)) return 0;
 
 var arguments = args.ToList();
 var profileMgr = new ProfileManager();
 
 var headlessArgs = arguments.ToList();
-CliArgs.StripLongFlags(arguments, InteractiveMenus.EditCompileBoolFlagNames);
+CliArgs.StripLongFlags(arguments, InteractiveMenus.SetActionsBoolFlagNames);
 
 var cmdvars = ibs_compiler_common.compile_variables(arguments, profileMgr);
 if (string.IsNullOrEmpty(cmdvars.Server))
